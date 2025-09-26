@@ -11,7 +11,7 @@ logger.setLevel(logging.INFO)
 
 
 class EdgeCurvature:
-    def __init__(self, G: nx.Graph, feature_df:pd.DataFrame):
+    def __init__(self, G: nx.Graph, feature_df:pd.DataFrame = None):
         self.G = G
         self.df = feature_df.copy()
         self.edge_curvature = {}
@@ -118,3 +118,83 @@ class EdgeCurvature:
         Returns:
         pd.DataFrame: Node features with curvature statistics
         """
+        
+        if node_names is None:
+            if node_names is not None:
+                self.node_names = node_names
+            else:
+                node_names = [data['name'] for _, data in G.nodes(data=True)]
+                print(node_names[:10])
+        
+        node_curvatures = {
+            'ollivier': {i: [] for i in range(len(node_names))},
+            'forman': {i: [] for i in range(len(node_names))}
+        }
+        
+        if hasattr(self, 'edge_curvature'):
+            if 'OlivierRicci' in self.edge_curvature:
+                for (src_idx, dst_idx), curvature in self.edge_curvature['OllivierRicci'].items():
+                    if src_idx < len(node_names):
+                        node_curvatures['ollivier'][src_idx].append(curvature)
+                    if dst_idx < len(node_names):
+                        node_curvatures['ollivier'][dst_idx].append(curvature)
+                
+            if 'FormanRicci' in self.edge_curvature:
+                for (src_idx, dst_idx), curvature in self.edge_curvature['FormanRicci'].items():
+                    if src_idx < len(node_names):
+                        node_curvatures['forman'][src_idx].append(curvature)
+                    if dst_idx < len(node_names):
+                        node_curvatures['forman'][dst_idx].append(curvature)
+                        
+
+        curvature_data = []
+        
+        for i, node in enumerate(node_names):
+            node_stats = {'gene': node}
+            
+            ollivier_values = node_curvatures['ollivier'][i]
+            if ollivier_values:
+                node_stats.update({
+                    'ollivier_mean': np.mean(ollivier_values),
+                    'ollivier_std': np.std(ollivier_values),
+                    'ollivier_min': np.min(ollivier_values),
+                    'ollivier_max': np.max(ollivier_values),
+                    'ollivier_median': np.median(ollivier_values),
+                    'ollivier_degree': len(ollivier_values)
+                })
+            else:
+                node_stats.update({
+                    'ollivier_mean': 0.0,
+                    'ollivier_std': 0.0,
+                    'ollivier_min': 0.0,
+                    'ollivier_max': 0.0,
+                    'ollivier_median': 0.0,
+                    'ollivier_degree': 0.0
+                })
+            
+            forman_values = node_curvatures['forman'][i]
+            if forman_values:
+                node_stats.update({
+                    'forman_mean': np.mean(ollivier_values),
+                    'forman_std': np.std(ollivier_values),
+                    'forman_min': np.min(ollivier_values),
+                    'forman_max': np.max(ollivier_values),
+                    'forman_median': np.median(ollivier_values),
+                    'forman_degree': len(ollivier_values)
+                })
+            else:
+                node_stats.update({
+                    'forman_mean': 0.0,
+                    'forman_std': 0.0,
+                    'forman_min': 0.0,
+                    'forman_max': 0.0,
+                    'forman_median': 0.0,
+                    'forman_degree': 0.0
+                })
+        
+            curvature_data.append(node_stats)
+        
+        curvature_df = pd.DataFrame(curvature_data)
+        curvature_df.set_index('gene', inplace = True)
+        
+        return curvature_df
