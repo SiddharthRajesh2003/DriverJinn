@@ -1,13 +1,15 @@
-from curvature_calculator import EdgeCurvature
+from graph_builder.curvature_calculator import EdgeCurvature
+from utils.logging_manager import get_logger
+
 from collections import defaultdict
 import numpy as np
 import torch
 import logging
+
 from scipy.spatial.distance import cosine
 from sklearn.preprocessing import StandardScaler
 
-logger = logging.getLogger("my_logger")
-logger.setLevel(logging.INFO)  
+logger=get_logger(__name__)
 
 
 class CurvatureFeatureIntegrator:

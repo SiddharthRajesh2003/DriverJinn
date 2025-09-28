@@ -3,12 +3,9 @@ import networkx as nx
 import torch
 import numpy as np
 import pandas as pd
-import logging
+from utils.logging_manager import get_logger
 
-
-logger = logging.getLogger("my_logger")
-logger.setLevel(logging.INFO)  
-
+logger=get_logger(__name__)
 
 class EdgeCurvature:
     def __init__(self, G: nx.Graph, feature_df:pd.DataFrame = None):
