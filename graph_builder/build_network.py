@@ -13,7 +13,7 @@ class Network:
     
     def build_graph(self):
         G = nx.Graph()
-        for i, node in enumerate(nodes):
+        for i, node in enumerate(self.nodes):
             G.add_node(i, name = node)
         edges = self.edge_index.t().tolist()
         G.add_edges_from(edges)
