@@ -1,18 +1,42 @@
 import multiprocessing as mp
+import os
 original_get_context = mp.get_context
+def hpc_compatible_get_context(method=None):
+    """Patch for HPC/cluster environments where multiprocessing can be problematic"""
 
-def windows_compatible_get_context(method=None):
-    """Patch to make GraphRicciCurvature work on Windows"""
-    if method == 'fork':
-        # Replace 'fork' with 'spawn' on Windows
-        try:
+    # Check if we're in a problematic environment
+    is_hpc = any([
+        os.environ.get('SLURM_JOB_ID'),  # SLURM scheduler
+        os.environ.get('PBS_JOBID'),     # PBS scheduler
+        os.environ.get('LSB_JOBID'),     # LSF scheduler
+        'conda' in os.environ.get('PATH', '').lower(),  # Conda environment
+    ])
+
+    if method is None:
+        if is_hpc:
+            # In HPC environments, spawn is often more reliable
+            try:
+                return original_get_context('spawn')
+            except (ValueError, RuntimeError):
+                return original_get_context('fork')
+        else:
+            # Regular Linux systems prefer fork
+            try:
+                return original_get_context('fork')
+            except (ValueError, RuntimeError):
+                return original_get_context('spawn')
+
+    # Handle specific method requests with fallbacks
+    try:
+        return original_get_context(method)
+    except (ValueError, RuntimeError) as e:
+        print(f"Warning: Method '{method}' failed ({e}), using fallback")
+        if method == 'fork':
             return original_get_context('spawn')
-        except ValueError:
-            return original_get_context()
-    return original_get_context(method)
-
-# Apply the monkey patch
-mp.get_context = windows_compatible_get_context
+        else:
+            return original_get_context('fork')
+# Apply the patch
+mp.get_context = hpc_compatible_get_context
 
 from graph_builder.build_network import Network
 from graph_builder.curvature_calculator import EdgeCurvature
