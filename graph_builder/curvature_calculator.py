@@ -1,6 +1,14 @@
-from GraphRicciCurvature import OllivierRicci, FormanRicci
+import multiprocessing
+import sys
+
+if sys.platform.startswith('win'):
+    multiprocessing.set_start_method('spawn', force=True)
+
+# Then your regular imports...
+
+from GraphRicciCurvature.OllivierRicci import OllivierRicci
+from GraphRicciCurvature.FormanRicci import FormanRicci
 import networkx as nx
-import torch
 import numpy as np
 import pandas as pd
 from utils.logging_manager import get_logger
@@ -26,7 +34,7 @@ class EdgeCurvature:
             self.edge_curvature = {}
         
         if method =='Ollivier' or method == 'ollivier' or method =='both':
-            orc = OllivierRicci(self.G, alpha = 0.5, verbose = 'INFO')
+            orc = OllivierRicci(self.G, alpha = 0.5, verbose = 'TRACE', proc = 1)
             orc.compute_ricci_curvature()
             edge_curvature = {}
             for edge in self.G.edges():
@@ -35,7 +43,7 @@ class EdgeCurvature:
         
         
         if method == 'Forman' or method == 'forman' or method == 'both':
-            frc = FormanRicci(self.G, verbose = 'INFO')
+            frc = FormanRicci(self.G, verbose = 'TRACE')
             frc.compute_ricci_curvature()
             edge_curvature = {}
             
@@ -117,38 +125,57 @@ class EdgeCurvature:
         """
         
         if node_names is None:
-            if node_names is not None:
-                self.node_names = node_names
+            if hasattr(self, 'node_names') and self.node_names is not None:
+                node_names = self.node_names
             else:
-                node_names = [data['name'] for _, data in G.nodes(data=True)]
-                print(node_names[:10])
+                # Get node names from graph - assuming nodes are indexed 0 to n-1
+                node_names = [str(i) for i in range(self.G.number_of_nodes())]
+                logger.warning(f"No node names provided, using indices: {node_names[:10]}...")
         
         node_curvatures = {
             'ollivier': {i: [] for i in range(len(node_names))},
             'forman': {i: [] for i in range(len(node_names))}
         }
         
+        logger.info(f"Available curvature types: {list(self.edge_curvature.keys())}")
+        
         if hasattr(self, 'edge_curvature'):
-            if 'OlivierRicci' in self.edge_curvature:
+            if 'OllivierRicci' in self.edge_curvature:
+                logger.info(f'Processing Ollivier curvatures{len(node_names)} for nodes')
+                ollivier_count = 0
                 for (src_idx, dst_idx), curvature in self.edge_curvature['OllivierRicci'].items():
                     if src_idx < len(node_names):
                         node_curvatures['ollivier'][src_idx].append(curvature)
+                        ollivier_count += 1
+                        
                     if dst_idx < len(node_names):
                         node_curvatures['ollivier'][dst_idx].append(curvature)
+                        ollivier_count += 1
                 
+                logger.info(f'Processed {ollivier_count} Ollivier Curvature assignments to nodes')
+            
             if 'FormanRicci' in self.edge_curvature:
+                logger.info(f'Processing Forman curvatures for {len(node_names)} nodes')
+                forman_count = 0
                 for (src_idx, dst_idx), curvature in self.edge_curvature['FormanRicci'].items():
+                    
                     if src_idx < len(node_names):
                         node_curvatures['forman'][src_idx].append(curvature)
+                        forman_count += 1
+                            
                     if dst_idx < len(node_names):
                         node_curvatures['forman'][dst_idx].append(curvature)
-                        
-
+                        forman_count += 1
+                
+                logger.info(f"Processed {forman_count} Forman curvature assignments to nodes")
+            
+        
         curvature_data = []
         
         for i, node in enumerate(node_names):
             node_stats = {'gene': node}
             
+            # Ollivier statistics
             ollivier_values = node_curvatures['ollivier'][i]
             if ollivier_values:
                 node_stats.update({
@@ -157,7 +184,7 @@ class EdgeCurvature:
                     'ollivier_min': np.min(ollivier_values),
                     'ollivier_max': np.max(ollivier_values),
                     'ollivier_median': np.median(ollivier_values),
-                    'ollivier_degree': len(ollivier_values)
+                    'ollivier_degree': len(ollivier_values)  # This is actually edge count, not degree
                 })
             else:
                 node_stats.update({
@@ -169,6 +196,7 @@ class EdgeCurvature:
                     'ollivier_degree': 0.0
                 })
             
+            # Forman statistics
             forman_values = node_curvatures['forman'][i]
             if forman_values:
                 node_stats.update({
@@ -188,14 +216,20 @@ class EdgeCurvature:
                     'forman_median': 0.0,
                     'forman_degree': 0.0
                 })
-        
+            
             curvature_data.append(node_stats)
         
         curvature_df = pd.DataFrame(curvature_data)
-        curvature_df.set_index('gene', inplace = True)
+        curvature_df.set_index('gene', inplace=True)
+        
+        logger.info("Node curvature feature summary:")
+        for col in ['ollivier_mean', 'ollivier_degree', 'forman_mean', 'forman_degree']:
+            if col in curvature_df.columns:
+                non_zero = (curvature_df[col] != 0).sum()
+                logger.info(f"  {col}: {non_zero} non-zero values out of {len(curvature_df)}")
         
         return curvature_df
-    
+        
     def get_curvature_statistics(self):
         """Get statistics for calculated curvatures"""
         stats = {}

@@ -4,7 +4,7 @@ from utils.logging_manager import get_logger
 from collections import defaultdict
 import numpy as np
 import torch
-import logging
+import pandas as pd
 
 from scipy.spatial.distance import cosine
 from sklearn.preprocessing import StandardScaler
@@ -92,7 +92,7 @@ class CurvatureFeatureIntegrator:
             return 0.0
         
         edge_tuple = (src_idx, dst_idx)
-        reversed_tuple = (src_idx, dst_idx)
+        reversed_tuple = (dst_idx, src_idx)
         
         if curvature_type in self.edge_calc.edge_curvature:
             return self.edge_calc.edge_curvature[curvature_type].get(
@@ -152,10 +152,25 @@ class CurvatureFeatureIntegrator:
         dict: Updated data_dict with enhanced features
         """
         
-        logger.info("Using existing EdgeCurvature class to create node curvature features...")
+        logger.info("Creating enhanced features with proper curvature aggregation...")
+    
+        # Use the existing method but add debugging
+        curvature_df = self.edge_calc.create_node_curvature_features(node_names=self.node_names)
         
-        curvature_df = self.edge_calc.create_node_curvature_features(node_names = self.node_names)
+        # Debug: Check what we got
+        print("\nDEBUG: Curvature DataFrame created")
+        print(f"Shape: {curvature_df.shape}")
+        print(f"Index matches node_names: {curvature_df.index.equals(pd.Index(self.node_names))}")
         
+        # Check for non-zero values
+        for col in ['ollivier_mean', 'ollivier_degree']:
+            if col in curvature_df.columns:
+                non_zero = (curvature_df[col] != 0).sum()
+                print(f"{col}: {non_zero} non-zero values")
+                if non_zero == 0:
+                    print(f"  All values are zero! Sample: {curvature_df[col].head().tolist()}")
+        
+        # Continue with original logic
         curvature_feature_list = []
         curvature_feature_names = [
             'ollivier_mean', 'ollivier_std', 'ollivier_min', 'ollivier_max', 'ollivier_median', 'ollivier_degree',
@@ -166,37 +181,37 @@ class CurvatureFeatureIntegrator:
             if name in curvature_df.index:
                 node_curvature_features = curvature_df.loc[name, curvature_feature_names].values
             else:
+                print(f"WARNING: Node {name} not found in curvature_df")
                 node_curvature_features = np.zeros(len(curvature_feature_names))
             
             curvature_feature_list.append(node_curvature_features)
         
         curvature_features = np.array(curvature_feature_list)
         
-        logger.info("Calculating additional curvature-based features...")
+        print(f"DEBUG: Curvature features array shape: {curvature_features.shape}")
+        print(f"DEBUG: Ollivier_degree column (index 5) - non-zero count: {np.sum(curvature_features[:, 5] != 0)}")
         
+        # Continue with rest of the method...
+        logger.info("Calculating additional curvature-based features...")
         pos_curve_deg, neg_curve_deg, curve_homophily = self.calculate_curvature_based_features()
         
-        additional_features = np.column_stack([
-            pos_curve_deg,
-            neg_curve_deg,
-            curve_homophily
-        ])
-        
+        additional_features = np.column_stack([pos_curve_deg, neg_curve_deg, curve_homophily])
         all_curvature_features = np.hstack([curvature_features, additional_features])
         
         if normalize:
             scaler = StandardScaler()
             all_curvature_features = scaler.fit_transform(all_curvature_features)
-            
+            print("DEBUG: Applied StandardScaler normalization")
+        
         original_features = self.features.numpy()
-        enhanced_features =  np.hstack([original_features, all_curvature_features])
+        enhanced_features = np.hstack([original_features, all_curvature_features])
         
         additional_feature_names = ['positive_curvature_degree', 'negative_curvature_degree', 'curvature_homophily']
         complete_curvature_names = curvature_feature_names + additional_feature_names
         enhanced_feature_names = self.feature_names + complete_curvature_names
         
         enhanced_data_dict = self.data_dict.copy()
-        enhanced_data_dict['feature'] = torch.tensor(enhanced_features, dtype = torch.float32)
+        enhanced_data_dict['feature'] = torch.tensor(enhanced_features, dtype=torch.float32)
         enhanced_data_dict['feature_name'] = enhanced_feature_names
         
         logger.info(f"Original features: {original_features.shape}")

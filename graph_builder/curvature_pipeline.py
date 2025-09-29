@@ -1,3 +1,19 @@
+import multiprocessing as mp
+original_get_context = mp.get_context
+
+def windows_compatible_get_context(method=None):
+    """Patch to make GraphRicciCurvature work on Windows"""
+    if method == 'fork':
+        # Replace 'fork' with 'spawn' on Windows
+        try:
+            return original_get_context('spawn')
+        except ValueError:
+            return original_get_context()
+    return original_get_context(method)
+
+# Apply the monkey patch
+mp.get_context = windows_compatible_get_context
+
 from graph_builder.build_network import Network
 from graph_builder.curvature_calculator import EdgeCurvature
 from graph_builder.curvature_integration import CurvatureFeatureIntegrator
@@ -72,30 +88,33 @@ class CurvaturePipeline:
         method: str, 'ollivier', 'forman', or 'both'
         feature_df: pd.DataFrame, optional feature dataframe
         """
-        
-        logger.info(f'Calculating edge curvature using {method} method')
-        
-        if feature_df is None:
-            feature_df = pd.DataFrame(
-                self.data_dict['feature'],
-                columns = self.data_dict['feature_name'],
-                index = self.data_dict['node_name']
-            )
-        
-        self.edge_curvature = EdgeCurvature(self.network.G, feature_df)
-        
-        if self.edge_curvature is not None:
-            curvatures = self.edge_curvature.calculate_edge_curvature(method=method)
-            stats = self.edge_curvature.get_curvature_statistics()
+        try:
+            logger.info(f'Calculating edge curvature using {method} method')
+            
+            if feature_df is None:
+                feature_df = pd.DataFrame(
+                    data=self.data_dict['feature'].numpy(),
+                    columns = self.data_dict['feature_name'],
+                    index = self.data_dict['node_name']
+                )
+            
+            self.edge_curvature = EdgeCurvature(self.network.G, feature_df)
+            
+            if self.edge_curvature is not None:
+                curvatures = self.edge_curvature.calculate_edge_curvature(method=method)
+                stats = self.edge_curvature.get_curvature_statistics()
 
-            logger.info('Curvature Calculation complete')
-            for curvature_type, stat_dict in stats.items():
-                print(f"{curvature_type}: {stat_dict['count']} edges, "
-                  f"mean={stat_dict['mean']:.4f}, "
-                  f"positive={stat_dict['positive_edges']}, "
-                  f"negative={stat_dict['negative_edges']}")
+                logger.info('Curvature Calculation complete')
+                for curvature_type, stat_dict in stats.items():
+                    print(f"{curvature_type}: {stat_dict['count']} edges, "
+                    f"mean={stat_dict['mean']:.4f}, "
+                    f"positive={stat_dict['positive_edges']}, "
+                    f"negative={stat_dict['negative_edges']}")
+            
+            return curvatures
         
-        return curvatures
+        except Exception as e:
+            logger.error(f'Error in calculating edge curvatures: {e}')
     
     def integrate_features(self, normalize = True):
         """
@@ -104,18 +123,21 @@ class CurvaturePipeline:
         Parameters:
         normalize: bool, whether to normalize curvature features
         """
+        try:
+            logger.info("Integrating curvature features with existing features...")
+            
+            if self.edge_curvature is None:
+                raise ValueError("Must calculate curvatures first using calculate_curvatures()")
+            
+            integrator = CurvatureFeatureIntegrator(self.edge_curvature, self.data_dict)
+            integrator.analyze_curvature_distribution()
+            self.enhanced_data_dict = integrator.create_enhanced_features(normalize=normalize)
+            
+            print("Feature integration completed!")
+            return self.enhanced_data_dict
         
-        logger.info("Integrating curvature features with existing features...")
-        
-        if self.edge_curvature is None:
-            raise ValueError("Must calculate curvatures first using calculate_curvatures()")
-        
-        integrator = CurvatureFeatureIntegrator(self.edge_curvature, self.data_dict)
-        integrator.analyze_curvature_distribution()
-        self.enhanced_data_dict = integrator.create_enhanced_features(normalize=normalize)
-        
-        print("Feature integration completed!")
-        return self.enhanced_data_dict
+        except Exception as e:
+            logger.error(f'Error occurred during integration of edge curvature into feautures: {e}')
     
     def save_enhanced_dataset(self, output_file: str):
         """
@@ -171,32 +193,36 @@ class CurvaturePipeline:
         Returns:
         dict: Enhanced data dictionary with curvature features
         """
-        
-        logger.info("=== Starting Complete Curvature Integration Pipeline ===")
-        
-        self.load_data()
-        
-        self.build_network()
-        
-        self.calculate_curvatures(method = method)
-        
-        self.integrate_features(normalize=normalize)
-        
-        os.makedirs(output_dir, exist_ok=True)
-        
-        dataset_name = os.path.basename(self.dataset_file).replace('.pkl', '_enhanced.pkl')
-        enhanced_dataset_path = os.path.join(output_dir, dataset_name)
-        self.save_enhanced_dataset(enhanced_dataset_path)
-        
-        self.save_network(output_dir)
-        
-        logger.info("=== Pipeline Completed Successfully ===")
-        logger.info(f"Original features: {self.data_dict['feature'].shape}")
-        logger.info(f"Enhanced features: {self.enhanced_data_dict['feature'].shape}")
-        logger.info(f"Outputs saved in: {output_dir}")
-        
-        return self.enhanced_data_dict
-    
+        try:
+            logger.info("=== Starting Complete Curvature Integration Pipeline ===")
+            
+            self.load_data()
+            
+            self.build_network()
+            
+            self.calculate_curvatures(method = method)
+            
+            self.integrate_features(normalize=normalize)
+            
+            os.makedirs(output_dir, exist_ok=True)
+            
+            dataset_name = os.path.basename(self.dataset_file).replace('.pkl', '_enhanced.pkl')
+            enhanced_dataset_path = os.path.join(output_dir, dataset_name)
+            self.save_enhanced_dataset(enhanced_dataset_path)
+            
+            self.save_network(output_dir)
+            
+            logger.info("=== Pipeline Completed Successfully ===")
+            logger.info(f"Original features: {self.data_dict['feature'].shape}")
+            logger.info(f"Enhanced features: {self.enhanced_data_dict['feature'].shape}")
+            logger.info(f"Outputs saved in: {output_dir}")
+            
+            return self.enhanced_data_dict
+
+        except Exception as e:
+            logger.error(f'Error occurred while processing the dataset: {e}')
+            exit(1)
+            
 def main():
     """
     Example usage of the complete pipeline

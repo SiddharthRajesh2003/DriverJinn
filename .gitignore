@@ -1,3 +1,6 @@
 graph_builder/__pycache__
 logs/
 utils/__pycache__
+gnn.tar.gz
+output.tar.gz
+curvature_output/
