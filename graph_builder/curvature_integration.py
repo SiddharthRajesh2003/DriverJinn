@@ -264,7 +264,7 @@ class CurvatureFeatureIntegrator:
         
         edge_data_dict = {
             'edge_features': torch.tensor(edge_features, dtype=torch.float32),
-            'edge_feature_name': edge_feature_names,
+            'edge_feature_names': edge_feature_names,
             'edge_index': self.edge_index,
             'edge_ollivier_curvature': torch.tensor(ollivier_curvatures, dtype=torch.float32),
             'edge_forman_curvature': torch.tensor(forman_curvatures, dtype=torch.float32)
