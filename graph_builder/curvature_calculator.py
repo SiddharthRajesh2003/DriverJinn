@@ -1,11 +1,3 @@
-import multiprocessing
-import sys
-
-if sys.platform.startswith('win'):
-    multiprocessing.set_start_method('spawn', force=True)
-
-# Then your regular imports...
-
 from GraphRicciCurvature.OllivierRicci import OllivierRicci
 from GraphRicciCurvature.FormanRicci import FormanRicci
 import networkx as nx
