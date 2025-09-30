@@ -154,9 +154,15 @@ class CurvaturePipeline:
             integrator = CurvatureFeatureIntegrator(self.edge_curvature, self.data_dict)
             integrator.analyze_curvature_distribution()
             self.enhanced_data_dict = integrator.create_enhanced_features(normalize=normalize)
+            self.curvature_dict = integrator.create_edge_features_dict()
+            
+            self.enhanced_data_dict['ollivier_curvature'] = self.curvature_dict['edge_ollivier_curvature']
+            self.enhanced_data_dict['forman_curvature'] = self.curvature_dict['edge_forman_curvature']
+            self.enhanced_data_dict['edge_features'] = self.curvature_dict['edge_features']
+            self.enhanced_data_dict['edge_feature_names'] = self.curvature_dict['edge_feature_names']
             
             print("Feature integration completed!")
-            return self.enhanced_data_dict
+            return self.enhanced_data_dict, self.curvature_dict
         
         except Exception as e:
             logger.error(f'Error occurred during integration of edge curvature into feautures: {e}')

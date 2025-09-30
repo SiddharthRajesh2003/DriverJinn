@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.functional as F
+import torch.nn.functional as F
 from torch_geometric.nn.conv import MessagePassing
 from torch_geometric.utils import add_self_loops, degree
 import numpy as np
@@ -45,5 +45,48 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
         self.use_attention = use_attention
         self.dropout = dropout
         
+        # Transformation Weights
         self.lin = nn.Linear(self.in_channels, self.out_channels)
         
+        if use_attention:
+            self.att_src = nn.Linear(out_channels, 1)
+            self.att_dst = nn.Linear(out_channels, 1)
+            self.att_weight = nn.Parameter(torch.Tensor(1, out_channels))
+            nn.init.xavier_uniform_(self.att_weight)
+        
+        self.reset_parameters()
+    
+    def reset_parameters(self):
+        self.lin.reset_parameters()
+        if self.use_attention:
+            self.att_src.reset_parameters()
+            self.att_dst.reset_parameters()
+    
+    
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_curvature: torch.Tensor,
+        edge_attr: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
+        """
+        Forward pass with curvature-constrained message passing
+        
+        Args:
+            x: Node features [num_nodes, in_channels]
+            edge_index: Graph connectivity [2, num_edges]
+            edge_curvature: Curvature values for each edge [num_edges]
+            edge_attr: Optional edge attributes [num_edges, edge_dim]
+        
+        Returns:
+            Updated node features [num_nodes, out_channels]
+        """
+        
+        # Transform node features
+        x = self.lin(x)
+        x = F.dropout(x, p=self.dropout, training=self.training)
+        
+        filtered_edge_index, filtered_edge_attr = self.filter_edges_by_curvature(
+            edge_index, edge_curvature, edge_attr
+        )

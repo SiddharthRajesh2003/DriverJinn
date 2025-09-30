@@ -223,10 +223,15 @@ class CurvatureFeatureIntegrator:
     def create_edge_features_dict(self):
         """
         Create edge features dictionary for edge-level predictions
+        Now also stores individual curvature tensors
         """
         
         num_edges = self.edge_index.shape[1]
         edge_features_list = []
+        
+        # Initialize arrays for individual curvature values
+        ollivier_curvatures = np.zeros(num_edges)
+        forman_curvatures = np.zeros(num_edges)
         
         for i in range(num_edges):
             src_idx = self.edge_index[0, i].item()
@@ -234,6 +239,10 @@ class CurvatureFeatureIntegrator:
             
             ollivier_curv = self.get_edge_curvature('OllivierRicci', src_idx, dst_idx)
             forman_curv = self.get_edge_curvature('FormanRicci', src_idx, dst_idx)
+            
+            # Store individual curvature values
+            ollivier_curvatures[i] = ollivier_curv
+            forman_curvatures[i] = forman_curv
             
             src_features = self.features[src_idx].numpy()
             dst_features = self.features[dst_idx].numpy()
@@ -244,7 +253,7 @@ class CurvatureFeatureIntegrator:
             
             edge_features_list.append(edge_feature_vector)
         
-        edge_featues = np.array(edge_features_list)
+        edge_features = np.array(edge_features_list)
         
         edge_feature_names = (
             [f'src_{name}' for name in self.feature_names] +
@@ -254,10 +263,17 @@ class CurvatureFeatureIntegrator:
         )
         
         edge_data_dict = {
-            'edge_features': torch.tensor(edge_featues, dtype = torch.float32),
+            'edge_features': torch.tensor(edge_features, dtype=torch.float32),
             'edge_feature_name': edge_feature_names,
-            'edge_index': self.edge_index
+            'edge_index': self.edge_index,
+            'edge_ollivier_curvature': torch.tensor(ollivier_curvatures, dtype=torch.float32),
+            'edge_forman_curvature': torch.tensor(forman_curvatures, dtype=torch.float32)
         }
+        
+        logger.info(f"Created edge features dict with curvature tensors")
+        logger.info(f"  Edge features shape: {edge_data_dict['edge_features'].shape}")
+        logger.info(f"  Ollivier curvature shape: {edge_data_dict['edge_ollivier_curvature'].shape}")
+        logger.info(f"  Forman curvature shape: {edge_data_dict['edge_forman_curvature'].shape}")
         
         return edge_data_dict
     
