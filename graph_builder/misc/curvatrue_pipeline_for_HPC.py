@@ -163,6 +163,7 @@ class CurvaturePipeline:
             
             print("Feature integration completed!")
             return self.enhanced_data_dict
+        
         except Exception as e:
             logger.error(f'Error occurred during integration of edge curvature into feautures: {e}')
     

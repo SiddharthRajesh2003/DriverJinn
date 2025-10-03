@@ -150,11 +150,7 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
     def message(
         self,
         x_j: torch.Tensor,
-        x_i: Optional[torch.Tensor] = None,
-        edge_attr: Optional[torch.Tensor] = None,
-        index: Optional[torch.Tensor] = None,
-        ptr: Optional[torch.Tensor] = None,
-        size_i: Optional[torch.Tensor] = None
+        x_i: Optional[torch.Tensor] = None
     ) -> torch.Tensor:
         """
         Construct messages from neighbors
@@ -193,3 +189,4 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
         alpha = F.softmax(alpha, dim = 0)
         
         return alpha
+

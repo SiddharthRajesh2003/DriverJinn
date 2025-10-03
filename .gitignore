@@ -6,3 +6,5 @@ output.tar.gz
 curvature_output/
 .env
 model/__pycache__
+results/
+model/model_tester.__pycache__
