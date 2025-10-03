@@ -7,4 +7,4 @@ curvature_output/
 .env
 model/__pycache__
 results/
-model/model_tester.__pycache__
+model/model_tester.py
