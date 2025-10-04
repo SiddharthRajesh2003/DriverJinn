@@ -17,6 +17,7 @@ mp.get_context = windows_compatible_get_context
 from graph_builder.build_network import Network
 from graph_builder.curvature_calculator import EdgeCurvature
 from graph_builder.curvature_integration import CurvatureFeatureIntegrator
+from graph_builder.schur_complement import SchurComplementAugmentation
 from utils.logging_manager import get_logger
 
 import pickle
@@ -44,7 +45,7 @@ class CurvaturePipeline:
         self.network = None
         self.edge_curvature = None
         self.enhanced_data_dict = None
-        
+        self.schur_augmenter = None
     
     def load_data(self):
         """Load data from pickle file"""
@@ -141,8 +142,238 @@ class CurvaturePipeline:
             return self.enhanced_data_dict
         
         except Exception as e:
-            logger.error(f'Error occurred during integration of edge curvature into feautures: {e}')
+            logger.error(f'Error occurred during integration of edge curvature into features: {e}')
+        
+    def initialized_schur_augmentation(self, elimination_ratio: float = 0.2, neighbor_sort_method: str = 'weight',
+                                       elimination_strategy: str = 'priority', random_seed = None):
+        
+        """
+        Initialize Schur complement augmentation
+        
+        Parameters:
+        elimination_ratio: float, ratio of nodes to eliminate (0.1-0.3 recommended)
+        neighbor_sort_method: str, 'weight', 'degree', 'random', 'asc', 'desc'
+        elimination_strategy: str, 'priority', 'random', or 'coarsening'
+        random_seed: int, for reproducibility
+        """
+        logger.info("Initializing Schur complement augmentation...")
+        
+        self.schur_augmenter = SchurComplementAugmentation(
+            elimination_ratio=elimination_ratio,
+            neighbor_sort_method=neighbor_sort_method,
+            random_seed=random_seed,
+            elimination_strategy=elimination_strategy
+        )
+        
+        logger.info(f"Schur augmenter initialized with strategy={elimination_strategy}, "
+                   f"elimination_ratio={elimination_ratio}")
+        
+        return self.schur_augmenter
     
+    def generate_augmented_views(self, num_views: int = 2,  use_curvature_weights: bool = True,
+                                 curvature_type: str = 'both'):
+        """
+        Generate augmented graph views using Schur complement
+        
+        Parameters:
+        num_views: int, number of augmented views to generate
+        use_curvature_weights: bool, whether to use curvature as edge weights
+        curvature_type: str, 'ollivier' or 'forman' or 'both' (average)
+        
+        Returns:
+        list: List of (augmented_graph, augmented_features, metadata) tuples
+        """
+        
+        if self.schur_augmenter is None:
+            logger.info("Schur augmenter not initialized, initializing with defaults...")
+            self.initialized_schur_augmentation()
+        
+        if self.network is None:
+            raise ValueError("Must build network first using build_network()")
+        
+        logger.info(f"Generating {num_views} augmented views...")
+        
+        # Prepare edge weights from your enhanced dataset
+        edge_weights = None
+        if use_curvature_weights and self.enhanced_data_dict is not None:
+            logger.info(f"Using {curvature_type} curvature as edge weights for augmentation")
+            edge_weights = self.extract_weights_from_curvature(curvature_type)
+        
+        node_features = self.enhanced_data_dict['feature'] if self.enhanced_data_dict is not None else None
+        
+        augmented_views = []
+        for i in range(num_views):
+            logger.info(f'Generating view {i+1}/{num_views}')
+            
+            aug_graph, aug_features, metadata = self.schur_augmenter.augment(
+                self.network.G,
+                node_features=node_features,
+                edge_weights=edge_weights
+            )
+            
+            augmented_views.append((aug_graph, aug_features, metadata))
+        
+        logger.info(f"View {i+1}: {metadata['augmented_nodes']} nodes, "
+                       f"{metadata.get('augmented_edges', aug_graph.number_of_edges())} edges")
+        
+        return augmented_views
+    
+    def extract_weights_from_curvature(self, curvature_type: str = 'both'):
+        """
+        Extract edge weights from enhanced dataset based on curvature values
+        
+        Your dataset structure:
+        - edge_index: [2, num_edges] tensor
+        - ollivier_curvature: [num_edges] tensor
+        - forman_curvature: [num_edges] tensor
+        
+        Parameters:
+        curvature_type: str, 'ollivier', 'forman', or 'both' (average)
+        
+        Returns:
+        dict: {(node_i, node_j): weight} dictionary
+        """
+        edge_index = self.enhanced_data_dict['edge_index']
+        edge_weights = {}
+        curvature_type = curvature_type.lower()
+        
+        if curvature_type == 'ollivier':
+            curvatures = self.enhanced_data_dict['ollivier_curvature']
+        elif curvature_type == 'forman':
+            curvatures = self.enhanced_data_dict['forman_curvature']
+        elif curvature_type == 'both':
+            ollivier = self.enhanced_data_dict['ollivier_curvature']
+            forman = self.enhanced_data_dict['forman_curvature']
+            curvatures = (ollivier + forman)/2.0
+        else:
+            raise ValueError(f"Unknown curvature_type: {curvature_type}")
+        
+        # Convert to numpy for easier indexing
+        if isinstance(edge_index, torch.Tensor):
+            edge_index = edge_index.numpy()
+        if isinstance(curvatures, torch.Tensor):
+            curvatures = curvatures.numpy()
+        
+        node_names = self.enhanced_data_dict['node_name']
+        
+        num_edges = edge_index.shape[1]
+        for i in range(num_edges):
+            src_idx = edge_index[0, i]
+            dst_idx = edge_index[1, i]
+            
+            src_name = node_names[src_idx]
+            dst_name = node_names[dst_idx]
+            
+            # Get curvature value and convert to positive weight
+            curv = float(curvatures[i])
+            
+            # Transform curvature to positive weight
+            # Ollivier curvature typically ranges from -1 to 1
+            # We map it to [0.1, 2.0] for edge weights
+            weight = 1.0 + curv # Maps [-1, 1] to [0, 2]
+            weight = max(0.1, min(weight, 2.0)) # Clamp to reasonable range
+            
+            edge_weights[(src_idx, dst_idx)] = weight
+            edge_weights[(dst_idx, src_idx)] = weight
+            
+        logger.info(f"Extracted {len(edge_weights)} edge weights from {curvature_type} curvature")
+        logger.info(f"Weight range: [{min(edge_weights.values()):.4f}, {max(edge_weights.values()):.4f}]")
+        
+        return edge_weights
+    
+    def save_augmented_views(self, augmented_views, output_dir, prefix = 'augmented'):
+        """
+        Save augmented graph views to files
+        
+        Parameters:
+        augmented_views: list, output from generate_augmented_views()
+        output_dir: str, directory to save outputs
+        prefix: str, prefix for saved files
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        # Extract base name from dataset file for consistent naming
+        if 'GGNet' in self.dataset_file:
+            base_name = 'GGNet'
+        elif 'PathNet' in self.dataset_file:
+            base_name = 'PathNet'
+        elif 'PPNet' in self.dataset_file:
+            base_name = 'PPNet'
+        else:
+            base_name = 'network'
+        
+        for i, (aug_graph, aug_features, metadata) in enumerate(augmented_views):
+            # Create temporary Network object for this augmented graph
+            temp_network = Network.__new__(Network)
+            temp_network.G = aug_graph
+            temp_network.node_names = list(aug_graph.nodes())
+            temp_network.num_nodes = aug_graph.number_of_nodes()
+            
+            # Save graph using Network.save_graph method
+            graph_name = f'{base_name}_{prefix}_view_{i+1}'
+            temp_network.save_graph(graph_name, output_dir)
+            
+            # Save features if available
+            if aug_features is not None:
+                features_path = os.path.join(output_dir, f'{prefix}_features_{i+1}.pt')
+                torch.save(aug_features, features_path)
+            
+            # Save metadata
+            metadata_path = os.path.join(output_dir, f'{prefix}_metadata_{i+1}.pkl')
+            with open(metadata_path, 'wb') as f:
+                pickle.dump(metadata, f)
+            
+            logger.info(f"View {i+1} saved: {graph_name} in {output_dir}")
+    
+    def create_contrastive_network(self, num_views = 2, use_curvature_weights = True):
+        """
+        Create a complete contrastive learning dataset with augmented views
+        
+        Parameters:
+        num_views: int, number of augmented views
+        use_curvature_weights: bool, use curvature as edge weights
+        
+        Returns:
+        dict: Dictionary containing original and augmented data for contrastive learning
+        """
+        
+        if self.enhanced_data_dict is None:
+            raise ValueError("Must integrate features first using integrate_features()")
+        
+        logger.info("Creating contrastive learning dataset...")
+        
+        augmented_views = self.generate_augmented_views(
+            num_views=num_views,
+            use_curvature_weights=use_curvature_weights
+        )
+        
+        pyg_views = []
+        for aug_graph, aug_features, metadata in augmented_views:
+            edge_index, edge_weight, x = self.schur_augmenter.to_pytorch_geometric(
+                aug_graph,
+                aug_features.numpy() if aug_features is not None else None
+            )
+            
+            pyg_views.append({
+                'edge_index': edge_index,
+                'edge_weight': edge_weight,
+                'x': x,
+                'metadata': metadata
+            })
+            
+            contrastive_dataset = {
+            'original': self.enhanced_data_dict,
+            'augmented_views': pyg_views,
+            'num_views': num_views,
+            'augmentation_config': {
+                'elimination_ratio': self.schur_augmenter.elimination_ratio,
+                'strategy': self.schur_augmenter.elimination_strategy,
+                'use_curvature_weights': use_curvature_weights
+            }
+        }
+            
+        logger.info(f"Contrastive dataset created with {num_views} augmented views")
+        return contrastive_dataset
+
     def save_enhanced_dataset(self, output_file: str):
         """
         Save enhanced dataset with curvature features
@@ -185,78 +416,134 @@ class CurvaturePipeline:
         self.network.save_graph(graph_name, output_path)
         logger.info(f"Network saved as {graph_name} in {output_path}")
         
-    def run_pipeline(self, output_dir = './output', method = 'both', normalize = True):
+    def run_pipeline(self, 
+                    output_dir='./output', 
+                    method='both', 
+                    normalize=True,
+                    use_augmentation=False,
+                    num_augmented_views=2,
+                    elimination_ratio=0.2,
+                    elimination_strategy='priority'):
         """
-        Run the complete curvature integration pipeline
+        Run the complete curvature integration pipeline with optional augmentation
         
         Parameters:
         output_dir: str, directory to save outputs
         method: str, curvature calculation method
         normalize: bool, whether to normalize features
+        use_augmentation: bool, whether to generate augmented views
+        num_augmented_views: int, number of augmented views to generate
+        elimination_ratio: float, ratio of nodes to eliminate in augmentation
+        elimination_strategy: str, 'priority', 'random', or 'coarsening'
         
         Returns:
-        dict: Enhanced data dictionary with curvature features
+        dict: Enhanced data dictionary with curvature features (and augmentations if requested)
         """
         try:
             logger.info("=== Starting Complete Curvature Integration Pipeline ===")
             
+            # Standard pipeline steps
             self.load_data()
-            
             self.build_network()
-            
-            self.calculate_curvatures(method = method)
-            
+            self.calculate_curvatures(method=method)
             self.integrate_features(normalize=normalize)
             
             os.makedirs(output_dir, exist_ok=True)
             
+            # Save enhanced dataset
             dataset_name = os.path.basename(self.dataset_file).replace('.pkl', '_enhanced.pkl')
             enhanced_dataset_path = os.path.join(output_dir, dataset_name)
             self.save_enhanced_dataset(enhanced_dataset_path)
             
+            # Save network
             self.save_network(output_dir)
             
-            logger.info("=== Pipeline Completed Successfully ===")
+            result = self.enhanced_data_dict
+            
+            # Optional: Generate augmented views
+            if use_augmentation:
+                logger.info("\n=== Generating Schur Complement Augmentations ===")
+                
+                self.initialize_schur_augmentation(
+                    elimination_ratio=elimination_ratio,
+                    elimination_strategy=elimination_strategy,
+                    neighbor_sort_method='weight'
+                )
+                
+                # Create contrastive dataset
+                contrastive_data = self.create_contrastive_dataset(
+                    num_views=num_augmented_views,
+                    use_curvature_weights=True
+                )
+                
+                # Save contrastive dataset
+                contrastive_path = os.path.join(output_dir, 'contrastive_dataset.pkl')
+                with open(contrastive_path, 'wb') as f:
+                    pickle.dump(contrastive_data, f)
+                
+                logger.info(f"Contrastive dataset saved to {contrastive_path}")
+                result = contrastive_data
+            
+            logger.info("\n=== Pipeline Completed Successfully ===")
             logger.info(f"Original features: {self.data_dict['feature'].shape}")
             logger.info(f"Enhanced features: {self.enhanced_data_dict['feature'].shape}")
             logger.info(f"Outputs saved in: {output_dir}")
             
-            return self.enhanced_data_dict
+            return result
 
         except Exception as e:
             logger.error(f'Error occurred while processing the dataset: {e}')
-            exit(1)
+            raise
             
 def main():
     """
     Example usage of the complete pipeline
     """
-    parser = argparse.ArgumentParser(description = 'Integrate curvature features with gene network data')
+    parser = argparse.ArgumentParser(description='Integrate curvature features with gene network data')
     
-    parser.add_argument('dataset_file', type=str, help='Input dataset pickle file')
+    parser.add_argument('--dataset_file', type=str, help='Input dataset pickle file')
     parser.add_argument('--output_dir', type=str, default='./curvature_output', 
                        help='Output directory for enhanced dataset and graph')
     parser.add_argument('--method', type=str, choices=['ollivier', 'forman', 'both'], 
                        default='both', help='Curvature calculation method')
     parser.add_argument('--no_normalize', action='store_true', 
                        help='Skip normalization of curvature features')
+    parser.add_argument('--augment', action='store_true',
+                       help='Generate augmented views using Schur complement')
+    parser.add_argument('--num_views', type=int, default=2,
+                       help='Number of augmented views to generate')
+    parser.add_argument('--elimination_ratio', type=float, default=0.2,
+                       help='Ratio of nodes to eliminate in augmentation (0.1-0.3 recommended)')
+    parser.add_argument('--strategy', type=str, choices=['priority', 'random', 'coarsening'],
+                       default='priority', help='Elimination strategy for augmentation')
     
     args = parser.parse_args()
     
     try:
         pipeline = CurvaturePipeline(args.dataset_file)
         
-        enhanced_data_dict = pipeline.run_pipeline(
-            output_dir = args.output_dir,
-            method = args.method,
-            normalize = not args.no_normalize
+        result = pipeline.run_pipeline(
+            output_dir=args.output_dir,
+            method=args.method,
+            normalize=not args.no_normalize,
+            use_augmentation=args.augment,
+            num_augmented_views=args.num_views,
+            elimination_ratio=args.elimination_ratio,
+            elimination_strategy=args.strategy
         )
+        
         print("\n=== Final Statistics ===")
-        print(f"Enhanced feature names: {len(enhanced_data_dict['feature_name'])}")
-        print("New curvature features added:")
-        original_features = len(pipeline.data_dict['feature_name'])
-        for i, name in enumerate(enhanced_data_dict['feature_name'][original_features:], 1):
-            print(f"  {i}. {name}")
+        if args.augment:
+            print(f"Generated {args.num_views} augmented views")
+            print(f"Augmentation strategy: {args.strategy}")
+            print(f"Elimination ratio: {args.elimination_ratio}")
+        else:
+            enhanced_data_dict = result
+            print(f"Enhanced feature names: {len(enhanced_data_dict['feature_name'])}")
+            print("New curvature features added:")
+            original_features = len(pipeline.data_dict['feature_name'])
+            for i, name in enumerate(enhanced_data_dict['feature_name'][original_features:], 1):
+                print(f"  {i}. {name}")
         
     except Exception as e:
         logger.info(f"Error in pipeline: {e}")

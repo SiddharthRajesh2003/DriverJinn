@@ -74,7 +74,7 @@ class SchurComplementAugmentation:
             return self.augment_random(G, node_features, edge_weights)
         
         elif self.elimination_strategy == 'coarsening':
-            return self.augment_coarsening(G< node_features, edge_weights)
+            return self.augment_coarsening(G, node_features, edge_weights)
         else:
             raise ValueError(f'Unknown elimination strategy: {self.elimination_strategy}')
         
@@ -97,7 +97,7 @@ class SchurComplementAugmentation:
         logger.info(f"Priority augmentation: {num_nodes} nodes, eliminating {elimination_count} nodes")
         
         if edge_weights is None:
-            edge_weights = {(u, v): G_aug[u][v].get('weight', '1.0') for u, v in G_aug.edges()}
+            edge_weights = {(u, v): G_aug[u][v].get('weight', 1.0) for u, v in G_aug.edges()}
             
         degree_pq = self.create_degree_priority_queue(G_aug)
         
@@ -156,7 +156,7 @@ class SchurComplementAugmentation:
             augmented_features = torch.from_numpy(augmented_features)
             
         metadata = {
-            'original_features': num_nodes,
+            'original_nodes': num_nodes,
             'augmented_nodes': G_aug.number_of_nodes(),
             'eliminated_nodes': len(eliminated_nodes),
             'original_edges': G_aug.number_of_edges(),
@@ -190,7 +190,7 @@ class SchurComplementAugmentation:
         logger.info(f"Random augmentation: {num_nodes} nodes, eliminating {elimination_count} nodes")
         
         if edge_weights is None:
-            edge_weights = {(u, v): G_aug[u][v].get('weight', '1.0') for u, v in G_aug.edges()}
+            edge_weights = {(u, v): G_aug[u][v].get('weight', 1.0) for u, v in G_aug.edges()}
         
         nodes = list(G_aug.nodes())
         np.random.shuffle(nodes)
@@ -237,7 +237,7 @@ class SchurComplementAugmentation:
             augmented_features = torch.from_numpy(augmented_features)
         
         metadata = {
-            'original_features': num_nodes,
+            'original_nodes': num_nodes,
             'augmented_nodes': G_aug.number_of_nodes(),
             'eliminated_nodes': len(eliminated_nodes),
             'original_edges': G_aug.number_of_edges(),
@@ -268,7 +268,7 @@ class SchurComplementAugmentation:
         
         logger.info(f"Coarsening augmentation: {num_nodes} nodes, eliminating {elimination_count} nodes")
         if edge_weights is None:
-            edge_weights = {(u, v): G_aug[u][v].get('weight', '1.0') for u, v in G_aug.edges()}
+            edge_weights = {(u, v): G_aug[u][v].get('weight', 1.0) for u, v in G_aug.edges()}
             
         degree_pq = self.create_degree_priority_queue(G_aug)
         eliminated_nodes = []
@@ -686,7 +686,7 @@ class SchurComplementAugmentation:
             # Aggregate eliminated features into remaining neighbors
             # This preserves information from eliminated nodes
             node_to_idx = {node: idx for idx, node in enumerate(original_nodes)}
-            remanining_nodes = [n for n in original_nodes if n not in eliminated_nodes]
+            remaining_nodes = [n for n in original_nodes if n not in eliminated_nodes]
             
             augmented_features = features.copy()
             for v_i in eliminated_nodes:
@@ -698,14 +698,14 @@ class SchurComplementAugmentation:
                 
                 # Find neighbors in augmented graph (nodes in original that remain)
                 # Note: neighbors were connected via clique, so they inherit information
-                neighbours_in_original = [n for n in original_nodes if G_aug.has_node(n) and n in remanining_nodes]
+                neighbours_in_original = [n for n in original_nodes if G_aug.has_node(n) and n in remaining_nodes]
                 
                 if len(neighbours_in_original) > 0:
                     # Distribute features proportionally
                     contribution = feature_i / len(neighbours_in_original)
                     for neighbour in neighbours_in_original:
-                        neigbour_idx = node_to_idx[neighbour]
-                        augmented_features[neigbour_idx] += contribution
+                        neighbour_idx = node_to_idx[neighbour]
+                        augmented_features[neighbour_idx] += contribution
                     
             keep_mask = np.array([n not in eliminated_nodes for n in original_nodes])
             return augmented_features[keep_mask]
