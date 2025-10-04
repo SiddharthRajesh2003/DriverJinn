@@ -52,7 +52,8 @@ class CurvatureConstrainedGNN(nn.Module):
             # Strategy from paper: positive curvature first, then negative
             layer_configs = [
                 {'curvature_type': 'positive', 'hop_type': 'one_hop', 'use_attention': False},
-                {'curvature_type': 'negative', 'hop_type': 'two_hop', 'use_attention': True}
+                {'curvature_type': 'negative', 'hop_type': 'two_hop', 'use_attention': True},
+                {'curvature_type': 'both', 'hop_type': 'two_hop', 'use_attention': True}
             ]
         
         while len(layer_configs) < num_layers:
