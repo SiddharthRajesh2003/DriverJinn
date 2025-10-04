@@ -847,4 +847,3 @@ class ContrastiveSchurAugmentation:
             augmented_views.append((aug_graph,aug_features, metadata))
         
         return augmented_views
-    

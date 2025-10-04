@@ -168,7 +168,7 @@ class CurvaturePipeline:
         except Exception as e:
             logger.error(f'Error occurred during integration of edge curvature into features: {e}')
         
-    def initialized_schur_augmentation(self, elimination_ratio: float = 0.2, neighbor_sort_method: str = 'weight',
+    def initialize_schur_augmentation(self, elimination_ratio: float = 0.2, neighbor_sort_method: str = 'weight',
                                        elimination_strategy: str = 'priority', random_seed = None):
         
         """
@@ -210,7 +210,7 @@ class CurvaturePipeline:
         
         if self.schur_augmenter is None:
             logger.info("Schur augmenter not initialized, initializing with defaults...")
-            self.initialized_schur_augmentation()
+            self.initialize_schur_augmentation()
         
         if self.network is None:
             raise ValueError("Must build network first using build_network()")
@@ -348,7 +348,7 @@ class CurvaturePipeline:
             
             logger.info(f"View {i+1} saved: {graph_name} in {output_dir}")
     
-    def create_contrastive_network(self, num_views = 2, use_curvature_weights = True):
+    def create_contrastive_network(self, num_views=2, use_curvature_weights=True):
         """
         Create a complete contrastive learning dataset with augmented views
         
@@ -359,21 +359,22 @@ class CurvaturePipeline:
         Returns:
         dict: Dictionary containing original and augmented data for contrastive learning
         """
-        
         if self.enhanced_data_dict is None:
             raise ValueError("Must integrate features first using integrate_features()")
         
         logger.info("Creating contrastive learning dataset...")
         
+        # Generate augmented views
         augmented_views = self.generate_augmented_views(
-            num_views=num_views,
+            num_views=num_views, 
             use_curvature_weights=use_curvature_weights
         )
         
+        # Convert to PyTorch Geometric format
         pyg_views = []
         for aug_graph, aug_features, metadata in augmented_views:
             edge_index, edge_weight, x = self.schur_augmenter.to_pytorch_geometric(
-                aug_graph,
+                aug_graph, 
                 aug_features.numpy() if aug_features is not None else None
             )
             
@@ -383,8 +384,8 @@ class CurvaturePipeline:
                 'x': x,
                 'metadata': metadata
             })
-            
-            contrastive_dataset = {
+        
+        contrastive_dataset = {
             'original': self.enhanced_data_dict,
             'augmented_views': pyg_views,
             'num_views': num_views,
@@ -394,7 +395,7 @@ class CurvaturePipeline:
                 'use_curvature_weights': use_curvature_weights
             }
         }
-            
+        
         logger.info(f"Contrastive dataset created with {num_views} augmented views")
         return contrastive_dataset
 
@@ -439,6 +440,44 @@ class CurvaturePipeline:
         
         self.network.save_graph(graph_name, output_path)
         logger.info(f"Network saved as {graph_name} in {output_path}")
+    
+    def save_contrastive_dataset(self, contrastive_dataset, output_dir):
+        """
+        Save contrastive dataset with dataset-specific naming
+        
+        Parameters:
+        contrastive_dataset: dict, output from create_contrastive_network()
+        output_dir: str, directory to save the file
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Extract dataset name from file
+        if 'GGNet' in self.dataset_file:
+            dataset_name = 'GGNet'
+        elif 'PathNet' in self.dataset_file:
+            dataset_name = 'PathNet'
+        elif 'PPNet' in self.dataset_file:
+            dataset_name = 'PPNet'
+        else:
+            dataset_name = 'network'
+        
+        # Create filename with dataset name and augmentation config
+        strategy = contrastive_dataset['augmentation_config']['strategy']
+        num_views = contrastive_dataset['num_views']
+        ratio = contrastive_dataset['augmentation_config']['elimination_ratio']
+        
+        filename = f'{dataset_name}_contrastive_v{num_views}_{strategy}_r{ratio}.pkl'
+        output_path = os.path.join(output_dir, filename)
+        
+        with open(output_path, 'wb') as f:
+            pickle.dump(contrastive_dataset, f)
+        
+        logger.info(f"Contrastive dataset saved to {output_path}")
+        logger.info(f"  - Original nodes: {contrastive_dataset['original']['feature'].shape[0]}")
+        logger.info(f"  - Augmented views: {num_views}")
+        logger.info(f"  - Strategy: {strategy}, Elimination ratio: {ratio}")
+    
+        return output_path
         
     def run_pipeline(self, 
                     output_dir='./output', 
@@ -495,17 +534,14 @@ class CurvaturePipeline:
                 )
                 
                 # Create contrastive dataset
-                contrastive_data = self.create_contrastive_dataset(
+                contrastive_data = self.create_contrastive_network(
                     num_views=num_augmented_views,
                     use_curvature_weights=True
                 )
                 
                 # Save contrastive dataset
-                contrastive_path = os.path.join(output_dir, 'contrastive_dataset.pkl')
-                with open(contrastive_path, 'wb') as f:
-                    pickle.dump(contrastive_data, f)
+                self.save_contrastive_dataset(contrastive_dataset=contrastive_data, output_dir=output_dir)
                 
-                logger.info(f"Contrastive dataset saved to {contrastive_path}")
                 result = contrastive_data
             
             logger.info("\n=== Pipeline Completed Successfully ===")
