@@ -23,7 +23,7 @@ from utils.logging_manager import get_logger
 import pickle
 import torch
 import pandas as pd
-import numpy as np
+import networkx as nx
 import os
 import argparse
 
@@ -171,17 +171,20 @@ class CurvaturePipeline:
         return self.schur_augmenter
     
     def generate_augmented_views(self, num_views: int = 2,  use_curvature_weights: bool = True,
-                                 curvature_type: str = 'both'):
+                                 curvature_type: str = 'both', compute_aug_curvature: bool = True,
+                                 curvature_method: str = 'both'):
         """
-        Generate augmented graph views using Schur complement
+        Generate augmented graph views using Schur complement with curvature calculation
         
         Parameters:
         num_views: int, number of augmented views to generate
         use_curvature_weights: bool, whether to use curvature as edge weights
         curvature_type: str, 'ollivier' or 'forman' or 'both' (average)
+        compute_aug_curvature: bool, whether to compute curvature for augmented graphs
+        curvature_method: str, 'ollivier', 'forman', or 'both' for augmented graphs
         
         Returns:
-        list: List of (augmented_graph, augmented_features, metadata) tuples
+        list: List of (augmented_graph, augmented_features, metadata, aug_curvature_dict) tuples
         """
         
         if self.schur_augmenter is None:
@@ -211,12 +214,100 @@ class CurvaturePipeline:
                 edge_weights=edge_weights
             )
             
-            augmented_views.append((aug_graph, aug_features, metadata))
+            aug_curvature_dict = None
+            if compute_aug_curvature:
+                logger.info(f"Computing curvature for augmented view {i+1}...")
+                aug_curvature_dict = self.compute_augmented_curvature(
+                    aug_graph,
+                    aug_features,
+                    method = curvature_method
+                )
+                
+                if aug_curvature_dict:
+                    metadata['curvature_stats'] = {
+                    curv_type: {
+                        'mean': float(curvatures.mean()),
+                        'std': float(curvatures.std()),
+                        'min': float(curvatures.min()),
+                        'max': float(curvatures.max())
+                    }
+                    for curv_type, curvatures in aug_curvature_dict.items()
+                }
+            
+            augmented_views.append((aug_graph, aug_features, metadata, aug_curvature_dict))
         
         logger.info(f"View {i+1}: {metadata['augmented_nodes']} nodes, "
                        f"{metadata.get('augmented_edges', aug_graph.number_of_edges())} edges")
         
         return augmented_views
+    
+    def compute_augmented_curvature(self, aug_G: nx.Graph, features: torch.Tensor, method = 'both'):
+        """
+        Calculate curvature for an augmented graph
+        
+        Parameters:
+        aug_graph: nx.Graph, augmented graph
+        aug_features: torch.Tensor or None, node features
+        method: str, 'ollivier', 'forman', or 'both'
+        
+        Returns:
+        dict: Dictionary with curvature tensors for each edge
+        """
+        
+        try:
+            if features is not None:
+                if isinstance(features, torch.Tensor):
+                    features_np = features.numpy()
+                else:
+                    features_np = features
+
+                node_names = list(aug_G.nodes())
+                feature_df = pd.DataFrame(
+                    data=features_np,
+                    index=node_names
+                )
+            
+            else:
+                # Use original features if augmented features not available
+                feature_df = pd.DataFrame(
+                    data=self.data_dict['feature'].numpy(),
+                    columns=self.data_dict['feature_name'],
+                    index=self.data_dict['node_name']
+                )
+            
+            edge_curv_calculator = EdgeCurvature(aug_G, feature_df)
+            curvatures = edge_curv_calculator.calculate_edge_curvature(method='both')
+            
+            # Convert to tensors organized by edge
+            edge_list = list(aug_G.edges())
+            num_edges = len(edge_list)
+            
+            curvature_dict = {}    
+            
+            if method in ['ollivier',  'both']:
+                ollivier_curv = torch.zeros(num_edges)
+                ollivier_dict = edge_curv_calculator.edge_curvature.get('OllivierRicci', {})
+                for i, (u, v) in enumerate(edge_list):
+                    curv = ollivier_dict.get((u, v), ollivier_dict.get(u, v), 0.0)
+                    ollivier_curv[i] = curv
+                curvature_dict['ollivier_curvature'] = ollivier_curv
+            
+            if method in ['forman', 'both']:
+                forman_curv = torch.zeros(num_edges)
+                forman_dict = edge_curv_calculator.edge_curvature.get('FormanRicci', {})
+                for i, (u, v) in enumerate(edge_list):
+                    curv = forman_dict.get((u, v), forman_dict.get((u, v), 0.0))
+                    forman_curv[i] = curv
+                curvature_dict['forman_curvature'] = forman_curv
+            
+            logger.info(f"Calculated {method} curvature for {num_edges} edges in augmented graph")
+        
+            return curvature_dict
+            
+            
+        except Exception as e:
+            logger.error(f"Error calculating augmented curvature: {e}")
+            return None
     
     def extract_weights_from_curvature(self, curvature_type: str = 'both'):
         """
@@ -261,8 +352,6 @@ class CurvaturePipeline:
             src_idx = edge_index[0, i]
             dst_idx = edge_index[1, i]
             
-            src_name = node_names[src_idx]
-            dst_name = node_names[dst_idx]
             
             # Get curvature value and convert to positive weight
             curv = float(curvatures[i])
@@ -324,13 +413,16 @@ class CurvaturePipeline:
             
             logger.info(f"View {i+1} saved: {graph_name} in {output_dir}")
     
-    def create_contrastive_network(self, num_views=2, use_curvature_weights=True):
+    def create_contrastive_network(self, num_views=2, use_curvature_weights=True,
+                                   compute_aug_curvature = True, curvature_method = 'both'):
         """
-        Create a complete contrastive learning dataset with augmented views
+        Create a complete contrastive learning dataset with augmented views and curvatures
         
         Parameters:
         num_views: int, number of augmented views
         use_curvature_weights: bool, use curvature as edge weights
+        compute_aug_curvature: bool, compute curvature for augmented graphs
+        curvature_method: str, 'ollivier', 'forman', or 'both' for augmented graphs
         
         Returns:
         dict: Dictionary containing original and augmented data for contrastive learning
@@ -343,23 +435,31 @@ class CurvaturePipeline:
         # Generate augmented views
         augmented_views = self.generate_augmented_views(
             num_views=num_views, 
-            use_curvature_weights=use_curvature_weights
+            use_curvature_weights=use_curvature_weights,
+            compute_aug_curvature=compute_aug_curvature,
+            curvature_method=curvature_method
         )
         
         # Convert to PyTorch Geometric format
         pyg_views = []
-        for aug_graph, aug_features, metadata in augmented_views:
+        for aug_graph, aug_features, metadata, curvature_dict in augmented_views:
             edge_index, edge_weight, x = self.schur_augmenter.to_pytorch_geometric(
                 aug_graph, 
                 aug_features.numpy() if aug_features is not None else None
             )
             
-            pyg_views.append({
-                'edge_index': edge_index,
-                'edge_weight': edge_weight,
-                'x': x,
-                'metadata': metadata
-            })
+            view_dict = {
+            'edge_index': edge_index,
+            'edge_weight': edge_weight,
+            'x': x,
+            'metadata': metadata
+        }
+        
+            # Add curvature data if computed
+            if curvature_dict is not None:
+                view_dict.update(curvature_dict)
+        
+        pyg_views.append(view_dict)
         
         contrastive_dataset = {
             'original': self.enhanced_data_dict,
@@ -368,11 +468,16 @@ class CurvaturePipeline:
             'augmentation_config': {
                 'elimination_ratio': self.schur_augmenter.elimination_ratio,
                 'strategy': self.schur_augmenter.elimination_strategy,
-                'use_curvature_weights': use_curvature_weights
+                'use_curvature_weights': use_curvature_weights,
+                'compute_aug_curvature': compute_aug_curvature,
+                'curvature_method': curvature_method
             }
         }
         
         logger.info(f"Contrastive dataset created with {num_views} augmented views")
+        if compute_aug_curvature:
+            logger.info("Augmented views include pre-computed curvature features")
+        
         return contrastive_dataset
 
     def save_enhanced_dataset(self, output_file: str):
@@ -462,7 +567,8 @@ class CurvaturePipeline:
                     use_augmentation=False,
                     num_augmented_views=2,
                     elimination_ratio=0.2,
-                    elimination_strategy='priority'):
+                    elimination_strategy='priority',
+                    compute_aug_curvature = True):
         """
         Run the complete curvature integration pipeline with optional augmentation
         
@@ -508,7 +614,9 @@ class CurvaturePipeline:
                 # Create contrastive dataset
                 contrastive_data = self.create_contrastive_network(
                     num_views=num_augmented_views,
-                    use_curvature_weights=True
+                    use_curvature_weights=True,
+                    compute_aug_curvature=compute_aug_curvature,
+                    curvature_method=method
                 )
                 
                 # Save contrastive dataset

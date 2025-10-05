@@ -455,14 +455,14 @@ class SchurComplementAugmentation:
         clique_edges = []
         clique_weights = []
         
-        n_neighbours = len(sorted_neighbours)
-        
-        if n_neighbours < 2:
+        n_neighbors = len(sorted_neighbours)
+        if n_neighbors < 2:
             return clique_edges, clique_weights
         
+        # Get weights and compute cumulative sums (csum, cumspace from C++)
         vals = []
-        for neighbour in sorted_neighbours:
-            edge = (v_i, neighbour) if (v_i, neighbour) in edge_weights else (neighbour, v_i)
+        for neighbor in sorted_neighbours:
+            edge = (v_i, neighbor) if (v_i, neighbor) in edge_weights else (neighbor, v_i)
             w = edge_weights.get(edge, 1.0)
             vals.append(w)
         
@@ -471,34 +471,38 @@ class SchurComplementAugmentation:
         wdeg = csum
         colScale = 1.0
         
-        for joffset in range(n_neighbours - 1):
+        # Build clique edges (joffset loop from C++)
+        for joffset in range(n_neighbors - 1):
             v_j = sorted_neighbours[joffset]
             w = vals[joffset] * colScale
             
             if wdeg == 0:
                 break
             
-            f = w/wdeg
+            f = w / wdeg
             
-            r = np.random.uniform(cumspace[joffset] if joffset > 0 else 0)
-            koff = n_neighbours - 1
-            for k_i in range(joffset + 1, n_neighbours):
+            # Sample k with probability proportional to weights (koff selection from C++)
+            r = np.random.uniform(cumspace[joffset] if joffset > 0 else 0, csum)
+            koff = n_neighbors - 1
+            for k_i in range(joffset + 1, n_neighbors):
                 if cumspace[k_i] > r:
                     koff = k_i
                     break
             
-            
             v_k = sorted_neighbours[koff]
             
-            new_edge_val = f * (1-f) * wdeg
+            # Compute new edge weight (from C++)
+            newEdgeVal = f * (1 - f) * wdeg
             
+            # Add edge
             edge_tuple = (v_j, v_k) if v_j < v_k else (v_k, v_j)
             clique_edges.append(edge_tuple)
-            clique_weights.append(new_edge_val)
+            clique_weights.append(newEdgeVal)
             
-            colScale = colScale * (1-f)
-            wdeg = wdeg * (1-f) * (1-f)
-            
+            # Update colScale and wdeg (from C++)
+            colScale = colScale * (1 - f)
+            wdeg = wdeg * (1 - f) * (1 - f)
+        
         return clique_edges, clique_weights
     
     def update_node_features_coarsened(
@@ -605,7 +609,7 @@ class SchurComplementAugmentation:
                 
                 # Compute conditional probability P(v_b | v_a)
                 # Using weight-based probability: higher weights = higher probability
-                conditional_prob = self.compute_conditional_probability(
+                conditional_prob = self.calculate_conditional_probability(
                     G, v_a, v_b, w_ia, w_ib, edge_weights
                 )
                 
