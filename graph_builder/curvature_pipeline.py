@@ -324,7 +324,7 @@ class CurvaturePipeline:
             
             logger.info(f"View {i+1} saved: {graph_name} in {output_dir}")
     
-    def create_contrastive_dataset(self, num_views=2, use_curvature_weights=True):
+    def create_contrastive_network(self, num_views=2, use_curvature_weights=True):
         """
         Create a complete contrastive learning dataset with augmented views
         
@@ -489,10 +489,6 @@ class CurvaturePipeline:
             
             os.makedirs(output_dir, exist_ok=True)
             
-            # Save enhanced dataset
-            dataset_name = os.path.basename(self.dataset_file).replace('.pkl', '_enhanced.pkl')
-            enhanced_dataset_path = os.path.join(output_dir, dataset_name)
-            self.save_enhanced_dataset(enhanced_dataset_path)
             
             # Save network
             self.save_network(output_dir)

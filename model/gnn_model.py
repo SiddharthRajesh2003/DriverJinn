@@ -134,14 +134,13 @@ class AdaptiveCurvatureGNN(nn.Module):
         out_channels: int,
         num_layers: int = 2,
         dropout: float = 0.5,
-        use_batch_norm: bool = True,
-        device: str = 'cpu'
+        use_batch_norm: bool = True
     ):
         super().__init__()
         
         self.dropout = dropout
         self.num_layers = num_layers
-        self.device = device
+
         
         self.pos_convs = nn.ModuleList()
         self.neg_convs = nn.ModuleList()
@@ -193,45 +192,3 @@ class AdaptiveCurvatureGNN(nn.Module):
                 x = F.dropout(x, p = self.dropout, training = self.training)
                 
         return x
-
-def main():
-    import argparse
-    import pickle
-    
-    parser = argparse.ArgumentParser(description='Run the curvature constrained GNN model')
-    parser.add_argument('--dataset_file', default=None)
-    parser.add_argument('--outdir', default=None)
-    
-    args = parser.parse_args()
-    
-    dataset_file = args.dataset_file
-    
-    with open(dataset_file, 'rb') as f:
-        data_dict = pickle.load(f)
-        f.close()
-    
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-    node_names = data_dict['node_name']
-    edge_index = data_dict['edge_index'].to(device)
-    features = data_dict['feature'].to(device)
-    curvature = data_dict['ollivier_curvature'].to(device) 
-    
-    
-    
-    configs = [
-        {'curvature_type': 'positive', 'hop_type': 'one_hop', 'use_attention': False},
-        {'curvature_type': 'negative', 'hop_type': 'two_hop', 'use_attention': True}
-    ]
-    
-    model = AdaptiveCurvatureGNN(
-        in_channels=73,
-        hidden_channels = 128,
-        out_channels=2,
-        num_layers = 3,
-        dropout=0.5
-    ).to(device)
-    
-    out = model(features, edge_index, curvature, edge_attr = data_dict['edge_features'].to(device))
-    print(f'Output Head: {out.cpu().detach().numpy()[:, :5]}')
-    
