@@ -265,7 +265,7 @@ class CurvaturePipeline:
         
         return augmented_views
     
-    def compute_augmented_curvature(self, aug_G: nx.Graph, features: torch.Tensor, method = 'both'):
+    def compute_augmented_curvature(self, aug_G: nx.Graph, features: torch.Tensor, method='both'):
         """
         Calculate curvature for an augmented graph
         
@@ -286,6 +286,21 @@ class CurvaturePipeline:
                     features_np = features
 
                 node_names = list(aug_G.nodes())
+                
+                # CRITICAL FIX: Verify shapes match before creating DataFrame
+                if len(node_names) != features_np.shape[0]:
+                    logger.warning(f"Shape mismatch: {len(node_names)} nodes but {features_np.shape[0]} feature rows")
+                    
+                    # Check if we have more nodes than features or vice versa
+                    if len(node_names) > features_np.shape[0]:
+                        logger.warning(f"Trimming {len(node_names) - features_np.shape[0]} nodes without features")
+                        # Keep only nodes that have features
+                        node_names = node_names[:features_np.shape[0]]
+                    else:
+                        logger.warning(f"Trimming {features_np.shape[0] - len(node_names)} extra features")
+                        # Keep only features for existing nodes
+                        features_np = features_np[:len(node_names)]
+                
                 feature_df = pd.DataFrame(
                     data=features_np,
                     index=node_names
@@ -308,11 +323,11 @@ class CurvaturePipeline:
             
             curvature_dict = {}    
             
-            if method in ['ollivier',  'both']:
+            if method in ['ollivier', 'both']:
                 ollivier_curv = torch.zeros(num_edges)
                 ollivier_dict = edge_curv_calculator.edge_curvature.get('OllivierRicci', {})
                 for i, (u, v) in enumerate(edge_list):
-                    curv = ollivier_dict.get((u, v), ollivier_dict.get(u, v), 0.0)
+                    curv = ollivier_dict.get((u, v), ollivier_dict.get((v, u), 0.0))
                     ollivier_curv[i] = curv
                 curvature_dict['ollivier_curvature'] = ollivier_curv
             
@@ -320,7 +335,7 @@ class CurvaturePipeline:
                 forman_curv = torch.zeros(num_edges)
                 forman_dict = edge_curv_calculator.edge_curvature.get('FormanRicci', {})
                 for i, (u, v) in enumerate(edge_list):
-                    curv = forman_dict.get((u, v), forman_dict.get((u, v), 0.0))
+                    curv = forman_dict.get((u, v), forman_dict.get((v, u), 0.0))
                     forman_curv[i] = curv
                 curvature_dict['forman_curvature'] = forman_curv
             
@@ -328,9 +343,10 @@ class CurvaturePipeline:
         
             return curvature_dict
             
-            
         except Exception as e:
             logger.error(f"Error calculating augmented curvature: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
     
     def extract_weights_from_curvature(self, curvature_type: str = 'both'):
