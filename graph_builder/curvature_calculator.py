@@ -26,7 +26,7 @@ class EdgeCurvature:
             self.edge_curvature = {}
         
         if method =='Ollivier' or method == 'ollivier' or method =='both':
-            orc = OllivierRicci(self.G, alpha = 0.5, verbose = 'TRACE', proc = 1)
+            orc = OllivierRicci(self.G, alpha = 0.5, verbose = 'TRACE', proc = 4, weight='weight')
             orc.compute_ricci_curvature()
             edge_curvature = {}
             for edge in self.G.edges():

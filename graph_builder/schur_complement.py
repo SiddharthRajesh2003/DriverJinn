@@ -136,7 +136,7 @@ class SchurComplementAugmentation:
             
             for (u, v), weight in zip(clique_edges, clique_weights):
                 if G_aug.has_edge(u, v):
-                    G_aug[u][v]['weight'] = G_aug[u][v].get('weight', 0)
+                    G_aug[u][v]['weight'] = G_aug[u][v].get('weight', 0) + weight
                     
                 else:
                     G_aug.add_edge(u, v, weight = weight)
@@ -147,6 +147,10 @@ class SchurComplementAugmentation:
                     if v in degree_pq:
                         self.increment_degree(degree_pq, v)
                         
+        for u, v in G_aug.edges():
+            if 'weight' not in G_aug[u][v]:
+                G_aug[u][v]['weight'] = 1.0
+        
         augmented_features = None
         if node_features is not None:
             nodes = list(G.nodes())
@@ -234,11 +238,15 @@ class SchurComplementAugmentation:
             
             for (u, v), weight in zip(clique_edges, clique_weights):
                 if G_aug.has_edge(u, v):
-                    G_aug[u][v]['weight'] = G_aug[u][v].get('weight', 0)
+                    G_aug[u][v]['weight'] = G_aug[u][v].get('weight', 0) + weight
                 else:
                     G_aug.add_edge(u, v, weight = weight)
                     added_edges.append((u, v))
                     
+        for u, v in G_aug.edges():
+            if 'weight' not in G_aug[u][v]:
+                G_aug[u][v]['weight'] = 1.0
+        
         augmented_features = None
         if node_features is not None:
             nodes = list(G.nodes())
@@ -347,6 +355,10 @@ class SchurComplementAugmentation:
                     self.decrement_degree(degree_pq, j)
                     
             G_aug.remove_node(v_i)
+        
+        for u, v in G_aug.edges():
+            if 'weight' not in G_aug[u][v]:
+                G_aug[u][v]['weight'] = 1.0
         
         augmented_features = None
         if node_features is not None:

@@ -430,7 +430,7 @@ class CurvaturePipeline:
         else:
             base_name = 'network'
         
-        for i, (aug_graph, aug_features, metadata) in enumerate(augmented_views):
+        for i, (aug_graph, aug_features, metadata, aug_curvature_dict) in enumerate(augmented_views):
             # Create temporary Network object for this augmented graph
             temp_network = Network.__new__(Network)
             temp_network.G = aug_graph
@@ -443,7 +443,7 @@ class CurvaturePipeline:
             
             # Save features if available
             if aug_features is not None:
-                features_path = os.path.join(output_dir, f'{prefix}_features_{i+1}.pt')
+                features_path = os.path.join(output_dir, f'{graph_name}_features.pt')
                 torch.save(aug_features, features_path)
             
             # Save metadata
@@ -499,7 +499,7 @@ class CurvaturePipeline:
             if curvature_dict is not None:
                 view_dict.update(curvature_dict)
         
-        pyg_views.append(view_dict)
+            pyg_views.append(view_dict)
         
         contrastive_dataset = {
             'original': self.enhanced_data_dict,
