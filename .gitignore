@@ -8,3 +8,4 @@ curvature_output/
 model/__pycache__
 results/
 model/model_tester.py
+model/gnn_model.py

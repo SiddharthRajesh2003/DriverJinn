@@ -18,10 +18,6 @@ except ImportError:
     EDGE_CURVATURE_AVAILABLE = False
     logger.warning("EdgeCurvature not available, using approximation methods only")
 
-
-
-
-
 class ContrastiveDriverGenePredictor(nn.Module):
     """
     Model for cancer driver prediction with potential driver identification:
