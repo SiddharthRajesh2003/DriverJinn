@@ -16,7 +16,7 @@ import argparse
 from pathlib import Path
 import json
 
-from model.gnn_model import CurvatureConstrainedGNN, AdaptiveCurvatureGNN
+
 from utils.logging_manager import get_logger
 
 logger = get_logger(__name__)
