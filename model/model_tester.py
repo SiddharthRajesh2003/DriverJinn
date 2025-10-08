@@ -597,27 +597,14 @@ def main():
     out_channels = 2  # Binary classification
     
     if args.model_type == 'adaptive':
-        model = AdaptiveCurvatureGNN(
-            in_channels=in_channels,
-            hidden_channels=args.hidden_channels,
-            out_channels=out_channels,
-            num_layers=args.num_layers,
-            dropout=args.dropout,
-            device=device
-        )
+        print("hi")
+        model= None
     else:
         configs = [
             {'curvature_type': 'positive', 'hop_type': 'one_hop', 'use_attention': False},
             {'curvature_type': 'negative', 'hop_type': 'two_hop', 'use_attention': True}
         ]
-        model = CurvatureConstrainedGNN(
-            in_channels=in_channels,
-            hidden_channels=args.hidden_channels,
-            out_channels=out_channels,
-            num_layers=args.num_layers,
-            layer_configs=configs,
-            dropout=args.dropout
-        )
+        
     
     logger.info(f"Created {args.model_type} model with {args.num_layers} layers")
     

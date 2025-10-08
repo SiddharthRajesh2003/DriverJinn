@@ -36,8 +36,8 @@ class CurvatureAwareGNN(nn.Module):
             for i in range(num_layers):
                 layers.append(
                     CurvatureConstrainedMessagePassing(
-                        in_channels=in_channels,
-                        hidden_channels=hidden_channels,
+                        in_channels=hidden_channels,
+                        out_channels=hidden_channels,
                         curvature_type=curv_type,
                         hop_type=hop_type,
                         aggregation='add',

@@ -1,3 +1,3 @@
-# GNNDriver
+# DriverJinn
 
 This repository contains 
