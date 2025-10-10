@@ -6,11 +6,20 @@ import numpy as np
 import networkx as nx
 import pandas as pd
 import time
+import gc
 
 # Assuming these are available from your codebase
 from utils.logging_manager import get_logger
 from model.support_models import CurvatureAwareGNN, ProjectionHead, BinaryClassifier
 from model.multi_layer_attention import MultiLayerAttention
+
+# At the beginning of your script, after imports
+torch.cuda.empty_cache()
+gc.collect()
+
+# Enable memory efficient attention if using transformers
+torch.backends.cuda.matmul.allow_tf32 = True
+torch.backends.cudnn.allow_tf32 = True
 
 logger = get_logger(__name__)
 
@@ -864,6 +873,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
         
         optimizer.step()
+        torch.cuda.empty_cache()
         
         # Training metrics
         with torch.no_grad():
@@ -1609,7 +1619,6 @@ if __name__ == "__main__":
         mode='max', 
         factor=0.5, 
         patience=20, 
-        verbose=True,
         min_lr=1e-6
     )
     
