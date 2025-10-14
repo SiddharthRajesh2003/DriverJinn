@@ -195,7 +195,7 @@ class CurvaturePipeline:
         return self.schur_augmenter
     
     def generate_augmented_views(self, num_views: int = 2,  use_curvature_weights: bool = True,
-                                 curvature_type: str = 'both', compute_aug_curvature: bool = True,
+                                 curvature_type: str = 'ollivier', compute_aug_curvature: bool = True,
                                  curvature_method: str = 'both'):
         """
         Generate augmented graph views using Schur complement with curvature calculation
@@ -349,7 +349,7 @@ class CurvaturePipeline:
             logger.error(traceback.format_exc())
             return None
     
-    def extract_weights_from_curvature(self, curvature_type: str = 'both'):
+    def extract_weights_from_curvature(self, curvature_type: str = 'ollivier'):
         """
         Extract edge weights from enhanced dataset based on curvature values
         
