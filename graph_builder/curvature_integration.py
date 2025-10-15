@@ -201,9 +201,9 @@ class CurvatureFeatureIntegrator:
         if normalize:
             scaler = StandardScaler()
             all_curvature_features = scaler.fit_transform(all_curvature_features)
-            print("DEBUG: Applied StandardScaler normalization")
+            original_features = self.features.numpy()
+            original_features = scaler.fit_transform(original_features)
         
-        original_features = self.features.numpy()
         enhanced_features = np.hstack([original_features, all_curvature_features])
         
         additional_feature_names = ['positive_curvature_degree', 'negative_curvature_degree', 'curvature_homophily']

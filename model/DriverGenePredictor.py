@@ -6,7 +6,6 @@ import numpy as np
 import networkx as nx
 import pandas as pd
 import time
-import gc
 from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 
 # Assuming these are available from your codebase

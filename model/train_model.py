@@ -643,10 +643,10 @@ if __name__ == "__main__":
     cross_attn = attention_info['cross_curvature_attention'][test_mask]
     
     # True positives vs False positives
-    tp_mask = (logits[test_mask] > 0) & (labels[test_mask] == 1)
-    fp_mask = (logits[test_mask] > 0) & (labels[test_mask] == 0)
-    tn_mask = (logits[test_mask] <= 0) & (labels[test_mask] == 0)
-    fn_mask = (logits[test_mask] <= 0) & (labels[test_mask] == 1)
+    tp_mask = (logits[test_mask].cpu() > 0) & (labels[test_mask] == 1)
+    fp_mask = (logits[test_mask].cpu() > 0) & (labels[test_mask] == 0)
+    tn_mask = (logits[test_mask].cpu() <= 0) & (labels[test_mask] == 0)
+    fn_mask = (logits[test_mask].cpu() <= 0) & (labels[test_mask] == 1)
     
     print("\nCurvature Pathway Importance by Prediction Type:")
     print("-" * 60)
