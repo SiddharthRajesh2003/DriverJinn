@@ -1,95 +1,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Dict, List
 from utils.logging_manager import get_logger
-from model.message_passing import CurvatureConstrainedMessagePassing
 
 logger = get_logger(__name__)
 
-class CurvatureAwareGNN(nn.Module):
-    """
-    Multi-layer GNN with curvature-constrained message passing
-    """
-    
-    def __init__(
-        self,
-        in_channels: int,
-        hidden_channels: int,
-        num_layers: int = 3,
-        curvature_types:List[str] = ['positive', 'negative', 'both'],
-        hop_type: str = 'one_hop',
-        use_attention: bool = True,
-        dropout: float = 0.2
-    ):
-        super().__init__()
-        self.num_layers = num_layers
-        self.curvature_types = curvature_types
-        
-        # Input projection
-        self.input_proj = nn.Linear(in_channels, hidden_channels)
-        
-        # Create multiple message passing layers for each curvature type
-        self.conv_layers = nn.ModuleDict()
-        for curv_type in self.curvature_types:
-            layers = nn.ModuleList()
-            for i in range(num_layers):
-                layers.append(
-                    CurvatureConstrainedMessagePassing(
-                        in_channels=hidden_channels,
-                        out_channels=hidden_channels,
-                        curvature_type=curv_type,
-                        hop_type=hop_type,
-                        aggregation='add',
-                        use_attention=use_attention,
-                        dropout=dropout
-                    )
-                )
-        
-            self.conv_layers[curv_type] = layers
-    
-        self.batch_norms = nn.ModuleList([
-            nn.BatchNorm1d(hidden_channels) for _ in range(num_layers)
-        ])
-        
-        self.dropout = dropout
-    
-    def forward(
-        self,
-        x: torch.Tensor,
-        edge_index: torch.Tensor,
-        edge_curvature: torch.Tensor,
-        return_all_layers: bool = True
-    ) -> Dict[str, List[torch.Tensor]]:
-        """
-        Forward pass through all curvature-specific pathways
-        
-        Returns:
-            Dictionary mapping curvature_type -> list of layer outputs
-        """
-        
-        x = self.input_proj(x)
-        x = F.relu(x)
-        
-        outputs = {curv_type: [] for curv_type in self.curvature_types}
-        
-        for curv_type in self.curvature_types:
-            h = x
-            layer_outputs = []
-            
-            for i, conv in enumerate(self.conv_layers[curv_type]):
-                h = conv(h, edge_index, edge_curvature)
-                h = self.batch_norms[i](h)
-                h = F.relu(h)
-                h = F.dropout(h, p = self.dropout, training = self.training)
-                
-                if return_all_layers:
-                    layer_outputs.append(h)
-                    
-            outputs[curv_type] = layer_outputs if return_all_layers else [h]
-        
-        return outputs
-    
 class ProjectionHead(nn.Module):
     """
     Projection head for contrastive learning
@@ -145,3 +60,58 @@ class BinaryClassifier(nn.Module):
         
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.classifier(x).squeeze(-1)
+
+class EarlyStopping:
+    """Early stopping to prevent overfitting"""
+    def __init__(self, patience=50, min_delta=0.0001, mode='max'):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.mode = mode
+        self.counter = 0
+        self.best_score = None
+        self.early_stop = False
+        
+    def __call__(self, score):
+        if self.best_score is None:
+            self.best_score = score
+            return False
+        
+        if self.mode == 'max':
+            if score > self.best_score + self.min_delta:
+                self.best_score = score
+                self.counter = 0
+            else:
+                self.counter += 1
+        else:
+            if score < self.best_score - self.min_delta:
+                self.best_score = score
+                self.counter = 0
+            else:
+                self.counter += 1
+        
+        if self.counter >= self.patience:
+            self.early_stop = True
+            return True
+        
+        return False
+
+
+class WarmupScheduler:
+    """Learning rate warmup scheduler"""
+    def __init__(self, optimizer, warmup_epochs, initial_lr, target_lr):
+        self.optimizer = optimizer
+        self.warmup_epochs = warmup_epochs
+        self.initial_lr = initial_lr
+        self.target_lr = target_lr
+        self.current_epoch = 0
+    
+    def step(self):
+        if self.current_epoch < self.warmup_epochs:
+            lr = self.initial_lr + (self.target_lr - self.initial_lr) * \
+                 (self.current_epoch / self.warmup_epochs)
+            for param_group in self.optimizer.param_groups:
+                param_group['lr'] = lr
+        self.current_epoch += 1
+    
+    def get_lr(self):
+        return self.optimizer.param_groups[0]['lr']
