@@ -6,10 +6,9 @@ import numpy as np
 import networkx as nx
 import pandas as pd
 import time
-import gc
-from torch.utils.checkpoint import checkpoint
+from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 
-
+# Assuming these are available from your codebase
 from utils.logging_manager import get_logger
 from model.support_models import ProjectionHead, BinaryClassifier
 from model.curvature_aware_gnn import CurvatureAwareGNN
@@ -23,6 +22,7 @@ try:
 except ImportError:
     EDGE_CURVATURE_AVAILABLE = False
     logger.warning("EdgeCurvature not available, using approximation methods only")
+
 
 class ContrastiveDriverGenePredictor(nn.Module):
     """
@@ -102,7 +102,8 @@ class ContrastiveDriverGenePredictor(nn.Module):
         Encode graph into representation vector
         """
         # Get layer outputs for each curvature type
-        curvature_outputs = checkpoint(self.encoder, x, edge_index, edge_curvature)
+        curvature_outputs = gradient_checkpoint(self.encoder, x, edge_index, edge_curvature,
+                                                use_reentrant=False)
         
         attention_weights = {} if return_attention else None
         
@@ -1029,11 +1030,12 @@ class ContrastiveDriverGenePredictor(nn.Module):
         pred = (probs > 0.5).long()
         
         # Identify false positives (predicted as driver but labeled as non-driver)
-        mask_tensor = torch.tensor(mask, dtype=torch.bool).to(device) if isinstance(mask, list) else mask
+        mask_tensor = torch.tensor(mask, dtype=torch.bool).to(device) if isinstance(mask, np.ndarray) else mask
         pred_tensor = torch.tensor(pred).to(device) if isinstance(pred, np.ndarray) else pred
         labels_tensor = torch.tensor(labels).to(device) if isinstance(labels, np.ndarray) else labels
 
-        fp_mask = mask_tensor & (pred_tensor == 1) & (labels_tensor == 0)
+        fp_mask = mask_tensor & (pred_tensor == 1) & (labels_tensor == 0)       
+        
         fp_indices = torch.where(fp_mask)[0]
         
         # Filter based on high confidence
