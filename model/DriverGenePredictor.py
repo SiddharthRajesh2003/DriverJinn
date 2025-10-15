@@ -1094,7 +1094,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         pred = (probs > 0.5).long()
         
         # Identify false positives (predicted as driver but labeled as non-driver)
-        mask_tensor = torch.tensor(mask, dtype=torch.bool).to(device) if isinstance(mask, list) else mask
+        mask_tensor = torch.tensor(mask, dtype=torch.bool).to(device) if isinstance(mask, np.ndarray) else mask
         pred_tensor = torch.tensor(pred).to(device) if isinstance(pred, np.ndarray) else pred
         labels_tensor = torch.tensor(labels).to(device) if isinstance(labels, np.ndarray) else labels
 
