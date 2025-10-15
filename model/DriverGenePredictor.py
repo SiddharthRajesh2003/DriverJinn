@@ -7,7 +7,7 @@ import networkx as nx
 import pandas as pd
 import time
 import gc
-from torch.utils.checkpoint import checkpoint
+from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 
 # Assuming these are available from your codebase
 from utils.logging_manager import get_logger
