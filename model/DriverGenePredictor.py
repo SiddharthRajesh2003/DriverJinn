@@ -7,6 +7,7 @@ import networkx as nx
 import pandas as pd
 import time
 import gc
+from torch.utils.checkpoint import checkpoint
 
 # Assuming these are available from your codebase
 from utils.logging_manager import get_logger
@@ -165,7 +166,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         Encode graph into representation vector
         """
         # Get layer outputs for each curvature type
-        curvature_outputs = self.encoder(x, edge_index, edge_curvature)
+        curvature_outputs = checkpoint(self.encoder, x, edge_index, edge_curvature)
         
         attention_weights = {} if return_attention else None
         
@@ -928,7 +929,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         features = features.to(device)
         edge_index = data['edge_index'].to(device)
         labels = labels.to(device)
-        mask = mask.to(device)
+        
         
         # Validate curvature dimensions
         edge_curvature = self.validate_and_fix_curvature_dimensions(
@@ -1666,7 +1667,7 @@ if __name__ == "__main__":
     # Training configuration
     num_epochs = 200
     best_val_f1 = 0.0
-    use_focal_loss = False  # Set to True to use focal loss instead of BCE
+    use_focal_loss = True  # Set to True to use focal loss instead of BCE
     
     print(f"Training with {len(augmented_views)} augmented views")
     print("Using pairs of augmented views for contrastive learning")
