@@ -29,7 +29,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
     Model for cancer driver prediction with potential driver identification:
     - Binary classification: driver (1) vs non-driver (0)
     - Post-hoc identification of potential drivers from false positives
-      based on curvature features, confidence, and node properties
+        based on curvature features, confidence, and node properties
     """
     
     def __init__(

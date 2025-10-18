@@ -10,6 +10,15 @@ logger = get_logger(__name__)
 class CurvatureAwareGNN(nn.Module):
     """
     Multi-layer GNN with curvature-constrained message passing
+    
+    Parameters:
+        in_channels: Input feature dimensionality
+        out_channels: Output feature dimensionality
+        curvature_type: 'positive', 'negative', or 'both'
+        hop_type: 'one_hop' or 'two_hop'
+        aggregation: Aggregation method ('add', 'mean', 'max')
+        use_attention: Whether to use attention mechanism
+        dropout: float, Control the proportion of neurons being dropped to avoid overfitting
     """
     
     def __init__(
@@ -49,8 +58,8 @@ class CurvatureAwareGNN(nn.Module):
             self.conv_layers[curv_type] = layers
     
         self.batch_norms = nn.ModuleList([
-            nn.BatchNorm1d(hidden_channels) for _ in range(num_layers)
-        ])
+            nn.BatchNorm1d(hidden_channels) for _ in range(num_layers) 
+        ])  # Normalizes the input by adjusting and scaling the activations across the batch dimensions
         
         self.dropout = dropout
     

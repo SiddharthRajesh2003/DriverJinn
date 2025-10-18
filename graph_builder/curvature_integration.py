@@ -13,203 +13,168 @@ logger=get_logger(__name__)
 
 
 class CurvatureFeatureIntegrator:
-    def __init__(self, edge_curvature_calculator: EdgeCurvature, data_dict: dict):
+    """
+    Enhanced integrator with proper train/test split normalization
+    """
+    
+    def __init__(self, edge_calc, data_dict):
         """
-        Integrate edge curvature with existing node features
+        Initialize integrator
         
         Parameters:
-        edge_curvature_calculator: EdgeCurvature instance with calculated curvatures
-        feature_df: DataFrame with node features (columns you showed)
-        node_names: List of node names corresponding to feature_df rows
+        edge_calc: EdgeCurvature object with computed curvatures
+        data_dict: Dictionary containing graph data
         """
+        self.edge_calc = edge_calc
+        self.data_dict = data_dict
+        self.features = data_dict['feature']
+        self.feature_names = data_dict['feature_name']
+        self.node_names = data_dict['node_name']
         
-        self.edge_calc = edge_curvature_calculator
-        self.data_dict = data_dict.copy()
+        # Check if masks exist in data_dict
+        self.has_splits = 'train_mask' in data_dict or 'mask' in data_dict
         
-        self.features = self.data_dict['feature']
-        self.node_names = self.data_dict['node_name']
-        self.edge_index = self.data_dict['edge_index']
-        self.feature_names = self.data_dict['feature_name']
-        self.num_nodes = len(self.node_names)
-        
-        self.name_to_idx = {name: i for i, name in enumerate(self.node_names)}
-        
-        if not hasattr(self.edge_calc, 'edge_curvature'):
-            logger.info('Calculating edge curvature')
-            self.edge_calc.calculate_edge_curvature('both')
-            
-    def calculate_node_curvature_features(self):
+    def create_enhanced_features(self, normalize=True, train_mask=None, val_mask=None, test_mask=None):
         """
-        Calculate node-level curvature features from edge curvatures
-        """
+        Create enhanced feature matrix with curvature features
         
-        node_ollivier_stats = np.zeros((self.num_nodes, 4))
-        node_forman_stats = np.zeros((self.num_nodes, 4))
+        Parameters:
+        normalize: bool, whether to normalize features
+        train_mask: Optional boolean mask for training nodes (fit scaler on these)
+        val_mask: Optional boolean mask for validation nodes
+        test_mask: Optional boolean mask for test nodes
         
-        # Aggregate edge curvatures per node
-        node_ollivier_values = defaultdict(list)
-        node_forman_values = defaultdict(list)
-        
-        for i in range(self.edge_index.shape[1]):
-            src_idx = self.edge_index[0, i].item()
-            dst_idx = self.edge_index[1, i].item()
-            
-            ollivier_curv = self.get_edge_curvature('OllivierRicci', src_idx, dst_idx)
-            forman_curv = self.get_edge_curvature('FormanRicci', src_idx, dst_idx)
-            
-            node_ollivier_values[src_idx].append(ollivier_curv)
-            node_ollivier_values[dst_idx].append(ollivier_curv)
-            
-            node_forman_values[src_idx].append(forman_curv)
-            node_forman_values[dst_idx].append(forman_curv)
-            
-        for node_idx in range(self.num_nodes):
-            if node_idx in node_ollivier_values:
-                ollivier_vals = node_ollivier_values[node_idx]
-                node_ollivier_stats[node_idx] = [
-                    np.mean(ollivier_vals),
-                    np.std(ollivier_vals) if len(ollivier_vals) > 1 else 0,
-                    np.min(ollivier_vals),
-                    np.max(ollivier_vals)
-                ]
-            
-            
-            if node_idx in node_forman_values:
-                forman_vals = node_forman_values[node_idx]
-                node_forman_stats[node_idx] = [
-                    np.mean(forman_vals),
-                    np.std(forman_vals) if len(forman_vals) > 1 else 0,
-                    np.min(forman_vals),
-                    np.max(forman_vals)
-                ]
-        
-        return node_ollivier_stats, node_forman_stats
-    
-    def get_edge_curvature(self, curvature_type, src_idx, dst_idx):
-        """Get Edge curvature values"""
-        
-        if not hasattr(self.edge_calc, 'edge_curvature'):
-            return 0.0
-        
-        edge_tuple = (src_idx, dst_idx)
-        reversed_tuple = (dst_idx, src_idx)
-        
-        if curvature_type in self.edge_calc.edge_curvature:
-            return self.edge_calc.edge_curvature[curvature_type].get(
-                edge_tuple,
-                self.edge_calc.edge_curvature[curvature_type].get(reversed_tuple, 0.0)
-            )
-        return 0.0
-    
-    
-    def calculate_curvature_based_features(self):
-        """
-        Calculate additional curvature-based features
-        """
-        
-        positive_curvature_degree = np.zeros(self.num_nodes)
-        negative_curvature_degree = np.zeros(self.num_nodes)
-        curvature_homophily = np.zeros(self.num_nodes)
-        
-        for i in range(self.edge_index.shape[1]):
-            src_idx = self.edge_index[0, i].item()
-            dst_idx = self.edge_index[1, i].item()
-            
-            ollivier_curv = self.get_edge_curvature('OllivierRicci', src_idx, dst_idx)
-            
-            if ollivier_curv > 0:
-                positive_curvature_degree[src_idx] += 1
-                positive_curvature_degree[dst_idx] += 1
-            elif ollivier_curv < 0:
-                negative_curvature_degree[src_idx] += 1
-                negative_curvature_degree[src_idx] += 1
-                
-            src_features = self.features[src_idx].numpy()
-            dst_features = self.features[dst_idx].numpy()
-            
-            similarity = 1 - cosine(src_features, dst_features)
-            curvature_weighted_sim = similarity * abs(ollivier_curv)
-            
-            
-            curvature_homophily[src_idx] += curvature_weighted_sim
-            curvature_homophily[dst_idx] += curvature_weighted_sim
-            
-        total_degree = positive_curvature_degree + negative_curvature_degree
-        curvature_homophily = np.divide(
-            curvature_homophily,
-            total_degree,
-            out = np.zeros_like(curvature_homophily),
-            where = total_degree != 0
-        )
-        
-        return positive_curvature_degree, negative_curvature_degree, curvature_homophily
-
-    def create_enhanced_features(self, normalize = True):
-        """
-        Create enhanced feature matrix with curvature features using your EdgeCurvature class
+        If masks not provided, will try to use from data_dict
+        If no masks available, will fit on all data (old behavior)
         
         Returns:
         dict: Updated data_dict with enhanced features
         """
         
         logger.info("Creating enhanced features with proper curvature aggregation...")
-    
-        # Use the existing method but add debugging
+        
+        # Get masks from data_dict if not provided
+        if train_mask is None and 'train_mask' in self.data_dict:
+            train_mask = self.data_dict['train_mask']
+            if isinstance(train_mask, torch.Tensor):
+                train_mask = train_mask.numpy()
+        
+        if val_mask is None and 'val_mask' in self.data_dict:
+            val_mask = self.data_dict['val_mask']
+            if isinstance(val_mask, torch.Tensor):
+                val_mask = val_mask.numpy()
+        
+        if test_mask is None and 'test_mask' in self.data_dict:
+            test_mask = self.data_dict['test_mask']
+            if isinstance(test_mask, torch.Tensor):
+                test_mask = test_mask.numpy()
+        
+        # Alternative: Try to extract from integer mask
+        if train_mask is None and 'mask' in self.data_dict:
+            mask = self.data_dict['mask']
+            if isinstance(mask, torch.Tensor):
+                mask = mask.numpy()
+            train_mask = (mask == 1)
+            val_mask = (mask == 2)
+            test_mask = (mask == 3)
+        
+        # Create curvature features using EdgeCurvature class
         curvature_df = self.edge_calc.create_node_curvature_features(node_names=self.node_names)
         
-        # Debug: Check what we got
-        print("\nDEBUG: Curvature DataFrame created")
-        print(f"Shape: {curvature_df.shape}")
-        print(f"Index matches node_names: {curvature_df.index.equals(pd.Index(self.node_names))}")
+        # Debug info
+        logger.info(f"Curvature DataFrame shape: {curvature_df.shape}")
+        logger.info(f"Index matches node_names: {curvature_df.index.equals(pd.Index(self.node_names))}")
         
         # Check for non-zero values
         for col in ['ollivier_mean', 'ollivier_degree']:
             if col in curvature_df.columns:
                 non_zero = (curvature_df[col] != 0).sum()
-                print(f"{col}: {non_zero} non-zero values")
-                if non_zero == 0:
-                    print(f"  All values are zero! Sample: {curvature_df[col].head().tolist()}")
+                logger.info(f"{col}: {non_zero} non-zero values")
         
-        # Continue with original logic
-        curvature_feature_list = []
+        # Extract curvature features in order
         curvature_feature_names = [
             'ollivier_mean', 'ollivier_std', 'ollivier_min', 'ollivier_max', 'ollivier_median', 'ollivier_degree',
             'forman_mean', 'forman_std', 'forman_min', 'forman_max', 'forman_median', 'forman_degree'
         ]
         
+        curvature_feature_list = []
         for name in self.node_names:
             if name in curvature_df.index:
                 node_curvature_features = curvature_df.loc[name, curvature_feature_names].values
             else:
-                print(f"WARNING: Node {name} not found in curvature_df")
+                logger.warning(f"Node {name} not found in curvature_df")
                 node_curvature_features = np.zeros(len(curvature_feature_names))
             
             curvature_feature_list.append(node_curvature_features)
         
         curvature_features = np.array(curvature_feature_list)
         
-        print(f"DEBUG: Curvature features array shape: {curvature_features.shape}")
-        print(f"DEBUG: Ollivier_degree column (index 5) - non-zero count: {np.sum(curvature_features[:, 5] != 0)}")
+        logger.info(f"Curvature features array shape: {curvature_features.shape}")
+        logger.info(f"Ollivier_degree non-zero count: {np.sum(curvature_features[:, 5] != 0)}")
         
-        # Continue with rest of the method...
+        # Calculate additional curvature-based features
         logger.info("Calculating additional curvature-based features...")
         pos_curve_deg, neg_curve_deg, curve_homophily = self.calculate_curvature_based_features()
         
         additional_features = np.column_stack([pos_curve_deg, neg_curve_deg, curve_homophily])
         all_curvature_features = np.hstack([curvature_features, additional_features])
         
+        # Get original features as numpy
+        original_features = self.features.numpy() if isinstance(self.features, torch.Tensor) else self.features
+        
+        # Normalization with proper train/test split
         if normalize:
-            scaler = StandardScaler()
-            all_curvature_features = scaler.fit_transform(all_curvature_features)
-            original_features = self.features.numpy()
-            original_features = scaler.fit_transform(original_features)
+            logger.info("Normalizing features with train/test split awareness...")
+            
+            if train_mask is not None and np.any(train_mask):
+                # FIT on training data only
+                logger.info("Fitting scalers on TRAINING data only")
+                
+                # Scaler for original features
+                original_scaler = StandardScaler()
+                original_scaler.fit(original_features[train_mask])
+                
+                # Scaler for curvature features
+                curvature_scaler = StandardScaler()
+                curvature_scaler.fit(all_curvature_features[train_mask])
+                
+                # TRANSFORM all data (train, val, test)
+                original_features_scaled = original_scaler.transform(original_features)
+                curvature_features_scaled = curvature_scaler.transform(all_curvature_features)
+                
+                logger.info(f"Train samples used for fitting: {train_mask.sum()}")
+                logger.info(f"Original features - Train mean: {original_features_scaled[train_mask].mean():.4f}")
+                logger.info(f"Original features - Test mean: {original_features_scaled[test_mask].mean():.4f}" if test_mask is not None else "")
+                
+            else:
+                # Fallback: fit on all data (old behavior)
+                logger.warning("No training mask provided - fitting scalers on ALL data (may cause data leakage)")
+                
+                original_scaler = StandardScaler()
+                original_features_scaled = original_scaler.fit_transform(original_features)
+                
+                curvature_scaler = StandardScaler()
+                curvature_features_scaled = curvature_scaler.fit_transform(all_curvature_features)
+            
+            # Combine scaled features
+            enhanced_features = np.hstack([original_features_scaled, curvature_features_scaled])
+            
+            # Store scalers for later use
+            self.original_scaler = original_scaler
+            self.curvature_scaler = curvature_scaler
+            
+        else:
+            # No normalization
+            enhanced_features = np.hstack([original_features, all_curvature_features])
+            self.original_scaler = None
+            self.curvature_scaler = None
         
-        enhanced_features = np.hstack([original_features, all_curvature_features])
-        
+        # Create feature names
         additional_feature_names = ['positive_curvature_degree', 'negative_curvature_degree', 'curvature_homophily']
         complete_curvature_names = curvature_feature_names + additional_feature_names
         enhanced_feature_names = self.feature_names + complete_curvature_names
         
+        # Create enhanced data dict
         enhanced_data_dict = self.data_dict.copy()
         enhanced_data_dict['feature'] = torch.tensor(enhanced_features, dtype=torch.float32)
         enhanced_data_dict['feature_name'] = enhanced_feature_names
@@ -220,62 +185,156 @@ class CurvatureFeatureIntegrator:
         
         return enhanced_data_dict
     
+    def calculate_curvature_based_features(self):
+        """
+        Calculate additional curvature-based features:
+        - Positive curvature degree (number of edges with positive curvature)
+        - Negative curvature degree (number of edges with negative curvature)
+        - Curvature homophily (tendency to connect to similar curvature nodes)
+        
+        Returns:
+        tuple: (pos_curve_deg, neg_curve_deg, curve_homophily) numpy arrays
+        """
+        num_nodes = len(self.node_names)
+        pos_curve_deg = np.zeros(num_nodes)
+        neg_curve_deg = np.zeros(num_nodes)
+        curve_homophily = np.zeros(num_nodes)
+        
+        # Get edge curvatures
+        ollivier_curv = self.edge_calc.edge_curvature.get('OllivierRicci', {})
+        
+        # Build node index mapping
+        node_to_idx = {name: idx for idx, name in enumerate(self.node_names)}
+        
+        # Calculate node-level curvature statistics
+        node_curvatures = {i: [] for i in range(num_nodes)}
+        
+        for (u, v), curv in ollivier_curv.items():
+            if u in node_to_idx and v in node_to_idx:
+                u_idx = node_to_idx[u]
+                v_idx = node_to_idx[v]
+                
+                node_curvatures[u_idx].append(curv)
+                node_curvatures[v_idx].append(curv)
+                
+                # Count positive/negative curvature edges
+                if curv > 0:
+                    pos_curve_deg[u_idx] += 1
+                    pos_curve_deg[v_idx] += 1
+                elif curv < 0:
+                    neg_curve_deg[u_idx] += 1
+                    neg_curve_deg[v_idx] += 1
+        
+        # Calculate curvature homophily
+        # (similarity of node's curvature to its neighbors' curvatures)
+        for (u, v), curv in ollivier_curv.items():
+            if u in node_to_idx and v in node_to_idx:
+                u_idx = node_to_idx[u]
+                v_idx = node_to_idx[v]
+                
+                if len(node_curvatures[u_idx]) > 0 and len(node_curvatures[v_idx]) > 0:
+                    u_mean = np.mean(node_curvatures[u_idx])
+                    v_mean = np.mean(node_curvatures[v_idx])
+                    
+                    # Similarity measure (negative absolute difference, normalized)
+                    similarity = 1.0 / (1.0 + abs(u_mean - v_mean))
+                    
+                    curve_homophily[u_idx] += similarity
+                    curve_homophily[v_idx] += similarity
+        
+        # Normalize homophily by degree
+        for i in range(num_nodes):
+            degree = len(node_curvatures[i])
+            if degree > 0:
+                curve_homophily[i] /= degree
+        
+        return pos_curve_deg, neg_curve_deg, curve_homophily
+    
+    def analyze_curvature_distribution(self):
+        """
+        Analyze and log curvature distribution statistics
+        """
+        logger.info("\n=== Curvature Distribution Analysis ===")
+        
+        for curv_type in ['OllivierRicci', 'FormanRicci']:
+            if curv_type in self.edge_calc.edge_curvature:
+                curvatures = list(self.edge_calc.edge_curvature[curv_type].values())
+                curvatures = np.array(curvatures)
+                
+                logger.info(f"\n{curv_type}:")
+                logger.info(f"  Mean: {curvatures.mean():.4f}")
+                logger.info(f"  Std: {curvatures.std():.4f}")
+                logger.info(f"  Min: {curvatures.min():.4f}")
+                logger.info(f"  Max: {curvatures.max():.4f}")
+                logger.info(f"  Positive edges: {(curvatures > 0).sum()}")
+                logger.info(f"  Negative edges: {(curvatures < 0).sum()}")
+                logger.info(f"  Zero edges: {(curvatures == 0).sum()}")
+    
     def create_edge_features_dict(self):
         """
-        Create edge features dictionary for edge-level predictions
-        Now also stores individual curvature tensors
+        Create dictionary of edge-level curvature features
+        
+        Returns:
+        dict: Dictionary containing edge curvature tensors
         """
+        edge_index = self.data_dict['edge_index']
+        num_edges = edge_index.shape[1]
         
-        num_edges = self.edge_index.shape[1]
-        edge_features_list = []
+        ollivier_curvatures = torch.zeros(num_edges)
+        forman_curvatures = torch.zeros(num_edges)
         
-        # Initialize arrays for individual curvature values
-        ollivier_curvatures = np.zeros(num_edges)
-        forman_curvatures = np.zeros(num_edges)
+        ollivier_dict = self.edge_calc.edge_curvature.get('OllivierRicci', {})
+        forman_dict = self.edge_calc.edge_curvature.get('FormanRicci', {})
         
+        # Map curvatures to edges
         for i in range(num_edges):
-            src_idx = self.edge_index[0, i].item()
-            dst_idx = self.edge_index[1, i].item()
+            src = edge_index[0, i].item()
+            dst = edge_index[1, i].item()
             
-            ollivier_curv = self.get_edge_curvature('OllivierRicci', src_idx, dst_idx)
-            forman_curv = self.get_edge_curvature('FormanRicci', src_idx, dst_idx)
+            # Get node names
+            src_name = self.node_names[src]
+            dst_name = self.node_names[dst]
             
-            # Store individual curvature values
-            ollivier_curvatures[i] = ollivier_curv
-            forman_curvatures[i] = forman_curv
-            
-            src_features = self.features[src_idx].numpy()
-            dst_features = self.features[dst_idx].numpy()
-            
-            edge_feature_vector = self.create_edge_feature_vector(
-                src_features, dst_features, ollivier_curv, forman_curv
+            # Get curvatures (try both directions)
+            ollivier_curvatures[i] = ollivier_dict.get(
+                (src_name, dst_name), 
+                ollivier_dict.get((dst_name, src_name), 0.0)
             )
             
-            edge_features_list.append(edge_feature_vector)
+            forman_curvatures[i] = forman_dict.get(
+                (src_name, dst_name),
+                forman_dict.get((dst_name, src_name), 0.0)
+            )
         
-        edge_features = np.array(edge_features_list)
+        # Create combined edge features
+        edge_features = torch.stack([ollivier_curvatures, forman_curvatures], dim=1)
         
-        edge_feature_names = (
-            [f'src_{name}' for name in self.feature_names] +
-            [f'dst_{name}' for name in self.feature_names] +
-            ['node_feature_diff_l1', 'node_feature_diff_l2', 'cosine_similarity'] +
-            ['ollivier_curvature', 'forman_curvature', 'curvature_ratio']
-        )
-        
-        edge_data_dict = {
-            'edge_features': torch.tensor(edge_features, dtype=torch.float32),
-            'edge_feature_names': edge_feature_names,
-            'edge_index': self.edge_index,
-            'edge_ollivier_curvature': torch.tensor(ollivier_curvatures, dtype=torch.float32),
-            'edge_forman_curvature': torch.tensor(forman_curvatures, dtype=torch.float32)
+        return {
+            'edge_ollivier_curvature': ollivier_curvatures,
+            'edge_forman_curvature': forman_curvatures,
+            'edge_features': edge_features,
+            'edge_feature_names': ['ollivier_curvature', 'forman_curvature']
         }
+    
+    def transform_new_features(self, new_original_features, new_curvature_features):
+        """
+        Transform new features using fitted scalers (for inference on new data)
         
-        logger.info(f"Created edge features dict with curvature tensors")
-        logger.info(f"  Edge features shape: {edge_data_dict['edge_features'].shape}")
-        logger.info(f"  Ollivier curvature shape: {edge_data_dict['edge_ollivier_curvature'].shape}")
-        logger.info(f"  Forman curvature shape: {edge_data_dict['edge_forman_curvature'].shape}")
+        Parameters:
+        new_original_features: numpy array of original features
+        new_curvature_features: numpy array of curvature features
         
-        return edge_data_dict
+        Returns:
+        numpy array: Scaled and concatenated features
+        """
+        if self.original_scaler is None or self.curvature_scaler is None:
+            logger.warning("Scalers not fitted. Returning unscaled features.")
+            return np.hstack([new_original_features, new_curvature_features])
+        
+        original_scaled = self.original_scaler.transform(new_original_features)
+        curvature_scaled = self.curvature_scaler.transform(new_curvature_features)
+        
+        return np.hstack([original_scaled, curvature_scaled])
     
     def create_edge_feature_vector(self, src_features, dst_features, ollivier_curv, forman_curv):
         """Create comprehensive edge feature vector"""
@@ -294,47 +353,3 @@ class CurvatureFeatureIntegrator:
         ])
         
         return np.concatenate([edge_features, additional_features])
-    
-    
-    def analyze_curvature_distribution(self):
-        """Analyze the distribution of curvature values using your EdgeCurvature class"""
-        
-        print("\n=== Curvature Distribution Analysis ===")
-        
-        # Use your class's get_curvature_statistics method
-        stats = self.edge_calc.get_curvature_statistics()
-        
-        for curvature_type, stat_dict in stats.items():
-            print(f"\n{curvature_type}:")
-            print(f"  Total edges: {stat_dict['count']}")
-            print(f"  Mean: {stat_dict['mean']:.4f}")
-            print(f"  Std: {stat_dict['std']:.4f}")
-            print(f"  Min: {stat_dict['min']:.4f}")
-            print(f"  Max: {stat_dict['max']:.4f}")
-            print(f"  Median: {stat_dict['median']:.4f}")
-            print(f"  Positive edges: {stat_dict['positive_edges']} ({stat_dict['positive_edges']/stat_dict['count']*100:.1f}%)")
-            print(f"  Negative edges: {stat_dict['negative_edges']} ({stat_dict['negative_edges']/stat_dict['count']*100:.1f}%)")
-            print(f"  Zero edges: {stat_dict['zero_edges']} ({stat_dict['zero_edges']/stat_dict['count']*100:.1f}%)")
-
-
-def integrate_curvature_features(edge_curvature_calculator, data_dict):
-    """
-    Main function to integrate curvature features with existing data using your EdgeCurvature class
-    
-    Parameters:
-    edge_curvature_calculator: Your EdgeCurvature instance
-    data_dict: Your existing data dictionary
-    
-    Returns:
-    enhanced_data_dict: Data dictionary with curvature features added
-    """
-    
-    integrator = CurvatureFeatureIntegrator(edge_curvature_calculator, data_dict)
-    
-    # Analyze curvature distribution using your class methods
-    integrator.analyze_curvature_distribution()
-    
-    # Create enhanced node features
-    enhanced_data_dict = integrator.create_enhanced_features(normalize=True)
-    
-    return enhanced_data_dict

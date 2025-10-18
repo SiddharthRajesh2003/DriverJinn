@@ -21,6 +21,7 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
         hop_type: 'one_hop' or 'two_hop'
         aggregation: Aggregation method ('add', 'mean', 'max')
         use_attention: Whether to use attention mechanism
+        dropout: float, Control the proportion of neurons being dropped to avoid overfitting
     """
     
     def __init__(
@@ -47,7 +48,6 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
         self.lin = nn.Linear(self.in_channels, self.out_channels)
         
         if use_attention:
-            # IMPORTANT: These should expect out_channels, not in_channels
             self.att_src = nn.Linear(out_channels, 1)
             self.att_dst = nn.Linear(out_channels, 1)
             # Optional: attention weight parameter
@@ -55,14 +55,13 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
             nn.init.xavier_uniform_(self.att_weight)
         
         self.reset_parameters()
-    
+
     def reset_parameters(self):
         self.lin.reset_parameters()
         if self.use_attention:
             self.att_src.reset_parameters()
             self.att_dst.reset_parameters()
-    
-    
+
     def forward(
         self,
         x: torch.Tensor,
