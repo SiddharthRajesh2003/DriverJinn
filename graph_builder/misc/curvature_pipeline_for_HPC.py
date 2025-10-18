@@ -91,7 +91,7 @@ class CurvaturePipeline:
         return self.data_dict
     
     def create_train_test_split(self, test_size = 0.2, val_size = 0.1, stratify = True,
-                                seed = 42, use_existing_mask = False, train_ratio_from_mask=0.8):
+                                random_seed = 42, use_existing_mask = False, train_ratio_from_mask=0.8):
         """
         Create train/validation/test split for the dataset
         
@@ -147,7 +147,7 @@ class CurvaturePipeline:
                     train_idx, val_idx = train_test_split(
                         true_indices,
                         test_size = val_size,
-                        random_state=seed,
+                        random_state=random_seed,
                         stratify=stratify_labels
                     )
                 else:
@@ -177,7 +177,7 @@ class CurvaturePipeline:
             train_val_idx, test_idx = train_test_split(
                 all_indices,
                 test_size=test_size,
-                random_state=seed,
+                random_state=random_seed,
                 stratify=stratify_labels if stratify else None
             )
             
@@ -190,7 +190,7 @@ class CurvaturePipeline:
                 train_idx, val_idx = train_test_split(
                     train_val_idx,
                     test_size=val_size_adjusted,
-                    random_state=seed,
+                    random_state=random_seed,
                     stratify= stratify_train_val if stratify else None
                 )
             else:
@@ -226,7 +226,7 @@ class CurvaturePipeline:
                 'test_size': test_size,
                 'val_size': val_size,
                 'stratify': stratify,
-                'random_seed': seed,
+                'random_seed': random_seed,
                 'use_existing_mask': use_existing_mask
             }
         }
@@ -263,20 +263,21 @@ class CurvaturePipeline:
             
             logger.info(f"  Class {label}: Train={train_count}, Val={val_count}, Test={test_count}")
     
-    def create_kfold_splits(self, n_splits = 5, stratify = True, seed = 42):
+    def create_kfold_splits(self, n_splits=5, stratify=True, random_seed=42):
         """
         Create K-fold cross-validation splits
         
         Parameters:
         n_splits: int, number of folds
         stratify: bool, whether to use stratified K-fold
-        seed: int, random seed for reproducibility
+        random_seed: int, random seed for reproducibility
         
         Returns:
         list: List of dictionaries, each containing train/val indices for one fold
         """
         logger.info(f"Creating {n_splits}-fold cross-validation splits...")
         
+        # K-fold can work on original data_dict (before enhancement)
         data_source = self.enhanced_data_dict if self.enhanced_data_dict is not None else self.data_dict
         
         if data_source is None:
@@ -294,11 +295,11 @@ class CurvaturePipeline:
         
         # Use StratifiedKFold or regular KFold
         if stratify:
-            kfold = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=seed)
+            kfold = StratifiedKFold(n_splits=n_splits, shuffle=True, random_state=random_seed)
             splits = list(kfold.split(all_indices, labels_np))
         else:
             from sklearn.model_selection import KFold
-            kfold = KFold(n_splits=n_splits, shuffle=True, random_state=seed)
+            kfold = KFold(n_splits=n_splits, shuffle=True, random_state=random_seed)
             splits = list(kfold.split(all_indices))
         
         fold_data = []
@@ -356,10 +357,14 @@ class CurvaturePipeline:
             logger.info(f'Calculating edge curvature using {method} method')
             
             if feature_df is None:
+                # CHANGED: Get node list from the graph structure
+                graph_nodes = list(self.network.G.nodes())
+                
+                # Create feature dataframe using graph nodes
                 feature_df = pd.DataFrame(
                     data=self.data_dict['feature'].numpy(),
-                    columns = self.data_dict['feature_name'],
-                    index = self.data_dict['node_name']
+                    columns=self.data_dict['feature_name'],
+                    index=graph_nodes
                 )
             
             self.edge_curvature = EdgeCurvature(self.network.G, feature_df)
@@ -547,40 +552,50 @@ class CurvaturePipeline:
         """
         
         try:
+            # CHANGED: Always use nodes from the augmented graph
+            aug_node_list = list(aug_G.nodes())
+            num_aug_nodes = len(aug_node_list)
+            
             if features is not None:
                 if isinstance(features, torch.Tensor):
                     features_np = features.numpy()
                 else:
                     features_np = features
 
-                node_names = list(aug_G.nodes())
-                
-                # CRITICAL FIX: Verify shapes match before creating DataFrame
-                if len(node_names) != features_np.shape[0]:
-                    logger.warning(f"Shape mismatch: {len(node_names)} nodes but {features_np.shape[0]} feature rows")
+                # CHANGED: Ensure features match the number of nodes in the graph
+                if features_np.shape[0] != num_aug_nodes:
+                    logger.warning(f"Feature shape mismatch: {features_np.shape[0]} features but {num_aug_nodes} graph nodes")
                     
-                    # Check if we have more nodes than features or vice versa
-                    if len(node_names) > features_np.shape[0]:
-                        logger.warning(f"Trimming {len(node_names) - features_np.shape[0]} nodes without features")
-                        # Keep only nodes that have features
-                        node_names = node_names[:features_np.shape[0]]
+                    if features_np.shape[0] > num_aug_nodes:
+                        logger.warning(f"Trimming {features_np.shape[0] - num_aug_nodes} extra features")
+                        features_np = features_np[:num_aug_nodes]
                     else:
-                        logger.warning(f"Trimming {features_np.shape[0] - len(node_names)} extra features")
-                        # Keep only features for existing nodes
-                        features_np = features_np[:len(node_names)]
+                        logger.error(f"Not enough features ({features_np.shape[0]}) for nodes ({num_aug_nodes})")
+                        # Pad with zeros if necessary
+                        padding = np.zeros((num_aug_nodes - features_np.shape[0], features_np.shape[1]))
+                        features_np = np.vstack([features_np, padding])
+                        logger.warning(f"Padded features with zeros to match node count")
                 
+                # Create DataFrame using graph nodes as index
                 feature_df = pd.DataFrame(
                     data=features_np,
-                    index=node_names
+                    index=aug_node_list
                 )
             
             else:
-                # Use original features if augmented features not available
+                # CHANGED: Use original features indexed by graph nodes
+                graph_nodes = list(self.network.G.nodes())
                 feature_df = pd.DataFrame(
                     data=self.data_dict['feature'].numpy(),
                     columns=self.data_dict['feature_name'],
-                    index=self.data_dict['node_name']
+                    index=graph_nodes
                 )
+                
+                # Filter to only nodes present in augmented graph
+                common_nodes = [n for n in aug_node_list if n in feature_df.index]
+                if len(common_nodes) < num_aug_nodes:
+                    logger.warning(f"Only {len(common_nodes)}/{num_aug_nodes} augmented nodes have features")
+                feature_df = feature_df.loc[common_nodes]
             
             edge_curv_calculator = EdgeCurvature(aug_G, feature_df)
             curvatures = edge_curv_calculator.calculate_edge_curvature(method='both')
@@ -653,13 +668,13 @@ class CurvaturePipeline:
         if isinstance(curvatures, torch.Tensor):
             curvatures = curvatures.numpy()
         
-        node_names = self.enhanced_data_dict['node_name']
+        # CHANGED: Get nodes from graph instead of node_name
+        graph_nodes = list(self.network.G.nodes())
         
         num_edges = edge_index.shape[1]
         for i in range(num_edges):
             src_idx = edge_index[0, i]
             dst_idx = edge_index[1, i]
-            
             
             # Get curvature value and convert to positive weight
             curv = float(curvatures[i])
@@ -702,6 +717,7 @@ class CurvaturePipeline:
             # Create temporary Network object for this augmented graph
             temp_network = Network.__new__(Network)
             temp_network.G = aug_graph
+            # CHANGED: Get node names from graph
             temp_network.node_names = list(aug_graph.nodes())
             temp_network.num_nodes = aug_graph.number_of_nodes()
             
@@ -732,6 +748,7 @@ class CurvaturePipeline:
         use_curvature_weights: bool, use curvature as edge weights
         compute_aug_curvature: bool, compute curvature for augmented graphs
         curvature_method: str, 'ollivier', 'forman', or 'both' for augmented graphs
+        propagate_splits: bool, whether to propagate train/val/test splits to augmented views
         
         Returns:
         dict: Dictionary containing original and augmented data for contrastive learning
@@ -740,6 +757,10 @@ class CurvaturePipeline:
             raise ValueError("Must integrate features first using integrate_features()")
         
         logger.info("Creating contrastive learning dataset...")
+        
+        # Check if we have k-fold splits or regular splits
+        has_kfold = 'kfold_splits' in self.enhanced_data_dict
+        has_regular_split = self.split_data is not None
         
         # Generate augmented views
         augmented_views = self.generate_augmented_views(
@@ -758,19 +779,28 @@ class CurvaturePipeline:
             )
             
             view_dict = {
-            'edge_index': edge_index,
-            'edge_weight': edge_weight,
-            'x': x,
-            'metadata': metadata
-        }
+                'edge_index': edge_index,
+                'edge_weight': edge_weight,
+                'x': x,
+                'metadata': metadata
+            }
         
             # Add curvature data if computed
             if curvature_dict is not None:
                 view_dict.update(curvature_dict)
-                
             
-            if propagate_splits and self.split_data is not None:
+            # Propagate regular train/val/test splits if available
+            if propagate_splits and has_regular_split:
                 view_dict = self.propagate_splits_to_view(
+                    view_dict,
+                    aug_graph,
+                    metadata,
+                    view_idx
+                )
+            
+            # Propagate k-fold splits if available
+            if propagate_splits and has_kfold:
+                view_dict = self.propagate_kfold_splits_to_view(
                     view_dict,
                     aug_graph,
                     metadata,
@@ -794,19 +824,29 @@ class CurvaturePipeline:
         }
         
         # Add split information at dataset level if available
-        if self.split_data is not None:
+        if has_regular_split:
             contrastive_dataset['split_info'] = {
+                'split_type': 'regular',
                 'split_config': self.split_data['split_config'],
                 'original_train_size': len(self.split_data['train_idx']),
                 'original_val_size': len(self.split_data['val_idx']),
                 'original_test_size': len(self.split_data['test_idx'])
             }
+        elif has_kfold:
+            contrastive_dataset['split_info'] = {
+                'split_type': 'kfold',
+                'n_folds': len(self.enhanced_data_dict['kfold_splits']),
+                'total_nodes': self.enhanced_data_dict['feature'].shape[0]
+            }
         
         logger.info(f"Contrastive dataset created with {num_views} augmented views")
         if compute_aug_curvature:
             logger.info("Augmented views include pre-computed curvature features")
-        if propagate_splits and self.split_data is not None:
-            logger.info("Train/val/test splits propagated to all augmented views")
+        if propagate_splits:
+            if has_regular_split:
+                logger.info("Train/val/test splits propagated to all augmented views")
+            elif has_kfold:
+                logger.info(f"K-fold splits ({len(self.enhanced_data_dict['kfold_splits'])} folds) propagated to all augmented views")
         
         return contrastive_dataset
         
@@ -823,13 +863,13 @@ class CurvaturePipeline:
         Returns:
         dict: view_dict with added split masks
         """
-        # Get original node names and augmented node names
-        original_nodes = self.enhanced_data_dict['node_name']
+        # CHANGED: Get node names from graphs instead of using node_name lists
+        original_graph_nodes = list(self.network.G.nodes())
         aug_node_list = list(aug_graph.nodes())
         
         # Create mapping from augmented node indices to original node indices
         aug_to_orig_idx = {}
-        orig_name_to_idx = {name: i for i, name in enumerate(original_nodes)}
+        orig_name_to_idx = {name: i for i, name in enumerate(original_graph_nodes)}
         
         for aug_idx, node_name in enumerate(aug_node_list):
             if node_name in orig_name_to_idx:
@@ -880,7 +920,7 @@ class CurvaturePipeline:
         
         if 'eliminated_node_ids' not in metadata:
             # Compute eliminated nodes
-            all_orig_indices = set(range(len(original_nodes)))
+            all_orig_indices = set(range(len(original_graph_nodes)))
             remaining_orig_indices = set(aug_to_orig_idx.values())
             eliminated_indices = sorted(list(all_orig_indices - remaining_orig_indices))
             metadata['eliminated_node_ids'] = eliminated_indices
@@ -898,6 +938,90 @@ class CurvaturePipeline:
         view_dict['node_name'] = aug_node_list
         
         logger.info(f"View {view_idx + 1} splits - Train: {train_count}, Val: {val_count}, Test: {test_count}")
+        
+        return view_dict
+    
+    def propagate_kfold_splits_to_view(self, view_dict, aug_graph, metadata, view_idx):
+        """
+        Propagate k-fold cross-validation splits from original graph to augmented view
+        
+        Parameters:
+        view_dict: dict, augmented view data
+        aug_graph: nx.Graph, augmented graph
+        metadata: dict, augmentation metadata
+        view_idx: int, index of the view
+        
+        Returns:
+        dict: view_dict with added k-fold split information
+        """
+        # Get node names from graphs
+        original_graph_nodes = list(self.network.G.nodes())
+        aug_node_list = list(aug_graph.nodes())
+        
+        # Create mapping from augmented node indices to original node indices
+        aug_to_orig_idx = {}
+        orig_name_to_idx = {name: i for i, name in enumerate(original_graph_nodes)}
+        
+        for aug_idx, node_name in enumerate(aug_node_list):
+            if node_name in orig_name_to_idx:
+                aug_to_orig_idx[aug_idx] = orig_name_to_idx[node_name]
+        
+        num_aug_nodes = len(aug_node_list)
+        
+        # Get original k-fold splits
+        original_kfold_splits = self.enhanced_data_dict['kfold_splits']
+        
+        # Propagate each fold
+        augmented_kfold_splits = []
+        
+        for fold_data in original_kfold_splits:
+            fold_idx = fold_data['fold']
+            orig_train_mask = fold_data['train_mask']
+            orig_val_mask = fold_data['val_mask']
+            
+            # Initialize masks for augmented view
+            aug_train_mask = np.zeros(num_aug_nodes, dtype=bool)
+            aug_val_mask = np.zeros(num_aug_nodes, dtype=bool)
+            
+            train_count = 0
+            val_count = 0
+            
+            # Propagate masks to augmented nodes
+            for aug_idx, orig_idx in aug_to_orig_idx.items():
+                if orig_train_mask[orig_idx]:
+                    aug_train_mask[aug_idx] = True
+                    train_count += 1
+                elif orig_val_mask[orig_idx]:
+                    aug_val_mask[aug_idx] = True
+                    val_count += 1
+            
+            augmented_fold_data = {
+                'fold': fold_idx,
+                'train_idx': np.where(aug_train_mask)[0],
+                'val_idx': np.where(aug_val_mask)[0],
+                'train_mask': aug_train_mask,
+                'val_mask': aug_val_mask,
+                'train_count': train_count,
+                'val_count': val_count
+            }
+            
+            augmented_kfold_splits.append(augmented_fold_data)
+            
+            logger.info(f"View {view_idx + 1}, Fold {fold_idx}: Train={train_count}, Val={val_count}")
+        
+        # Add k-fold splits to view_dict
+        view_dict['kfold_splits'] = augmented_kfold_splits
+        
+        # Add node name list for model compatibility
+        view_dict['node_name'] = aug_node_list
+        
+        # Add summary statistics to metadata
+        metadata['kfold_stats'] = {
+            'n_folds': len(augmented_kfold_splits),
+            'total_nodes': num_aug_nodes,
+            'avg_train_per_fold': np.mean([f['train_count'] for f in augmented_kfold_splits]),
+            'avg_val_per_fold': np.mean([f['val_count'] for f in augmented_kfold_splits])
+        }
         
         return view_dict
 
@@ -1017,6 +1141,7 @@ class CurvaturePipeline:
         random_seed: int, random seed for reproducibility
         use_existing_mask: bool, whether to use existing mask from dataset
         use_kfold: bool, whether to create k-fold splits instead
+        train_ratio_from_mask: int
         n_folds: int, number of folds for k-fold cross-validation
         
         Returns:
@@ -1039,7 +1164,7 @@ class CurvaturePipeline:
                     self.create_kfold_splits(
                         n_splits=n_folds,
                         stratify=stratify,
-                        seed=random_seed
+                        random_seed=random_seed
                     )
                     # For k-fold, integrate features without split-aware normalization
                     # Each fold will handle normalization separately during training
@@ -1058,7 +1183,7 @@ class CurvaturePipeline:
                         test_size=test_size,
                         val_size=val_size,
                         stratify=stratify,
-                        seed=random_seed,
+                        random_seed=random_seed,
                         use_existing_mask=use_existing_mask
                     )
                     # Then integrate features (will use splits for normalization)
@@ -1130,7 +1255,7 @@ class CurvaturePipeline:
             return 'PPNet'
         else:
             return 'network'
-        
+
 def main():
     
     """
