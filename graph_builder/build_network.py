@@ -5,18 +5,21 @@ import argparse
 import pickle
 
 class Network:
-    def __init__(self, edge_index, nodes, num_nodes):
+    def __init__(self, edge_index, nodes, num_nodes, node_names):
         self.edge_index = edge_index
         self.nodes = nodes
         self.num_nodes = num_nodes
+        self.node_names = node_names
         self.G = self.build_graph()
     
     def build_graph(self):
         G = nx.Graph()
-        for i, node in enumerate(self.nodes):
-            G.add_node(i, name = node)
+        # Add nodes with numeric IDs and name as attribute
+        for i, node_name in enumerate(self.node_names):
+            G.add_node(i, name=node_name)
         edges = self.edge_index.t().tolist()
         G.add_edges_from(edges)
+        print(list(G.nodes)[0:20:None])
         return G
     
     def save_graph(self, file_name ,path):
@@ -31,8 +34,8 @@ class Network:
     
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Build and save network graph from dataset')
-    parser.add_argument('dataset_file', type=str, help='Dataset pickle file (e.g., dataset_GGNet.pkl)')
-    parser.add_argument('output_path', type=str, help='Path to save the graph')
+    parser.add_argument('--dataset_file', type=str, help='Dataset pickle file (e.g., dataset_GGNet.pkl)')
+    parser.add_argument('--output_path', type=str, help='Path to save the graph')
     parser.add_argument('--graph_name', type=str, default=None, help='Name for the saved graph file')
     
     args = parser.parse_args()
@@ -61,7 +64,7 @@ if __name__ == '__main__':
         nodes = data_dict['node_name']
         num_nodes = len(nodes)
         
-        net = Network(edge_index, nodes, num_nodes)
+        net = Network(edge_index, nodes, num_nodes, nodes)
         net.build_graph()
         net.save_graph(graph_name, output_path)
         

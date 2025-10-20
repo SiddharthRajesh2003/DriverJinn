@@ -116,6 +116,11 @@ class CurvatureFeatureIntegrator:
         logger.info("Calculating additional curvature-based features...")
         pos_curve_deg, neg_curve_deg, curve_homophily = self.calculate_curvature_based_features()
         
+        # Debug the additional features
+        logger.info(f"Positive curvature degree - non-zero: {np.sum(pos_curve_deg != 0)}, mean: {np.mean(pos_curve_deg):.4f}")
+        logger.info(f"Negative curvature degree - non-zero: {np.sum(neg_curve_deg != 0)}, mean: {np.mean(neg_curve_deg):.4f}")
+        logger.info(f"Curvature homophily - non-zero: {np.sum(curve_homophily != 0)}, mean: {np.mean(curve_homophily):.4f}")
+        
         additional_features = np.column_stack([pos_curve_deg, neg_curve_deg, curve_homophily])
         all_curvature_features = np.hstack([curvature_features, additional_features])
         
@@ -134,17 +139,62 @@ class CurvatureFeatureIntegrator:
                 original_scaler = StandardScaler()
                 original_scaler.fit(original_features[train_mask])
                 
-                # Scaler for curvature features
+                # Scaler for curvature features with handling for sparse/zero features
                 curvature_scaler = StandardScaler()
-                curvature_scaler.fit(all_curvature_features[train_mask])
+                train_curvatures = all_curvature_features[train_mask]
+                
+                # Check for columns that are all zeros or have zero variance
+                train_std = train_curvatures.std(axis=0)
+                zero_var_cols = train_std == 0
+                
+                if np.any(zero_var_cols):
+                    logger.warning(f"Found {zero_var_cols.sum()} curvature features with zero variance in training data")
+                    logger.warning("These features will not be scaled to prevent division by zero")
+                    
+                    # Create a custom scaler that handles zero-variance columns
+                    curvature_scaler.fit(train_curvatures)
+                    
+                    # Replace zero standard deviations with 1.0 to prevent division by zero
+                    curvature_scaler.scale_ = np.where(
+                        curvature_scaler.scale_ == 0, 
+                        1.0, 
+                        curvature_scaler.scale_
+                    )
+                    curvature_scaler.var_ = curvature_scaler.scale_ ** 2
+                else:
+                    curvature_scaler.fit(train_curvatures)
                 
                 # TRANSFORM all data (train, val, test)
                 original_features_scaled = original_scaler.transform(original_features)
                 curvature_features_scaled = curvature_scaler.transform(all_curvature_features)
                 
-                logger.info(f"Train samples used for fitting: {train_mask.sum()}")
-                logger.info(f"Original features - Train mean: {original_features_scaled[train_mask].mean():.4f}")
-                logger.info(f"Original features - Test mean: {original_features_scaled[test_mask].mean():.4f}" if test_mask is not None else "")
+                # Log training statistics
+                train_samples = int(train_mask.sum())
+                logger.info(f"Train samples used for fitting: {train_samples}")
+                
+                if train_samples > 0:
+                    train_orig_mean = original_features_scaled[train_mask].mean()
+                    train_orig_std = original_features_scaled[train_mask].std()
+                    train_curv_mean = curvature_features_scaled[train_mask].mean()
+                    train_curv_std = curvature_features_scaled[train_mask].std()
+                    
+                    logger.info(f"Original features - Train mean: {train_orig_mean:.4f}, std: {train_orig_std:.4f}")
+                    logger.info(f"Curvature features - Train mean: {train_curv_mean:.4f}, std: {train_curv_std:.4f}")
+                
+                # Log test statistics if test mask is provided and valid
+                if test_mask is not None:
+                    test_samples = int(test_mask.sum())
+                    if test_samples > 0:
+                        test_orig_mean = original_features_scaled[test_mask].mean()
+                        test_orig_std = original_features_scaled[test_mask].std()
+                        test_curv_mean = curvature_features_scaled[test_mask].mean()
+                        test_curv_std = curvature_features_scaled[test_mask].std()
+                        
+                        logger.info(f"Test samples: {test_samples}")
+                        logger.info(f"Original features - Test mean: {test_orig_mean:.4f}, std: {test_orig_std:.4f}")
+                        logger.info(f"Curvature features - Test mean: {test_curv_mean:.4f}, std: {test_curv_std:.4f}")
+                    else:
+                        logger.warning("Test mask provided but contains no True values")
                 
             else:
                 # Fallback: fit on all data (old behavior)
@@ -153,8 +203,22 @@ class CurvatureFeatureIntegrator:
                 original_scaler = StandardScaler()
                 original_features_scaled = original_scaler.fit_transform(original_features)
                 
+                # Handle sparse curvature features
                 curvature_scaler = StandardScaler()
-                curvature_features_scaled = curvature_scaler.fit_transform(all_curvature_features)
+                curvature_scaler.fit(all_curvature_features)
+                
+                # Check for zero variance
+                zero_var_mask = curvature_scaler.scale_ == 0
+                if np.any(zero_var_mask):
+                    logger.warning(f"Found {zero_var_mask.sum()} curvature features with zero variance")
+                    curvature_scaler.scale_ = np.where(
+                        curvature_scaler.scale_ == 0,
+                        1.0,
+                        curvature_scaler.scale_
+                    )
+                    curvature_scaler.var_ = curvature_scaler.scale_ ** 2
+                
+                curvature_features_scaled = curvature_scaler.transform(all_curvature_features)
             
             # Combine scaled features
             enhanced_features = np.hstack([original_features_scaled, curvature_features_scaled])
@@ -203,50 +267,79 @@ class CurvatureFeatureIntegrator:
         # Get edge curvatures
         ollivier_curv = self.edge_calc.edge_curvature.get('OllivierRicci', {})
         
-        # Build node index mapping
-        node_to_idx = {name: idx for idx, name in enumerate(self.node_names)}
+        if not ollivier_curv:
+            logger.warning("No Ollivier curvature found. Returning zero features.")
+            return pos_curve_deg, neg_curve_deg, curve_homophily
+        
+        logger.info(f"Processing {len(ollivier_curv)} edges for curvature-based features")
         
         # Calculate node-level curvature statistics
         node_curvatures = {i: [] for i in range(num_nodes)}
         
-        for (u, v), curv in ollivier_curv.items():
-            if u in node_to_idx and v in node_to_idx:
-                u_idx = node_to_idx[u]
-                v_idx = node_to_idx[v]
-                
-                node_curvatures[u_idx].append(curv)
-                node_curvatures[v_idx].append(curv)
-                
-                # Count positive/negative curvature edges
-                if curv > 0:
-                    pos_curve_deg[u_idx] += 1
-                    pos_curve_deg[v_idx] += 1
-                elif curv < 0:
-                    neg_curve_deg[u_idx] += 1
-                    neg_curve_deg[v_idx] += 1
+        # First pass: collect curvatures and count positive/negative
+        edge_count = 0
+        skipped_edges = 0
         
-        # Calculate curvature homophily
-        # (similarity of node's curvature to its neighbors' curvatures)
         for (u, v), curv in ollivier_curv.items():
-            if u in node_to_idx and v in node_to_idx:
-                u_idx = node_to_idx[u]
-                v_idx = node_to_idx[v]
-                
-                if len(node_curvatures[u_idx]) > 0 and len(node_curvatures[v_idx]) > 0:
-                    u_mean = np.mean(node_curvatures[u_idx])
-                    v_mean = np.mean(node_curvatures[v_idx])
-                    
-                    # Similarity measure (negative absolute difference, normalized)
-                    similarity = 1.0 / (1.0 + abs(u_mean - v_mean))
-                    
-                    curve_homophily[u_idx] += similarity
-                    curve_homophily[v_idx] += similarity
+            # u and v are ALREADY indices (integers), not names
+            # Check if indices are valid
+            if u >= num_nodes or v >= num_nodes or u < 0 or v < 0:
+                skipped_edges += 1
+                continue
+            
+            # Use indices directly
+            u_idx = u
+            v_idx = v
+            
+            node_curvatures[u_idx].append(curv)
+            node_curvatures[v_idx].append(curv)
+            
+            # Count positive/negative curvature edges
+            if curv > 0:
+                pos_curve_deg[u_idx] += 1
+                pos_curve_deg[v_idx] += 1
+            elif curv < 0:
+                neg_curve_deg[u_idx] += 1
+                neg_curve_deg[v_idx] += 1
+            
+            edge_count += 1
+        
+        logger.info(f"Processed {edge_count} edges, skipped {skipped_edges} invalid edges")
+        
+        # Calculate mean curvature per node
+        node_mean_curvatures = np.zeros(num_nodes)
+        for i in range(num_nodes):
+            if len(node_curvatures[i]) > 0:
+                node_mean_curvatures[i] = np.mean(node_curvatures[i])
+        
+        # Second pass: Calculate curvature homophily
+        for (u, v), curv in ollivier_curv.items():
+            if u >= num_nodes or v >= num_nodes or u < 0 or v < 0:
+                continue
+            
+            u_idx = u
+            v_idx = v
+            
+            # Homophily: similarity of node's mean curvature to neighbor's mean curvature
+            u_mean = node_mean_curvatures[u_idx]
+            v_mean = node_mean_curvatures[v_idx]
+            
+            # Similarity measure (negative absolute difference, normalized)
+            similarity = 1.0 / (1.0 + abs(u_mean - v_mean))
+            
+            curve_homophily[u_idx] += similarity
+            curve_homophily[v_idx] += similarity
         
         # Normalize homophily by degree
         for i in range(num_nodes):
             degree = len(node_curvatures[i])
             if degree > 0:
                 curve_homophily[i] /= degree
+        
+        # Log statistics
+        logger.info(f"Pos curve degree: mean={pos_curve_deg.mean():.2f}, max={pos_curve_deg.max():.2f}, non-zero={np.sum(pos_curve_deg > 0)}")
+        logger.info(f"Neg curve degree: mean={neg_curve_deg.mean():.2f}, max={neg_curve_deg.max():.2f}, non-zero={np.sum(neg_curve_deg > 0)}")
+        logger.info(f"Curve homophily: mean={curve_homophily.mean():.4f}, max={curve_homophily.max():.4f}, non-zero={np.sum(curve_homophily > 0)}")
         
         return pos_curve_deg, neg_curve_deg, curve_homophily
     
@@ -335,21 +428,3 @@ class CurvatureFeatureIntegrator:
         curvature_scaled = self.curvature_scaler.transform(new_curvature_features)
         
         return np.hstack([original_scaled, curvature_scaled])
-    
-    def create_edge_feature_vector(self, src_features, dst_features, ollivier_curv, forman_curv):
-        """Create comprehensive edge feature vector"""
-        
-        edge_features = np.concatenate([src_features, dst_features])
-        
-        diff_l1 = np.sum(np.abs(src_features - dst_features))
-        diff_l2 = np.linalg.norm(src_features - dst_features)
-        cosine_sim = 1 - cosine(src_features, dst_features)
-        
-        curvature_ratio = forman_curv / (abs(ollivier_curv) + 1e-8)
-        
-        additional_features = np.array([
-            diff_l1, diff_l2, cosine_sim,
-            ollivier_curv, forman_curv, curvature_ratio
-        ])
-        
-        return np.concatenate([edge_features, additional_features])

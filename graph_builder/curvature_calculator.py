@@ -133,18 +133,37 @@ class EdgeCurvature:
         
         if hasattr(self, 'edge_curvature'):
             if 'OllivierRicci' in self.edge_curvature:
-                logger.info(f'Processing Ollivier curvatures{len(node_names)} for nodes')
+                logger.info(f'Processing Ollivier curvatures for {len(node_names)} nodes')
                 ollivier_count = 0
+                total_positive = 0
+                total_negative = 0
+                
+                # Debug info
+                logger.info(f"Number of Ollivier curvatures: {len(self.edge_curvature['OllivierRicci'])}")
+                
                 for (src_idx, dst_idx), curvature in self.edge_curvature['OllivierRicci'].items():
-                    if src_idx < len(node_names):
-                        node_curvatures['ollivier'][src_idx].append(curvature)
-                        ollivier_count += 1
-                        
-                    if dst_idx < len(node_names):
-                        node_curvatures['ollivier'][dst_idx].append(curvature)
-                        ollivier_count += 1
+                    try:
+                        if src_idx < len(node_names):
+                            node_curvatures['ollivier'][src_idx].append(float(curvature))
+                            ollivier_count += 1
+                            if float(curvature) > 0:
+                                total_positive += 1
+                            elif float(curvature) < 0:
+                                total_negative += 1
+                            
+                        if dst_idx < len(node_names):
+                            node_curvatures['ollivier'][dst_idx].append(float(curvature))
+                            ollivier_count += 1
+                            if float(curvature) > 0:
+                                total_positive += 1
+                            elif float(curvature) < 0:
+                                total_negative += 1
+                                
+                    except Exception as e:
+                        logger.error(f"Error processing curvature {curvature} for edge ({src_idx}, {dst_idx}): {e}")
                 
                 logger.info(f'Processed {ollivier_count} Ollivier Curvature assignments to nodes')
+                logger.info(f'Found {total_positive} positive and {total_negative} negative curvatures')
             
             if 'FormanRicci' in self.edge_curvature:
                 logger.info(f'Processing Forman curvatures for {len(node_names)} nodes')
@@ -191,13 +210,38 @@ class EdgeCurvature:
             # Forman statistics
             forman_values = node_curvatures['forman'][i]
             if forman_values:
+                forman_values = [float(v) for v in forman_values]  # Ensure all values are float
+                pos_curv = sum(1 for v in forman_values if v > 0)
+                neg_curv = sum(1 for v in forman_values if v < 0)
+                
+                # Calculate curvature homophily (similarity of curvature with neighbors)
+                neighbor_indices = list(self.G.neighbors(i))
+                if neighbor_indices:
+                    neighbor_curvatures = []
+                    for n_idx in neighbor_indices:
+                        if n_idx in node_curvatures['forman'] and node_curvatures['forman'][n_idx]:
+                            n_curv = np.mean([float(v) for v in node_curvatures['forman'][n_idx]])
+                            neighbor_curvatures.append(n_curv)
+                    
+                    if neighbor_curvatures:
+                        node_curv = np.mean(forman_values)
+                        curv_diff = np.mean([abs(node_curv - n_curv) for n_curv in neighbor_curvatures])
+                        homophily = 1.0 / (1.0 + curv_diff)  # Convert difference to similarity
+                    else:
+                        homophily = 0.0
+                else:
+                    homophily = 0.0
+                
                 node_stats.update({
                     'forman_mean': np.mean(forman_values),
                     'forman_std': np.std(forman_values),
                     'forman_min': np.min(forman_values),
                     'forman_max': np.max(forman_values),
                     'forman_median': np.median(forman_values),
-                    'forman_degree': len(forman_values)
+                    'forman_degree': len(forman_values),
+                    'positive_curvature_degree': pos_curv,
+                    'negative_curvature_degree': neg_curv,
+                    'curvature_homophily': homophily
                 })
             else:
                 node_stats.update({

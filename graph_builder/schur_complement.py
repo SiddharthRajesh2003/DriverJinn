@@ -135,6 +135,11 @@ class SchurComplementAugmentation:
             G_aug.remove_node(v_i)
             
             for (u, v), weight in zip(clique_edges, clique_weights):
+                # CRITICAL: Verify both nodes exist before adding edge
+                if not G_aug.has_node(u) or not G_aug.has_node(v):
+                    logger.warning(f"Skipping edge ({u}, {v}) - node doesn't exist in graph")
+                    continue
+                
                 if G_aug.has_edge(u, v):
                     G_aug[u][v]['weight'] = G_aug[u][v].get('weight', 0) + weight
                     
@@ -173,6 +178,7 @@ class SchurComplementAugmentation:
         metadata = {
             'original_nodes': num_nodes,
             'augmented_nodes': G_aug.number_of_nodes(),
+            'augmented_node_ids': G_aug.nodes(),
             'eliminated_nodes': len(eliminated_nodes),
             'original_edges': G_aug.number_of_edges(),
             'added_edges': len(added_edges),
@@ -237,6 +243,11 @@ class SchurComplementAugmentation:
             G_aug.remove_node(v_i)
             
             for (u, v), weight in zip(clique_edges, clique_weights):
+                # CRITICAL: Verify both nodes exist before adding edge
+                if not G_aug.has_node(u) or not G_aug.has_node(v):
+                    logger.warning(f"Skipping edge ({u}, {v}) - node doesn't exist in graph")
+                    continue
+                
                 if G_aug.has_edge(u, v):
                     G_aug[u][v]['weight'] = G_aug[u][v].get('weight', 0) + weight
                 else:
@@ -264,12 +275,15 @@ class SchurComplementAugmentation:
                 logger.error("Feature-graph mismatch in random augmentation! Using simple removal")
                 keep_mask = np.array([node not in eliminated_nodes for node in nodes])
                 augmented_features = node_features[keep_mask]
+                
+                remaining_nodes = [node for node in nodes if node not in eliminated_nodes]
             
             augmented_features = torch.from_numpy(augmented_features)
         
         metadata = {
             'original_nodes': num_nodes,
             'augmented_nodes': G_aug.number_of_nodes(),
+            'augmented_node_ids': G_aug.nodes(),
             'eliminated_nodes': len(eliminated_nodes),
             'original_edges': G_aug.number_of_edges(),
             'added_edges': len(added_edges),
@@ -340,6 +354,11 @@ class SchurComplementAugmentation:
                 if j == k:
                     continue
                 
+                # CRITICAL: Verify nodes still exist
+                if not G_aug.has_node(k) or not G_aug.has_node(j):
+                    logger.warning(f"Skipping edge update ({k}, {j}) - node doesn't exist")
+                    continue
+                
                 w_j = edge_weights.get((v_i, j), edge_weights.get((v_i, j), 1.0))
                 
                 new_weight = (w_k * w_j) /(w_j + w_k)
@@ -383,6 +402,7 @@ class SchurComplementAugmentation:
         metadata = {
             'original_nodes': num_nodes,
             'augmented_nodes': G_aug.number_of_nodes(),
+            'augmented_node_ids': G_aug.nodes(),
             'eliminated_nodes': len(eliminated_nodes),
             'original_edges': G.number_of_edges(),
             'augmented_edges': G_aug.number_of_edges(),
@@ -565,22 +585,55 @@ class SchurComplementAugmentation:
         Update features for coarsening strategy
         Features of collapsed nodes are aggregated into their targets
         """
+        # CRITICAL: Use actual nodes from augmented graph
+        aug_nodes = sorted(G_aug.nodes())
+        num_aug_nodes = len(aug_nodes)
+        feature_dim = features.shape[1]
+        
+        logger.info(f"Updating coarsened features: {len(original_nodes)} original -> {num_aug_nodes} augmented")
+        
+        # Create mapping from original node IDs to feature indices
         node_to_idx = {node: idx for idx, node in enumerate(original_nodes)}
-        remaining_nodes = [n for n in original_nodes if n not in eliminated_nodes]
         
-        augmented_features = features.copy()
+        # Check for new nodes
+        original_node_set = set(original_nodes)
+        new_nodes = [n for n in aug_nodes if n not in original_node_set]
         
+        if new_nodes:
+            logger.warning(f"Found {len(new_nodes)} NEW nodes in augmented graph!")
+        
+        # Initialize feature matrix for augmented graph
+        augmented_features = np.zeros((num_aug_nodes, feature_dim))
+        aug_node_to_idx = {node: idx for idx, node in enumerate(aug_nodes)}
+        
+        # Copy base features for nodes that existed originally
+        for node in aug_nodes:
+            if node in node_to_idx:
+                new_idx = aug_node_to_idx[node]
+                old_idx = node_to_idx[node]
+                augmented_features[new_idx] = features[old_idx].copy()
+        
+        # Aggregate collapsed node features into their targets
         for v_i, target in collapsed_mapping.items():
-            if v_i not in node_to_idx or target not in node_to_idx:
+            if v_i not in node_to_idx:
+                continue
+            
+            # Check if target still exists in augmented graph
+            if target not in aug_node_to_idx:
+                logger.warning(f"Collapse target {target} not in augmented graph")
                 continue
             
             idx_i = node_to_idx[v_i]
-            idx_target = node_to_idx[target]
+            idx_target = aug_node_to_idx[target]
             
-            augmented_features[idx_target] += augmented_features[idx_i]
-            
-        keep_mask = np.array([node not in eliminated_nodes for node in original_nodes])
-        return augmented_features[keep_mask]
+            augmented_features[idx_target] += features[idx_i]
+        
+        # Final verification
+        if augmented_features.shape[0] != num_aug_nodes:
+            logger.error(f"Feature shape mismatch in coarsening: {augmented_features.shape[0]} != {num_aug_nodes}")
+            raise ValueError("Feature-graph node count mismatch in coarsening!")
+        
+        return augmented_features
     
     def sort_neighbours(
         self,
@@ -739,42 +792,56 @@ class SchurComplementAugmentation:
             augmented_features: Feature matrix [num_remaining_nodes, feature_dim]
         """
         
+        # CRITICAL: Use actual nodes from augmented graph as source of truth
+        aug_nodes = sorted(G_aug.nodes())
+        num_aug_nodes = len(aug_nodes)
+        feature_dim = features.shape[1]
+        
+        logger.info(f"Updating features: {len(original_nodes)} original -> {num_aug_nodes} augmented")
+        
         # Create mapping from original node IDs to feature indices
         node_to_feat_idx = {node: idx for idx, node in enumerate(original_nodes)}
         
-        # Get list of remaining nodes (must match G_aug.nodes())
-        remaining_nodes = sorted([n for n in original_nodes if n not in eliminated_nodes])
+        # Initialize feature matrix for augmented graph
+        augmented_features = np.zeros((num_aug_nodes, feature_dim))
         
-        # Verify this matches the augmented graph
-        aug_nodes = sorted(G_aug.nodes())
-        if remaining_nodes != aug_nodes:
-            logger.warning(f"Node mismatch: {len(remaining_nodes)} remaining vs {len(aug_nodes)} in G_aug")
-            # Use intersection to be safe
-            remaining_nodes = sorted(set(remaining_nodes) & set(aug_nodes))
+        # Map augmented nodes to new indices
+        aug_node_to_idx = {node: idx for idx, node in enumerate(aug_nodes)}
+        
+        # Identify which augmented nodes were in the original graph
+        original_node_set = set(original_nodes)
+        new_nodes = [n for n in aug_nodes if n not in original_node_set]
+        
+        if new_nodes:
+            logger.warning(f"Found {len(new_nodes)} NEW nodes in augmented graph that weren't in original!")
+            logger.warning(f"Sample new nodes: {new_nodes[:10]}")
         
         if not self.preserve_features:
-            # Simple approach: just remove eliminated nodes' features
-            augmented_features = np.zeros((len(remaining_nodes), features.shape[1]))
-            for new_idx, node in enumerate(remaining_nodes):
+            # Simple approach: copy features for nodes that existed originally
+            for node in aug_nodes:
                 if node in node_to_feat_idx:
+                    new_idx = aug_node_to_idx[node]
                     old_idx = node_to_feat_idx[node]
                     augmented_features[new_idx] = features[old_idx]
-            return augmented_features
-        
+                else:
+                    # New node created during augmentation - use zero features
+                    new_idx = aug_node_to_idx[node]
+                    augmented_features[new_idx] = np.zeros(feature_dim)
+                    
         else:
             # Sophisticated approach: aggregate eliminated features into neighbors
-            # Initialize with features of remaining nodes
-            augmented_features = np.zeros((len(remaining_nodes), features.shape[1]))
-            new_node_to_idx = {node: idx for idx, node in enumerate(remaining_nodes)}
-            
-            # Copy base features for remaining nodes
-            for new_idx, node in enumerate(remaining_nodes):
+            # Step 1: Copy base features for nodes that existed originally
+            for node in aug_nodes:
                 if node in node_to_feat_idx:
+                    new_idx = aug_node_to_idx[node]
                     old_idx = node_to_feat_idx[node]
                     augmented_features[new_idx] = features[old_idx].copy()
+                else:
+                    # New node - initialize with zeros
+                    new_idx = aug_node_to_idx[node]
+                    augmented_features[new_idx] = np.zeros(feature_dim)
             
-            # Aggregate eliminated node features
-            # Use the AUGMENTED graph to find where to distribute features
+            # Step 2: Distribute eliminated node features to their neighbors in G_aug
             for v_i in eliminated_nodes:
                 if v_i not in node_to_feat_idx:
                     continue
@@ -782,26 +849,25 @@ class SchurComplementAugmentation:
                 old_idx = node_to_feat_idx[v_i]
                 feature_i = features[old_idx]
                 
-                # Find neighbors in the augmented graph that received connections
-                # from this eliminated node through clique formation
-                # These are nodes that remain AND were neighbors of v_i originally
-                
-                # Get original neighbors from feature availability
-                # (all remaining nodes that could have been neighbors)
-                target_nodes = []
-                for rem_node in remaining_nodes:
-                    if rem_node in new_node_to_idx:
-                        # This node exists in augmented graph and can receive features
-                        target_nodes.append(rem_node)
+                # Find neighbors of v_i in the ORIGINAL graph that still exist in G_aug
+                # These are the nodes that should receive the eliminated features
+                target_nodes = [n for n in aug_nodes if n in original_node_set and n != v_i]
                 
                 # Distribute eliminated features proportionally
                 if len(target_nodes) > 0:
                     contribution = feature_i / len(target_nodes)
                     for target in target_nodes:
-                        target_idx = new_node_to_idx[target]
-                        augmented_features[target_idx] += contribution
-            
-            return augmented_features
+                        if target in aug_node_to_idx:
+                            target_idx = aug_node_to_idx[target]
+                            augmented_features[target_idx] += contribution
+        
+        # Final verification
+        if augmented_features.shape[0] != num_aug_nodes:
+            logger.error(f"Feature shape mismatch: {augmented_features.shape[0]} != {num_aug_nodes}")
+            raise ValueError("Feature-graph node count mismatch after update!")
+        
+        logger.info(f"Feature update complete: {augmented_features.shape}")
+        return augmented_features
         
     def verify_feature_graph_consistency(
         self,

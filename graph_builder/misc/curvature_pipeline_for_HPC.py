@@ -329,6 +329,59 @@ class CurvaturePipeline:
         
         return fold_data
     
+    def apply_fold_normalization(self, fold_idx, normalize=True):
+        """
+        Apply normalization for a specific k-fold split
+        
+        This should be called during k-fold cross-validation to normalize each fold separately
+        
+        Parameters:
+        fold_idx: int, index of the fold (0-based)
+        normalize: bool, whether to normalize
+        
+        Returns:
+        dict: Data dict with features normalized for this fold
+        """
+        if 'kfold_splits' not in self.enhanced_data_dict:
+            raise ValueError("No k-fold splits found. Run create_kfold_splits() first.")
+        
+        if fold_idx >= len(self.enhanced_data_dict['kfold_splits']):
+            raise ValueError(f"Fold index {fold_idx} out of range")
+        
+        fold_info = self.enhanced_data_dict['kfold_splits'][fold_idx]
+        train_mask = fold_info['train_mask']
+        
+        logger.info(f"Applying normalization for fold {fold_idx + 1}...")
+        
+        # Re-integrate features with this fold's training mask
+        if self.edge_curvature is None:
+            raise ValueError("Must calculate curvatures first")
+        
+        integrator = CurvatureFeatureIntegrator(self.edge_curvature, self.data_dict)
+        
+        fold_data_dict = integrator.create_enhanced_features(
+            normalize=normalize,
+            train_mask=train_mask,
+            val_mask=fold_info['val_mask'],
+            test_mask=None  # K-fold doesn't have separate test set
+        )
+        
+        # Add curvature edge features
+        curvature_dict = integrator.create_edge_features_dict()
+        fold_data_dict['ollivier_curvature'] = curvature_dict['edge_ollivier_curvature']
+        fold_data_dict['forman_curvature'] = curvature_dict['edge_forman_curvature']
+        fold_data_dict['edge_features'] = curvature_dict['edge_features']
+        fold_data_dict['edge_feature_names'] = curvature_dict['edge_feature_names']
+        
+        # Add fold information
+        fold_data_dict['current_fold'] = fold_idx + 1
+        fold_data_dict['train_mask'] = torch.tensor(train_mask)
+        fold_data_dict['val_mask'] = torch.tensor(fold_info['val_mask'])
+        fold_data_dict['train_idx'] = fold_info['train_idx']
+        fold_data_dict['val_idx'] = fold_info['val_idx']
+        
+        return fold_data_dict
+    
     def build_network(self):
         """Build NetworkX graph using Network class"""
         logger.info('Building NetworkX graph...')
@@ -434,6 +487,20 @@ class CurvaturePipeline:
             
             # Store the integrator for potential later use
             self.integrator = integrator
+            # Save normalization parameters (means and stds) used by integrator if available
+            try:
+                orig_scaler = getattr(integrator, 'original_scaler', None)
+                curv_scaler = getattr(integrator, 'curvature_scaler', None)
+                if orig_scaler is not None:
+                    self.enhanced_data_dict['normalization_params'] = self.enhanced_data_dict.get('normalization_params', {})
+                    self.enhanced_data_dict['normalization_params']['original_mean'] = getattr(orig_scaler, 'mean_', None)
+                    self.enhanced_data_dict['normalization_params']['original_std'] = getattr(orig_scaler, 'scale_', None)
+                if curv_scaler is not None:
+                    self.enhanced_data_dict['normalization_params'] = self.enhanced_data_dict.get('normalization_params', {})
+                    self.enhanced_data_dict['normalization_params']['curvature_mean'] = getattr(curv_scaler, 'mean_', None)
+                    self.enhanced_data_dict['normalization_params']['curvature_std'] = getattr(curv_scaler, 'scale_', None)
+            except Exception:
+                logger.warning('Could not extract normalization parameters from integrator')
             
             logger.info("Feature integration completed!")
             return self.enhanced_data_dict
@@ -511,6 +578,98 @@ class CurvaturePipeline:
                 edge_weights=edge_weights
             )
             
+                        # CRITICAL FIX: Verify and repair feature-graph consistency before curvature calculation
+            num_graph_nodes = aug_graph.number_of_nodes()
+            if aug_features is not None:
+                # Convert to numpy if it's a tensor
+                if isinstance(aug_features, torch.Tensor):
+                    aug_features_np = aug_features.numpy()
+                    was_tensor = True
+                else:
+                    aug_features_np = aug_features
+                    was_tensor = False
+                
+                num_feature_rows = aug_features_np.shape[0]
+                
+                if num_feature_rows != num_graph_nodes:
+                    logger.warning(f"Repairing feature-graph mismatch: {num_feature_rows} features vs {num_graph_nodes} graph nodes")
+                    
+                    # Get sorted graph nodes as the source of truth
+                    graph_nodes = sorted(aug_graph.nodes())
+                    original_nodes = sorted(self.network.G.nodes())
+                    
+                    # Create proper feature matrix aligned to graph nodes
+                    feature_dim = aug_features_np.shape[1]
+                    repaired_features = np.zeros((num_graph_nodes, feature_dim))
+                    
+                    # Get source features (use enhanced if available and matches dimension)
+                    if self.enhanced_data_dict is not None:
+                        source_features = self.enhanced_data_dict['feature']
+                    else:
+                        source_features = self.data_dict['feature']
+                    
+                    # Convert source to numpy
+                    if isinstance(source_features, torch.Tensor):
+                        source_features_np = source_features.numpy()
+                    else:
+                        source_features_np = source_features
+                    
+                    # Compute mean vector once (for missing nodes)
+                    mean_feature = np.mean(source_features_np, axis=0)
+                    
+                    # Map original nodes to indices and build mask mapping
+                    node_to_idx = {node: idx for idx, node in enumerate(original_nodes)}
+                    
+                    # Get masks if they exist in enhanced_data_dict
+                    train_mask = self.enhanced_data_dict.get('train_mask', None)
+                    test_mask = self.enhanced_data_dict.get('test_mask', None)
+                    val_mask = self.enhanced_data_dict.get('val_mask', None)
+                    
+                    # Convert masks to numpy if they're tensors
+                    if isinstance(train_mask, torch.Tensor):
+                        train_mask = train_mask.numpy()
+                    if isinstance(test_mask, torch.Tensor):
+                        test_mask = test_mask.numpy()
+                    if isinstance(val_mask, torch.Tensor):
+                        val_mask = val_mask.numpy()
+                    
+                    # Initialize new masks for augmented graph
+                    new_train_mask = np.zeros(num_graph_nodes, dtype=bool)
+                    new_test_mask = np.zeros(num_graph_nodes, dtype=bool)
+                    new_val_mask = np.zeros(num_graph_nodes, dtype=bool)
+                    
+                    # Fill in features and propagate masks for all graph nodes
+                    missing_count = 0
+                    for idx, node in enumerate(graph_nodes):
+                        if node in node_to_idx:
+                            orig_idx = node_to_idx[node]
+                            if orig_idx < source_features_np.shape[0]:
+                                repaired_features[idx] = source_features_np[orig_idx]
+                                # Propagate masks
+                                if train_mask is not None:
+                                    new_train_mask[idx] = train_mask[orig_idx]
+                                if test_mask is not None:
+                                    new_test_mask[idx] = test_mask[orig_idx]
+                                if val_mask is not None:
+                                    new_val_mask[idx] = val_mask[orig_idx]
+                            else:
+                                missing_count += 1
+                                repaired_features[idx] = mean_feature
+                        else:
+                            missing_count += 1
+                            repaired_features[idx] = mean_feature
+                    
+                    # Update masks in metadata
+                    metadata['train_mask'] = torch.from_numpy(new_train_mask)
+                    metadata['test_mask'] = torch.from_numpy(new_test_mask)
+                    metadata['val_mask'] = torch.from_numpy(new_val_mask)
+                    
+                    aug_features = torch.from_numpy(repaired_features).float()
+                    logger.info(f"Repaired features: {repaired_features.shape}, filled {missing_count} missing nodes")
+                elif was_tensor:
+                    # No repair needed but ensure it's a tensor
+                    aug_features = torch.from_numpy(aug_features_np).float()
+            
             aug_curvature_dict = None
             if compute_aug_curvature:
                 logger.info(f"Computing curvature for augmented view {i+1}...")
@@ -552,8 +711,8 @@ class CurvaturePipeline:
         """
         
         try:
-            # CHANGED: Always use nodes from the augmented graph
-            aug_node_list = list(aug_G.nodes())
+            # Use SORTED nodes from augmented graph for consistency
+            aug_node_list = sorted(aug_G.nodes())
             num_aug_nodes = len(aug_node_list)
             
             if features is not None:
@@ -562,28 +721,97 @@ class CurvaturePipeline:
                 else:
                     features_np = features
 
-                # CHANGED: Ensure features match the number of nodes in the graph
+                # Handle feature-graph mismatch by re-indexing
                 if features_np.shape[0] != num_aug_nodes:
                     logger.warning(f"Feature shape mismatch: {features_np.shape[0]} features but {num_aug_nodes} graph nodes")
+                    logger.warning(f"Re-aligning features to match graph node order...")
                     
-                    if features_np.shape[0] > num_aug_nodes:
-                        logger.warning(f"Trimming {features_np.shape[0] - num_aug_nodes} extra features")
-                        features_np = features_np[:num_aug_nodes]
+                    # CRITICAL FIX: Use enhanced features (with curvature), not original features
+                    # Get the feature source that matches the dimension we're working with
+                    feature_dim = features_np.shape[1]
+                    
+                    # Determine which feature source to use based on dimension
+                    if self.enhanced_data_dict is not None:
+                        enhanced_feat_dim = self.enhanced_data_dict['feature'].shape[1]
+                        if feature_dim == enhanced_feat_dim:
+                            # Use enhanced features (original + curvature)
+                            source_features = self.enhanced_data_dict['feature']
+                            source_nodes = sorted(self.network.G.nodes())
+                            logger.info(f"Using enhanced features ({enhanced_feat_dim}D) for alignment")
+                        else:
+                            # Use original features
+                            source_features = self.data_dict['feature']
+                            source_nodes = sorted(self.network.G.nodes())
+                            logger.info(f"Using original features ({self.data_dict['feature'].shape[1]}D) for alignment")
                     else:
-                        logger.error(f"Not enough features ({features_np.shape[0]}) for nodes ({num_aug_nodes})")
-                        # Pad with zeros if necessary
-                        padding = np.zeros((num_aug_nodes - features_np.shape[0], features_np.shape[1]))
-                        features_np = np.vstack([features_np, padding])
-                        logger.warning(f"Padded features with zeros to match node count")
+                        # Fallback to original features
+                        source_features = self.data_dict['feature']
+                        source_nodes = sorted(self.network.G.nodes())
+                    
+                    # Convert to numpy if needed
+                    if isinstance(source_features, torch.Tensor):
+                        source_features_np = source_features.numpy()
+                    else:
+                        source_features_np = np.array(source_features) if not isinstance(source_features, np.ndarray) else source_features
+                    
+                    # Create mapping from node to feature index
+                    node_to_feat_idx = {node: idx for idx, node in enumerate(source_nodes)}
+                    
+                    # Pre-compute mean vector for missing nodes
+                    mean_vec = np.mean(source_features_np, axis=0)
+                    
+                    # Create new feature matrix aligned with aug_node_list
+                    aligned_features = np.zeros((num_aug_nodes, feature_dim))
+                    
+                    missing_count = 0
+                    for new_idx, node in enumerate(aug_node_list):
+                        if node in node_to_feat_idx:
+                            old_idx = node_to_feat_idx[node]
+                            aligned_features[new_idx] = source_features_np[old_idx]
+                        else:
+                            # Node not in original graph - use mean of existing features
+                            missing_count += 1
+                            aligned_features[new_idx] = mean_vec
+                    
+                    if missing_count > 0:
+                        logger.warning(f"Filled {missing_count} missing nodes with mean feature vector")
+                    
+                    features_np = aligned_features
+                    logger.info(f"Feature re-alignment complete: {features_np.shape}")
                 
-                # Create DataFrame using graph nodes as index
+                # Verify alignment
+                if features_np.shape[0] != num_aug_nodes:
+                    logger.error(f"CRITICAL: Still have mismatch after alignment: {features_np.shape[0]} != {num_aug_nodes}")
+                    # Last resort: pad or trim
+                    if features_np.shape[0] > num_aug_nodes:
+                        features_np = features_np[:num_aug_nodes]
+                        logger.warning(f"Trimmed features to {num_aug_nodes}")
+                    else:
+                        # Need to pad - use the same source we used above
+                        if self.enhanced_data_dict is not None and feature_dim == self.enhanced_data_dict['feature'].shape[1]:
+                            pad_source = self.enhanced_data_dict['feature']
+                        else:
+                            pad_source = self.data_dict['feature']
+                        
+                        # Ensure pad_source is numpy
+                        if isinstance(pad_source, torch.Tensor):
+                            pad_source = pad_source.numpy()
+                        else:
+                            pad_source = np.array(pad_source) if not isinstance(pad_source, np.ndarray) else pad_source
+                        
+                        mean_vec = np.mean(pad_source, axis=0)
+                        padding = np.tile(mean_vec, (num_aug_nodes - features_np.shape[0], 1))
+                        features_np = np.vstack([features_np, padding])
+                        logger.warning(f"Padded features to {num_aug_nodes}")
+                
+                # Create DataFrame using SORTED graph nodes as index
                 feature_df = pd.DataFrame(
                     data=features_np,
                     index=aug_node_list
                 )
             
             else:
-                # CHANGED: Use original features indexed by graph nodes
+                # Use original features indexed by graph nodes
                 graph_nodes = list(self.network.G.nodes())
                 feature_df = pd.DataFrame(
                     data=self.data_dict['feature'].numpy(),
@@ -668,7 +896,7 @@ class CurvaturePipeline:
         if isinstance(curvatures, torch.Tensor):
             curvatures = curvatures.numpy()
         
-        # CHANGED: Get nodes from graph instead of node_name
+        # Get nodes from graph instead of node_name
         graph_nodes = list(self.network.G.nodes())
         
         num_edges = edge_index.shape[1]
@@ -717,7 +945,7 @@ class CurvaturePipeline:
             # Create temporary Network object for this augmented graph
             temp_network = Network.__new__(Network)
             temp_network.G = aug_graph
-            # CHANGED: Get node names from graph
+            # Get node names from graph
             temp_network.node_names = list(aug_graph.nodes())
             temp_network.num_nodes = aug_graph.number_of_nodes()
             
@@ -806,7 +1034,13 @@ class CurvaturePipeline:
                     metadata,
                     view_idx
                 )
-        
+
+            # Apply saved Fold-1 normalization to the view so data is ready before training
+            try:
+                self.apply_fold1_normalization_to_view(view_dict)
+            except Exception as e:
+                logger.warning(f"Could not apply Fold-1 normalization to view {view_idx}: {e}")
+
             pyg_views.append(view_dict)
         
         contrastive_dataset = {
@@ -863,9 +1097,9 @@ class CurvaturePipeline:
         Returns:
         dict: view_dict with added split masks
         """
-        # CHANGED: Get node names from graphs instead of using node_name lists
-        original_graph_nodes = list(self.network.G.nodes())
-        aug_node_list = list(aug_graph.nodes())
+        # Use SORTED nodes for consistency
+        original_graph_nodes = sorted(self.network.G.nodes())
+        aug_node_list = sorted(aug_graph.nodes())
         
         # Create mapping from augmented node indices to original node indices
         aug_to_orig_idx = {}
@@ -937,6 +1171,50 @@ class CurvaturePipeline:
         # Add node name list for model compatibility
         view_dict['node_name'] = aug_node_list
         
+        # Try to apply normalization to the view features (non-destructive: write to 'x_norm')
+        try:
+            norm_params = self.enhanced_data_dict.get('normalization_params', None)
+            x = view_dict.get('x')
+            if x is not None:
+                is_torch = isinstance(x, torch.Tensor)
+                x_np = x.numpy() if is_torch else (np.array(x) if not isinstance(x, np.ndarray) else x)
+
+                # Determine original feature count and curvature feature count
+                orig_feat_count = self.data_dict['feature'].shape[1] if isinstance(self.data_dict['feature'], torch.Tensor) else self.data_dict['feature'].shape[1]
+                total_feat_count = x_np.shape[1]
+                curv_feat_count = total_feat_count - orig_feat_count
+
+                applied = False
+                if norm_params is not None:
+                    orig_mean = norm_params.get('original_mean')
+                    orig_std = norm_params.get('original_std')
+                    curv_mean = norm_params.get('curvature_mean')
+                    curv_std = norm_params.get('curvature_std')
+
+                    if orig_mean is not None and orig_std is not None and curv_mean is not None and curv_std is not None:
+                        # Ensure shapes align
+                        orig_std = np.where(orig_std == 0, 1.0, orig_std)
+                        curv_std = np.where(curv_std == 0, 1.0, curv_std)
+
+                        orig_part = (x_np[:, :orig_feat_count] - orig_mean) / orig_std
+                        curv_part = (x_np[:, orig_feat_count:] - curv_mean) / curv_std
+                        x_norm = np.hstack([orig_part, curv_part])
+                        view_dict['x_norm'] = torch.from_numpy(x_norm).to(dtype=x.dtype) if is_torch else x_norm
+                        logger.info('Applied stored normalization_params to augmented view and saved x_norm')
+                        applied = True
+
+                # Fallback: use fold-computed normalization if available
+                if (not applied) and ('fold_normalization' in view_dict):
+                    norm = view_dict['fold_normalization']
+                    mean = norm['mean']
+                    std = norm['std'].copy()
+                    std[std == 0] = 1.0
+                    x_norm = (x_np - mean) / std
+                    view_dict['x_norm'] = torch.from_numpy(x_norm).to(dtype=x.dtype) if is_torch else x_norm
+                    logger.info('Applied fold-computed normalization to augmented view and saved x_norm')
+        except Exception as e:
+            logger.warning(f'Failed to apply normalization to augmented view: {e}')
+
         logger.info(f"View {view_idx + 1} splits - Train: {train_count}, Val: {val_count}, Test: {test_count}")
         
         return view_dict
@@ -954,9 +1232,9 @@ class CurvaturePipeline:
         Returns:
         dict: view_dict with added k-fold split information
         """
-        # Get node names from graphs
-        original_graph_nodes = list(self.network.G.nodes())
-        aug_node_list = list(aug_graph.nodes())
+        # Use SORTED nodes for consistency
+        original_graph_nodes = sorted(self.network.G.nodes())
+        aug_node_list = sorted(aug_graph.nodes())
         
         # Create mapping from augmented node indices to original node indices
         aug_to_orig_idx = {}
@@ -968,8 +1246,24 @@ class CurvaturePipeline:
         
         num_aug_nodes = len(aug_node_list)
         
-        # Get original k-fold splits
+            # Get original k-fold splits and normalization info
         original_kfold_splits = self.enhanced_data_dict['kfold_splits']
+        normalization_info = self.enhanced_data_dict.get('normalization_info', {})
+    
+        # Check if we're using shared normalization (fitted on Fold 1)
+        is_shared_norm = normalization_info.get('mode') == 'kfold_shared'
+        fitted_on_fold = normalization_info.get('fitted_on_fold', 1)
+    
+        # Get the features we'll normalize (if needed)
+        features = view_dict.get('x')
+        
+        # Convert to numpy if it's a tensor
+        if features is not None and isinstance(features, torch.Tensor):
+            features_np = features.numpy()
+        elif features is not None:
+            features_np = np.array(features) if not isinstance(features, np.ndarray) else features
+        else:
+            features_np = None
         
         # Propagate each fold
         augmented_kfold_splits = []
@@ -995,6 +1289,22 @@ class CurvaturePipeline:
                     aug_val_mask[aug_idx] = True
                     val_count += 1
             
+                # If we're using shared normalization and features exist
+                if is_shared_norm and features_np is not None and fold_idx == fitted_on_fold:
+                    # Store normalization parameters from this fold's training data
+                    train_features_np = features_np[aug_train_mask]
+                    
+                    if len(train_features_np) > 0:
+                        feature_mean = np.mean(train_features_np, axis=0)
+                        feature_std = np.std(train_features_np, axis=0)
+                        feature_std[feature_std == 0] = 1.0  # Avoid division by zero
+                    
+                        view_dict['fold_normalization'] = {
+                            'mean': feature_mean,
+                            'std': feature_std,
+                            'fitted_on_fold': fitted_on_fold
+                        }
+            
             augmented_fold_data = {
                 'fold': fold_idx,
                 'train_idx': np.where(aug_train_mask)[0],
@@ -1005,12 +1315,25 @@ class CurvaturePipeline:
                 'val_count': val_count
             }
             
+            # Add normalization reference if we're using shared normalization
+            if is_shared_norm:
+                augmented_fold_data['normalization_reference'] = {
+                    'use_fold': fitted_on_fold,
+                    'mode': 'shared'
+                }
+            
             augmented_kfold_splits.append(augmented_fold_data)
             
             logger.info(f"View {view_idx + 1}, Fold {fold_idx}: Train={train_count}, Val={val_count}")
         
         # Add k-fold splits to view_dict
         view_dict['kfold_splits'] = augmented_kfold_splits
+        
+        # Add normalization mode to metadata
+        metadata['normalization'] = {
+            'mode': 'kfold_shared' if is_shared_norm else 'per_fold',
+            'fitted_on_fold': fitted_on_fold if is_shared_norm else None
+        }
         
         # Add node name list for model compatibility
         view_dict['node_name'] = aug_node_list
@@ -1024,6 +1347,60 @@ class CurvaturePipeline:
         }
         
         return view_dict
+
+    def apply_fold1_normalization_to_view(self, view_dict):
+        """
+        Overwrite view_dict['x'] with normalization fitted on Fold 1 (if available).
+        Keeps original features in 'x_raw'.
+
+        Uses stored params in self.enhanced_data_dict['normalization_params'] if present;
+        otherwise, will try to use view_dict['fold_normalization'] as a fallback.
+        """
+        if 'x' not in view_dict or view_dict['x'] is None:
+            return
+
+        x = view_dict['x']
+        is_torch = isinstance(x, torch.Tensor)
+        x_np = x.numpy() if is_torch else (np.array(x) if not isinstance(x, np.ndarray) else x)
+
+        norm_params = self.enhanced_data_dict.get('normalization_params', None)
+        applied = False
+
+        # Determine original feature counts
+        orig_feat_count = self.data_dict['feature'].shape[1] if isinstance(self.data_dict['feature'], torch.Tensor) else self.data_dict['feature'].shape[1]
+
+        if norm_params is not None:
+            orig_mean = norm_params.get('original_mean')
+            orig_std = norm_params.get('original_std')
+            curv_mean = norm_params.get('curvature_mean')
+            curv_std = norm_params.get('curvature_std')
+
+            if orig_mean is not None and orig_std is not None and curv_mean is not None and curv_std is not None:
+                orig_std = np.where(orig_std == 0, 1.0, orig_std)
+                curv_std = np.where(curv_std == 0, 1.0, curv_std)
+
+                orig_part = (x_np[:, :orig_feat_count] - orig_mean) / orig_std
+                curv_part = (x_np[:, orig_feat_count:] - curv_mean) / curv_std
+                x_norm = np.hstack([orig_part, curv_part])
+
+                # Keep raw copy
+                view_dict['x_raw'] = x if is_torch else x_np.copy()
+                view_dict['x'] = torch.from_numpy(x_norm).to(dtype=x.dtype) if is_torch else x_norm
+                applied = True
+
+        # Fallback to fold-specific normalization stored in the view
+        if not applied and 'fold_normalization' in view_dict:
+            norm = view_dict['fold_normalization']
+            mean = norm['mean']
+            std = norm['std'].copy()
+            std[std == 0] = 1.0
+            x_norm = (x_np - mean) / std
+            view_dict['x_raw'] = x if is_torch else x_np.copy()
+            view_dict['x'] = torch.from_numpy(x_norm).to(dtype=x.dtype) if is_torch else x_norm
+            applied = True
+
+        if applied:
+            logger.info("Applied Fold-1 normalization to view (x overwritten, x_raw preserved)")
 
     def save_enhanced_dataset(self, output_file: str):
         """
@@ -1155,25 +1532,53 @@ class CurvaturePipeline:
             self.build_network()
             self.calculate_curvatures(method=method)
             
-            # For K-fold: Create splits on raw data, then integrate features for each fold
-            # For regular split: Create split first, then integrate with split-aware normalization
             if create_split:
                 if use_kfold:
                     logger.info("\n=== Creating K-Fold Cross-Validation Splits ===")
                     # K-fold splits can be created before feature integration
-                    self.create_kfold_splits(
+                    kfold_data = self.create_kfold_splits(
                         n_splits=n_folds,
                         stratify=stratify,
                         random_seed=random_seed
                     )
-                    # For k-fold, integrate features without split-aware normalization
-                    # Each fold will handle normalization separately during training
-                    logger.info("Note: K-fold mode - normalization will be per-fold during training")
+                    
+                    # Use fold 0's training mask for normalization
+                    logger.info("Note: K-fold mode - using Fold 1 training data for normalization")
+                    logger.info("All folds will share the same normalization (fitted on Fold 1 train data)")
+                    
+                    # Create a temporary split_data using first fold
+                    first_fold = kfold_data[0]
+                    self.split_data = {
+                        'train_mask': first_fold['train_mask'],
+                        'val_mask': first_fold['val_mask'],
+                        'test_mask': np.zeros(len(first_fold['train_mask']), dtype=bool),
+                        'train_idx': first_fold['train_idx'],
+                        'val_idx': first_fold['val_idx'],
+                        'test_idx': np.array([]),
+                        'split_config': {
+                            'mode': 'kfold_shared_normalization',
+                            'note': 'All folds use Fold 1 training data for normalization'
+                        }
+                    }
+                    
+                    # Integrate features ONCE with fold 0's training mask
                     self.integrate_features(normalize=normalize)
                     
                     # Copy k-fold splits to enhanced data dict
-                    if 'kfold_splits' in self.data_dict:
-                        self.enhanced_data_dict['kfold_splits'] = self.data_dict['kfold_splits']
+                    self.enhanced_data_dict['kfold_splits'] = kfold_data
+                    
+                    # Add normalization info
+                    self.enhanced_data_dict['normalization_info'] = {
+                        'mode': 'kfold_shared',
+                        'fitted_on_fold': 1,
+                        'n_folds': n_folds,
+                        'note': 'All folds use same normalization for consistency'
+                    }
+                    
+                    logger.info("✅ All folds ready with consistent normalization")
+                    
+                    # Clear the temporary split_data
+                    self.split_data = None
                     
                 else:
                     # Regular train/val/test split
@@ -1198,9 +1603,9 @@ class CurvaturePipeline:
             self.save_network(output_dir)
             
             # Save enhanced dataset with splits
-            dataset_name = self.extract_dataset_name()
-            enhanced_path = os.path.join(output_dir, f'{dataset_name}_enhanced_with_splits.pkl')
-            self.save_enhanced_dataset(enhanced_path)
+            # dataset_name = self.extract_dataset_name()
+            # enhanced_path = os.path.join(output_dir, f'{dataset_name}_enhanced_with_splits.pkl')
+            # self.save_enhanced_dataset(enhanced_path)
             
             result = self.enhanced_data_dict
             
@@ -1236,6 +1641,7 @@ class CurvaturePipeline:
                 logger.info(f"Train/Val/Test split created")
             elif create_split and use_kfold:
                 logger.info(f"{n_folds}-fold cross-validation splits created")
+                logger.info(f"All folds use shared normalization (fitted on Fold 1)")
             
             logger.info(f"Outputs saved in: {output_dir}")
             
@@ -1243,6 +1649,8 @@ class CurvaturePipeline:
 
         except Exception as e:
             logger.error(f'Error occurred while processing the dataset: {e}')
+            import traceback
+            logger.error(f"Full traceback:\n{traceback.format_exc()}")
             raise
         
     def extract_dataset_name(self):
