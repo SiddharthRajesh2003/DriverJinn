@@ -438,7 +438,7 @@ class CurvaturePipeline:
         except Exception as e:
             logger.error(f'Error in calculating edge curvatures: {e}')
     
-    def integrate_features(self, normalize = True):
+    def integrate_features(self, normalize=True):
         """
         Integrate curvature features with existing features
         
@@ -470,6 +470,53 @@ class CurvaturePipeline:
             else:
                 logger.info("No split found - will create enhanced features without split-aware normalization")
             
+            # CRITICAL: Store raw features BEFORE normalization for augmentation
+            logger.info("Storing raw unnormalized features for augmentation...")
+            
+            # Get raw original features
+            original_features_raw = self.data_dict['feature'].numpy() if isinstance(
+                self.data_dict['feature'], torch.Tensor
+            ) else self.data_dict['feature']
+            
+            # Get raw curvature features (before any normalization)
+            curvature_df = self.edge_curvature.create_node_curvature_features(
+                node_names=self.data_dict['node_name']
+            )
+            
+            curvature_feature_names = [
+                'ollivier_mean', 'ollivier_std', 'ollivier_min', 'ollivier_max', 'ollivier_median', 'ollivier_degree',
+                'forman_mean', 'forman_std', 'forman_min', 'forman_max', 'forman_median', 'forman_degree'
+            ]
+            
+            curvature_features_raw = []
+            for name in self.data_dict['node_name']:
+                if name in curvature_df.index:
+                    node_curv = curvature_df.loc[name, curvature_feature_names].values
+                else:
+                    node_curv = np.zeros(len(curvature_feature_names))
+                curvature_features_raw.append(node_curv)
+            
+            curvature_features_raw = np.array(curvature_features_raw)
+            
+            # Get additional curvature features (using integrator's method)
+            # We need to create a temporary integrator instance to calculate these
+            temp_integrator = CurvatureFeatureIntegrator(self.edge_curvature, self.data_dict)
+            pos_curve_deg, neg_curve_deg, curve_homophily = temp_integrator.calculate_curvature_based_features()
+            additional_features_raw = np.column_stack([pos_curve_deg, neg_curve_deg, curve_homophily])
+            
+            # Combine all raw curvature features
+            all_curvature_raw = np.hstack([curvature_features_raw, additional_features_raw])
+            
+            # Combine original + curvature raw features
+            raw_enhanced_features = np.hstack([original_features_raw, all_curvature_raw])
+            
+            # Store as tensor
+            self.raw_enhanced_features = torch.tensor(raw_enhanced_features, dtype=torch.float32)
+            
+            logger.info(f"✓ Stored raw features: {self.raw_enhanced_features.shape}")
+            logger.info(f"  Original features: {original_features_raw.shape[1]} dims")
+            logger.info(f"  Curvature features: {all_curvature_raw.shape[1]} dims")
+            
             # Create enhanced features with proper train/test normalization
             self.enhanced_data_dict = integrator.create_enhanced_features(
                 normalize=normalize,
@@ -477,6 +524,23 @@ class CurvaturePipeline:
                 val_mask=val_mask,
                 test_mask=test_mask
             )
+            
+            # Add raw features to enhanced_data_dict for easy access
+            self.enhanced_data_dict['feature_raw'] = self.raw_enhanced_features
+            
+            # Verify normalization if enabled
+            if normalize and hasattr(integrator, 'curvature_scaler'):
+                num_original = len(self.data_dict['feature_name'])
+                normalized_curv = self.enhanced_data_dict['feature'][:, num_original:].numpy()
+                curv_mean = normalized_curv.mean()
+                curv_std = normalized_curv.std()
+                
+                logger.info(f"Normalized curvature features: mean={curv_mean:.6f}, std={curv_std:.6f}")
+                
+                if abs(curv_mean) > 0.1:
+                    logger.warning(f"⚠️ Curvature mean {curv_mean:.4f} is not close to 0!")
+                else:
+                    logger.info("✓ Curvature features properly normalized")
             
             self.curvature_dict = integrator.create_edge_features_dict()
             
@@ -487,26 +551,34 @@ class CurvaturePipeline:
             
             # Store the integrator for potential later use
             self.integrator = integrator
-            # Save normalization parameters (means and stds) used by integrator if available
+            
+            # Save normalization parameters
             try:
                 orig_scaler = getattr(integrator, 'original_scaler', None)
                 curv_scaler = getattr(integrator, 'curvature_scaler', None)
+                
                 if orig_scaler is not None:
                     self.enhanced_data_dict['normalization_params'] = self.enhanced_data_dict.get('normalization_params', {})
                     self.enhanced_data_dict['normalization_params']['original_mean'] = getattr(orig_scaler, 'mean_', None)
                     self.enhanced_data_dict['normalization_params']['original_std'] = getattr(orig_scaler, 'scale_', None)
+                
                 if curv_scaler is not None:
                     self.enhanced_data_dict['normalization_params'] = self.enhanced_data_dict.get('normalization_params', {})
                     self.enhanced_data_dict['normalization_params']['curvature_mean'] = getattr(curv_scaler, 'mean_', None)
                     self.enhanced_data_dict['normalization_params']['curvature_std'] = getattr(curv_scaler, 'scale_', None)
-            except Exception:
-                logger.warning('Could not extract normalization parameters from integrator')
+                    
+                logger.info("✓ Normalization parameters stored")
+            except Exception as e:
+                logger.warning(f'Could not extract normalization parameters: {e}')
             
             logger.info("Feature integration completed!")
             return self.enhanced_data_dict
-        
+            
         except Exception as e:
             logger.error(f'Error occurred during integration of edge curvature into features: {e}')
+            import traceback
+            logger.error(traceback.format_exc())
+            raise
         
     def initialize_schur_augmentation(self, elimination_ratio: float = 0.2, neighbor_sort_method: str = 'weight',
                                         elimination_strategy: str = 'priority', random_seed = None):
@@ -554,78 +626,73 @@ class CurvaturePipeline:
         if self.schur_augmenter is None:
             logger.info("Schur augmenter not initialized, initializing with defaults...")
             self.initialize_schur_augmentation()
-        
+    
         if self.network is None:
             raise ValueError("Must build network first using build_network()")
         
+        if not hasattr(self, 'raw_enhanced_features'):
+            raise ValueError("Raw features not found! Must call integrate_features() first")
+        
         logger.info(f"Generating {num_views} augmented views...")
         
-        # Prepare edge weights from your enhanced dataset
+        # Prepare edge weights from curvature
         edge_weights = None
         if use_curvature_weights and self.enhanced_data_dict is not None:
             logger.info(f"Using {curvature_type} curvature as edge weights for augmentation")
             edge_weights = self.extract_weights_from_curvature(curvature_type)
         
-        node_features = self.enhanced_data_dict['feature'] if self.enhanced_data_dict is not None else None
+        # CRITICAL: Use RAW features for augmentation
+        node_features = self.raw_enhanced_features
+        logger.info(f"Using raw features for augmentation: {node_features.shape}")
         
         augmented_views = []
         for i in range(num_views):
             logger.info(f'Generating view {i+1}/{num_views}')
             
-            aug_graph, aug_features, metadata = self.schur_augmenter.augment(
+            # Augment using RAW features
+            aug_graph, aug_features_raw, metadata = self.schur_augmenter.augment(
                 self.network.G,
                 node_features=node_features,
                 edge_weights=edge_weights
             )
             
-                        # CRITICAL FIX: Verify and repair feature-graph consistency before curvature calculation
+            # REPAIR: Verify and fix feature-graph consistency
             num_graph_nodes = aug_graph.number_of_nodes()
-            if aug_features is not None:
-                # Convert to numpy if it's a tensor
-                if isinstance(aug_features, torch.Tensor):
-                    aug_features_np = aug_features.numpy()
-                    was_tensor = True
+            if aug_features_raw is not None:
+                # Convert to numpy
+                if isinstance(aug_features_raw, torch.Tensor):
+                    aug_features_raw_np = aug_features_raw.numpy()
                 else:
-                    aug_features_np = aug_features
-                    was_tensor = False
+                    aug_features_raw_np = aug_features_raw
                 
-                num_feature_rows = aug_features_np.shape[0]
+                num_feature_rows = aug_features_raw_np.shape[0]
                 
                 if num_feature_rows != num_graph_nodes:
                     logger.warning(f"Repairing feature-graph mismatch: {num_feature_rows} features vs {num_graph_nodes} graph nodes")
                     
-                    # Get sorted graph nodes as the source of truth
+                    # Get sorted graph nodes
                     graph_nodes = sorted(aug_graph.nodes())
                     original_nodes = sorted(self.network.G.nodes())
                     
-                    # Create proper feature matrix aligned to graph nodes
-                    feature_dim = aug_features_np.shape[1]
-                    repaired_features = np.zeros((num_graph_nodes, feature_dim))
+                    # Create feature matrix aligned to graph nodes
+                    feature_dim = aug_features_raw_np.shape[1]
+                    repaired_features_raw = np.zeros((num_graph_nodes, feature_dim))
                     
-                    # Get source features (use enhanced if available and matches dimension)
-                    if self.enhanced_data_dict is not None:
-                        source_features = self.enhanced_data_dict['feature']
-                    else:
-                        source_features = self.data_dict['feature']
+                    # Use RAW features as source
+                    source_features_raw_np = self.raw_enhanced_features.numpy()
                     
-                    # Convert source to numpy
-                    if isinstance(source_features, torch.Tensor):
-                        source_features_np = source_features.numpy()
-                    else:
-                        source_features_np = source_features
+                    # Compute mean vector for missing nodes
+                    mean_feature = np.mean(source_features_raw_np, axis=0)
                     
-                    # Compute mean vector once (for missing nodes)
-                    mean_feature = np.mean(source_features_np, axis=0)
-                    
-                    # Map original nodes to indices and build mask mapping
+                    # Map nodes to indices
                     node_to_idx = {node: idx for idx, node in enumerate(original_nodes)}
                     
-                    # Get masks if they exist in enhanced_data_dict
+                    # Get masks
                     train_mask = self.enhanced_data_dict.get('train_mask', None)
                     test_mask = self.enhanced_data_dict.get('test_mask', None)
                     val_mask = self.enhanced_data_dict.get('val_mask', None)
                     
-                    # Convert masks to numpy if they're tensors
+                    # Convert masks to numpy
                     if isinstance(train_mask, torch.Tensor):
                         train_mask = train_mask.numpy()
                     if isinstance(test_mask, torch.Tensor):
@@ -633,18 +700,18 @@ class CurvaturePipeline:
                     if isinstance(val_mask, torch.Tensor):
                         val_mask = val_mask.numpy()
                     
-                    # Initialize new masks for augmented graph
+                    # Initialize new masks
                     new_train_mask = np.zeros(num_graph_nodes, dtype=bool)
                     new_test_mask = np.zeros(num_graph_nodes, dtype=bool)
                     new_val_mask = np.zeros(num_graph_nodes, dtype=bool)
                     
-                    # Fill in features and propagate masks for all graph nodes
+                    # Fill features and propagate masks
                     missing_count = 0
                     for idx, node in enumerate(graph_nodes):
                         if node in node_to_idx:
                             orig_idx = node_to_idx[node]
-                            if orig_idx < source_features_np.shape[0]:
-                                repaired_features[idx] = source_features_np[orig_idx]
+                            if orig_idx < source_features_raw_np.shape[0]:
+                                repaired_features_raw[idx] = source_features_raw_np[orig_idx]
                                 # Propagate masks
                                 if train_mask is not None:
                                     new_train_mask[idx] = train_mask[orig_idx]
@@ -654,45 +721,73 @@ class CurvaturePipeline:
                                     new_val_mask[idx] = val_mask[orig_idx]
                             else:
                                 missing_count += 1
-                                repaired_features[idx] = mean_feature
+                                repaired_features_raw[idx] = mean_feature
                         else:
                             missing_count += 1
-                            repaired_features[idx] = mean_feature
+                            repaired_features_raw[idx] = mean_feature
                     
                     # Update masks in metadata
                     metadata['train_mask'] = torch.from_numpy(new_train_mask)
                     metadata['test_mask'] = torch.from_numpy(new_test_mask)
                     metadata['val_mask'] = torch.from_numpy(new_val_mask)
                     
-                    aug_features = torch.from_numpy(repaired_features).float()
-                    logger.info(f"Repaired features: {repaired_features.shape}, filled {missing_count} missing nodes")
-                elif was_tensor:
-                    # No repair needed but ensure it's a tensor
-                    aug_features = torch.from_numpy(aug_features_np).float()
+                    aug_features_raw_np = repaired_features_raw
+                    logger.info(f"Repaired features: {repaired_features_raw.shape}, filled {missing_count} missing nodes")
             
+            # CRITICAL: Now normalize the augmented RAW features using fitted scalers
+            if hasattr(self.integrator, 'original_scaler') and self.integrator.original_scaler is not None:
+                logger.info(f"Normalizing augmented view {i+1} using fitted scalers...")
+                
+                # Split into original and curvature features
+                num_original = len(self.integrator.feature_names)
+                aug_original_raw = aug_features_raw_np[:, :num_original]
+                aug_curvature_raw = aug_features_raw_np[:, num_original:]
+                
+                # Transform using SAME scalers fitted on training data
+                aug_original_norm = self.integrator.original_scaler.transform(aug_original_raw)
+                aug_curvature_norm = self.integrator.curvature_scaler.transform(aug_curvature_raw)
+                
+                # Combine normalized features
+                aug_features_normalized = np.hstack([aug_original_norm, aug_curvature_norm])
+                aug_features = torch.tensor(aug_features_normalized, dtype=torch.float32)
+                
+                # Verification
+                curv_mean = aug_curvature_norm.mean()
+                curv_std = aug_curvature_norm.std()
+                logger.info(f"View {i+1} normalized curvature: mean={curv_mean:.6f}, std={curv_std:.6f}")
+                
+                if abs(curv_mean) > 0.5:
+                    logger.error(f"⚠️ WARNING: View {i+1} normalization failed! Mean={curv_mean:.4f}")
+                else:
+                    logger.info(f"✓ View {i+1} properly normalized")
+            else:
+                logger.warning("No scalers available - using unnormalized features")
+                aug_features = torch.tensor(aug_features_raw_np, dtype=torch.float32)
+            
+            # Compute curvature for augmented graph
             aug_curvature_dict = None
             if compute_aug_curvature:
                 logger.info(f"Computing curvature for augmented view {i+1}...")
                 aug_curvature_dict = self.compute_augmented_curvature(
                     aug_graph,
-                    aug_features,
-                    method = curvature_method
+                    aug_features,  # Use normalized features
+                    method=curvature_method
                 )
                 
                 if aug_curvature_dict:
                     metadata['curvature_stats'] = {
-                    curv_type: {
-                        'mean': float(curvatures.mean()),
-                        'std': float(curvatures.std()),
-                        'min': float(curvatures.min()),
-                        'max': float(curvatures.max())
+                        curv_type: {
+                            'mean': float(curvatures.mean()),
+                            'std': float(curvatures.std()),
+                            'min': float(curvatures.min()),
+                            'max': float(curvatures.max())
+                        }
+                        for curv_type, curvatures in aug_curvature_dict.items()
                     }
-                    for curv_type, curvatures in aug_curvature_dict.items()
-                }
             
             augmented_views.append((aug_graph, aug_features, metadata, aug_curvature_dict))
-        
-        logger.info(f"View {i+1}: {metadata['augmented_nodes']} nodes, "
+            
+            logger.info(f"View {i+1}: {metadata['augmented_nodes']} nodes, "
                     f"{metadata.get('augmented_edges', aug_graph.number_of_edges())} edges")
         
         return augmented_views
@@ -1350,57 +1445,165 @@ class CurvaturePipeline:
 
     def apply_fold1_normalization_to_view(self, view_dict):
         """
-        Overwrite view_dict['x'] with normalization fitted on Fold 1 (if available).
-        Keeps original features in 'x_raw'.
-
-        Uses stored params in self.enhanced_data_dict['normalization_params'] if present;
-        otherwise, will try to use view_dict['fold_normalization'] as a fallback.
+        Apply or verify Fold 1 normalization to view.
+        
+        FIXED: Now checks if features are already normalized to avoid double normalization.
+        If 'x_raw' exists, normalizes from raw. If only 'x' exists and it's already normalized,
+        just stores a copy as 'x_raw' for consistency.
+        
+        Uses stored params in self.enhanced_data_dict['normalization_params'] if present.
         """
         if 'x' not in view_dict or view_dict['x'] is None:
             return
-
+        
+        # Check if already normalized (has x_raw stored)
+        if 'x_raw' in view_dict:
+            logger.info("View already has x_raw - features appear to be normalized already")
+            
+            # Verify normalization
+            x = view_dict['x']
+            is_torch = isinstance(x, torch.Tensor)
+            x_np = x.numpy() if is_torch else x
+            
+            orig_feat_count = self.data_dict['feature'].shape[1]
+            curv_mean = x_np[:, orig_feat_count:].mean()
+            
+            if abs(curv_mean) < 0.5:
+                logger.info(f"✓ Features properly normalized (curvature mean={curv_mean:.6f})")
+                return
+            else:
+                logger.warning(f"⚠️ Features may not be normalized correctly (curvature mean={curv_mean:.6f})")
+        
+        # Determine if we should normalize from raw or from current x
         x = view_dict['x']
         is_torch = isinstance(x, torch.Tensor)
         x_np = x.numpy() if is_torch else (np.array(x) if not isinstance(x, np.ndarray) else x)
-
+        
         norm_params = self.enhanced_data_dict.get('normalization_params', None)
+        
+        # Determine original feature count
+        orig_feat_count = self.data_dict['feature'].shape[1]
+        
+        # Check if x appears to be already normalized
+        curv_mean_before = x_np[:, orig_feat_count:].mean()
+        is_already_normalized = abs(curv_mean_before) < 0.5
+        
+        if is_already_normalized and 'x_raw' not in view_dict:
+            logger.info(f"Features appear normalized (curv_mean={curv_mean_before:.6f}), but no x_raw found")
+            logger.info("Storing current x as x_raw for consistency")
+            view_dict['x_raw'] = x if is_torch else x_np.copy()
+            return
+        
+        # If x_raw doesn't exist and x is not normalized, treat x as raw
+        if 'x_raw' not in view_dict and not is_already_normalized:
+            logger.info("No x_raw found and x appears unnormalized - treating x as raw features")
+            x_raw_np = x_np
+        elif 'x_raw' in view_dict:
+            # Use x_raw for normalization
+            x_raw = view_dict['x_raw']
+            x_raw_np = x_raw.numpy() if isinstance(x_raw, torch.Tensor) else x_raw
+        else:
+            # Already handled above - should not reach here
+            return
+        
+        # Apply normalization
         applied = False
-
-        # Determine original feature counts
-        orig_feat_count = self.data_dict['feature'].shape[1] if isinstance(self.data_dict['feature'], torch.Tensor) else self.data_dict['feature'].shape[1]
-
+        
         if norm_params is not None:
             orig_mean = norm_params.get('original_mean')
             orig_std = norm_params.get('original_std')
             curv_mean = norm_params.get('curvature_mean')
             curv_std = norm_params.get('curvature_std')
-
+            
             if orig_mean is not None and orig_std is not None and curv_mean is not None and curv_std is not None:
+                logger.info("Applying Fold-1 normalization from stored parameters...")
+                
+                # Ensure no division by zero
                 orig_std = np.where(orig_std == 0, 1.0, orig_std)
                 curv_std = np.where(curv_std == 0, 1.0, curv_std)
-
-                orig_part = (x_np[:, :orig_feat_count] - orig_mean) / orig_std
-                curv_part = (x_np[:, orig_feat_count:] - curv_mean) / curv_std
+                
+                # Normalize original features
+                orig_part = (x_raw_np[:, :orig_feat_count] - orig_mean) / orig_std
+                
+                # Normalize curvature features
+                curv_part = (x_raw_np[:, orig_feat_count:] - curv_mean) / curv_std
+                
+                # Combine
                 x_norm = np.hstack([orig_part, curv_part])
-
-                # Keep raw copy
-                view_dict['x_raw'] = x if is_torch else x_np.copy()
+                
+                # Store raw and normalized
+                if 'x_raw' not in view_dict:
+                    view_dict['x_raw'] = x if is_torch else x_raw_np.copy()
+                
                 view_dict['x'] = torch.from_numpy(x_norm).to(dtype=x.dtype) if is_torch else x_norm
                 applied = True
-
+                
+                # Verify
+                curv_mean_after = x_norm[:, orig_feat_count:].mean()
+                logger.info(f"After normalization: curvature mean={curv_mean_after:.6f}")
+                
+                if abs(curv_mean_after) > 0.5:
+                    logger.error(f"⚠️ Normalization failed! Mean should be ~0 but is {curv_mean_after:.4f}")
+                else:
+                    logger.info("✓ Fold-1 normalization applied successfully")
+        
         # Fallback to fold-specific normalization stored in the view
         if not applied and 'fold_normalization' in view_dict:
+            logger.info("Using fold-specific normalization from view_dict...")
             norm = view_dict['fold_normalization']
             mean = norm['mean']
             std = norm['std'].copy()
             std[std == 0] = 1.0
-            x_norm = (x_np - mean) / std
-            view_dict['x_raw'] = x if is_torch else x_np.copy()
+            
+            x_norm = (x_raw_np - mean) / std
+            
+            if 'x_raw' not in view_dict:
+                view_dict['x_raw'] = x if is_torch else x_raw_np.copy()
+            
             view_dict['x'] = torch.from_numpy(x_norm).to(dtype=x.dtype) if is_torch else x_norm
             applied = True
+            
+            logger.info("Applied fold-specific normalization")
+        
+        if not applied:
+            logger.warning("No normalization parameters found - features left unchanged")
 
-        if applied:
-            logger.info("Applied Fold-1 normalization to view (x overwritten, x_raw preserved)")
+
+    def verify_view_normalization(self, view_dict, view_name="view"):
+        """
+        Helper function to verify if a view is properly normalized
+        """
+        if 'x' not in view_dict:
+            logger.warning(f"{view_name}: No 'x' found")
+            return False
+        
+        x = view_dict['x']
+        is_torch = isinstance(x, torch.Tensor)
+        x_np = x.numpy() if is_torch else x
+        
+        orig_feat_count = self.data_dict['feature'].shape[1]
+        
+        # Check overall statistics
+        overall_mean = x_np.mean()
+        overall_std = x_np.std()
+        
+        # Check curvature statistics
+        curv_mean = x_np[:, orig_feat_count:].mean()
+        curv_std = x_np[:, orig_feat_count:].std()
+        
+        logger.info(f"{view_name} normalization check:")
+        logger.info(f"  Overall: mean={overall_mean:.6f}, std={overall_std:.6f}")
+        logger.info(f"  Curvature: mean={curv_mean:.6f}, std={curv_std:.6f}")
+        logger.info(f"  Has x_raw: {'x_raw' in view_dict}")
+        
+        is_normalized = abs(curv_mean) < 0.5 and abs(overall_mean) < 0.5
+        
+        if is_normalized:
+            logger.info(f"  ✓ {view_name} appears properly normalized")
+        else:
+            logger.warning(f"  ⚠️ {view_name} may not be properly normalized")
+        
+        return is_normalized
 
     def save_enhanced_dataset(self, output_file: str):
         """
@@ -1626,6 +1829,10 @@ class CurvaturePipeline:
                     compute_aug_curvature=compute_aug_curvature,
                     curvature_method=method
                 )
+                
+                for i, view in enumerate(contrastive_data['augmented_views']):
+                    self.verify_view_normalization(view, f"Augmented View {i}")
+
                 
                 # Save contrastive dataset
                 self.save_contrastive_dataset(contrastive_dataset=contrastive_data, output_dir=output_dir)

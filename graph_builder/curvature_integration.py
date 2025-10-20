@@ -37,22 +37,12 @@ class CurvatureFeatureIntegrator:
     def create_enhanced_features(self, normalize=True, train_mask=None, val_mask=None, test_mask=None):
         """
         Create enhanced feature matrix with curvature features
-        
-        Parameters:
-        normalize: bool, whether to normalize features
-        train_mask: Optional boolean mask for training nodes (fit scaler on these)
-        val_mask: Optional boolean mask for validation nodes
-        test_mask: Optional boolean mask for test nodes
-        
-        If masks not provided, will try to use from data_dict
-        If no masks available, will fit on all data (old behavior)
-        
-        Returns:
-        dict: Updated data_dict with enhanced features
+        Fixed normalization handling for zero-variance features
         """
         
         logger.info("Creating enhanced features with proper curvature aggregation...")
         
+        # [... existing mask extraction code ...]
         # Get masks from data_dict if not provided
         if train_mask is None and 'train_mask' in self.data_dict:
             train_mask = self.data_dict['train_mask']
@@ -69,7 +59,6 @@ class CurvatureFeatureIntegrator:
             if isinstance(test_mask, torch.Tensor):
                 test_mask = test_mask.numpy()
         
-        # Alternative: Try to extract from integer mask
         if train_mask is None and 'mask' in self.data_dict:
             mask = self.data_dict['mask']
             if isinstance(mask, torch.Tensor):
@@ -78,20 +67,10 @@ class CurvatureFeatureIntegrator:
             val_mask = (mask == 2)
             test_mask = (mask == 3)
         
-        # Create curvature features using EdgeCurvature class
+        # Create curvature features
         curvature_df = self.edge_calc.create_node_curvature_features(node_names=self.node_names)
         
-        # Debug info
-        logger.info(f"Curvature DataFrame shape: {curvature_df.shape}")
-        logger.info(f"Index matches node_names: {curvature_df.index.equals(pd.Index(self.node_names))}")
-        
-        # Check for non-zero values
-        for col in ['ollivier_mean', 'ollivier_degree']:
-            if col in curvature_df.columns:
-                non_zero = (curvature_df[col] != 0).sum()
-                logger.info(f"{col}: {non_zero} non-zero values")
-        
-        # Extract curvature features in order
+        # Extract curvature features
         curvature_feature_names = [
             'ollivier_mean', 'ollivier_std', 'ollivier_min', 'ollivier_max', 'ollivier_median', 'ollivier_degree',
             'forman_mean', 'forman_std', 'forman_min', 'forman_max', 'forman_median', 'forman_degree'
@@ -104,128 +83,122 @@ class CurvatureFeatureIntegrator:
             else:
                 logger.warning(f"Node {name} not found in curvature_df")
                 node_curvature_features = np.zeros(len(curvature_feature_names))
-            
             curvature_feature_list.append(node_curvature_features)
         
         curvature_features = np.array(curvature_feature_list)
         
-        logger.info(f"Curvature features array shape: {curvature_features.shape}")
-        logger.info(f"Ollivier_degree non-zero count: {np.sum(curvature_features[:, 5] != 0)}")
-        
-        # Calculate additional curvature-based features
+        # Calculate additional features
         logger.info("Calculating additional curvature-based features...")
         pos_curve_deg, neg_curve_deg, curve_homophily = self.calculate_curvature_based_features()
-        
-        # Debug the additional features
-        logger.info(f"Positive curvature degree - non-zero: {np.sum(pos_curve_deg != 0)}, mean: {np.mean(pos_curve_deg):.4f}")
-        logger.info(f"Negative curvature degree - non-zero: {np.sum(neg_curve_deg != 0)}, mean: {np.mean(neg_curve_deg):.4f}")
-        logger.info(f"Curvature homophily - non-zero: {np.sum(curve_homophily != 0)}, mean: {np.mean(curve_homophily):.4f}")
         
         additional_features = np.column_stack([pos_curve_deg, neg_curve_deg, curve_homophily])
         all_curvature_features = np.hstack([curvature_features, additional_features])
         
-        # Get original features as numpy
+        # Get original features
         original_features = self.features.numpy() if isinstance(self.features, torch.Tensor) else self.features
         
-        # Normalization with proper train/test split
+        # Normalization with proper zero-variance handling
         if normalize:
             logger.info("Normalizing features with train/test split awareness...")
             
             if train_mask is not None and np.any(train_mask):
-                # FIT on training data only
                 logger.info("Fitting scalers on TRAINING data only")
                 
-                # Scaler for original features
+                # Original features scaler
                 original_scaler = StandardScaler()
                 original_scaler.fit(original_features[train_mask])
                 
-                # Scaler for curvature features with handling for sparse/zero features
-                curvature_scaler = StandardScaler()
+                # Curvature features scaler with PROPER zero-variance handling
                 train_curvatures = all_curvature_features[train_mask]
                 
-                # Check for columns that are all zeros or have zero variance
+                # Identify zero-variance columns
                 train_std = train_curvatures.std(axis=0)
-                zero_var_cols = train_std == 0
+                train_mean = train_curvatures.mean(axis=0)
+                zero_var_mask = train_std == 0
                 
-                if np.any(zero_var_cols):
-                    logger.warning(f"Found {zero_var_cols.sum()} curvature features with zero variance in training data")
-                    logger.warning("These features will not be scaled to prevent division by zero")
+                if np.any(zero_var_mask):
+                    zero_var_count = zero_var_mask.sum()
+                    logger.warning(f"Found {zero_var_count} curvature features with zero variance")
+                    logger.info(f"Zero-variance feature indices: {np.where(zero_var_mask)[0]}")
                     
-                    # Create a custom scaler that handles zero-variance columns
+                    # For zero-variance features, check if they're all zeros
+                    for idx in np.where(zero_var_mask)[0]:
+                        col_values = train_curvatures[:, idx]
+                        unique_vals = np.unique(col_values)
+                        logger.info(f"  Feature {idx}: unique values = {unique_vals}")
+                    
+                    # Create custom scaling
+                    # For zero-variance features: center at 0, no scaling
+                    # For normal features: standard scaling
+                    curvature_scaler = StandardScaler()
                     curvature_scaler.fit(train_curvatures)
                     
-                    # Replace zero standard deviations with 1.0 to prevent division by zero
-                    curvature_scaler.scale_ = np.where(
-                        curvature_scaler.scale_ == 0, 
-                        1.0, 
-                        curvature_scaler.scale_
-                    )
+                    # Fix zero-variance features
+                    curvature_scaler.mean_ = np.where(zero_var_mask, train_mean, curvature_scaler.mean_)
+                    curvature_scaler.scale_ = np.where(zero_var_mask, 1.0, curvature_scaler.scale_)
                     curvature_scaler.var_ = curvature_scaler.scale_ ** 2
+                    
                 else:
+                    # Normal scaling
+                    curvature_scaler = StandardScaler()
                     curvature_scaler.fit(train_curvatures)
                 
-                # TRANSFORM all data (train, val, test)
+                # Transform all data
                 original_features_scaled = original_scaler.transform(original_features)
                 curvature_features_scaled = curvature_scaler.transform(all_curvature_features)
                 
-                # Log training statistics
-                train_samples = int(train_mask.sum())
-                logger.info(f"Train samples used for fitting: {train_samples}")
-                
-                if train_samples > 0:
-                    train_orig_mean = original_features_scaled[train_mask].mean()
-                    train_orig_std = original_features_scaled[train_mask].std()
-                    train_curv_mean = curvature_features_scaled[train_mask].mean()
-                    train_curv_std = curvature_features_scaled[train_mask].std()
+                # CRITICAL: Verify normalization worked
+                if train_mask is not None:
+                    train_curv_mean = curvature_features_scaled[train_mask].mean(axis=0)
+                    train_curv_std = curvature_features_scaled[train_mask].std(axis=0)
                     
-                    logger.info(f"Original features - Train mean: {train_orig_mean:.4f}, std: {train_orig_std:.4f}")
-                    logger.info(f"Curvature features - Train mean: {train_curv_mean:.4f}, std: {train_curv_std:.4f}")
+                    logger.info(f"Train curvature features after scaling:")
+                    logger.info(f"  Overall mean: {train_curv_mean.mean():.6f} (should be ~0)")
+                    logger.info(f"  Overall std: {train_curv_std.mean():.6f} (should be ~1)")
+                    logger.info(f"  Mean range: [{train_curv_mean.min():.6f}, {train_curv_mean.max():.6f}]")
+                    
+                    # Check for problematic features
+                    bad_mean_mask = np.abs(train_curv_mean) > 0.1
+                    if np.any(bad_mean_mask):
+                        logger.warning(f"Found {bad_mean_mask.sum()} features with |mean| > 0.1:")
+                        for idx in np.where(bad_mean_mask)[0]:
+                            logger.warning(f"  Feature {idx}: mean={train_curv_mean[idx]:.4f}, std={train_curv_std[idx]:.4f}")
                 
-                # Log test statistics if test mask is provided and valid
-                if test_mask is not None:
-                    test_samples = int(test_mask.sum())
-                    if test_samples > 0:
-                        test_orig_mean = original_features_scaled[test_mask].mean()
-                        test_orig_std = original_features_scaled[test_mask].std()
-                        test_curv_mean = curvature_features_scaled[test_mask].mean()
-                        test_curv_std = curvature_features_scaled[test_mask].std()
-                        
-                        logger.info(f"Test samples: {test_samples}")
-                        logger.info(f"Original features - Test mean: {test_orig_mean:.4f}, std: {test_orig_std:.4f}")
-                        logger.info(f"Curvature features - Test mean: {test_curv_mean:.4f}, std: {test_curv_std:.4f}")
-                    else:
-                        logger.warning("Test mask provided but contains no True values")
+                # Store scalers
+                self.original_scaler = original_scaler
+                self.curvature_scaler = curvature_scaler
                 
             else:
-                # Fallback: fit on all data (old behavior)
-                logger.warning("No training mask provided - fitting scalers on ALL data (may cause data leakage)")
+                # Fallback: fit on all data
+                logger.warning("No training mask - fitting on ALL data (may cause leakage)")
                 
                 original_scaler = StandardScaler()
                 original_features_scaled = original_scaler.fit_transform(original_features)
                 
-                # Handle sparse curvature features
+                # Handle curvature features
+                all_std = all_curvature_features.std(axis=0)
+                all_mean = all_curvature_features.mean(axis=0)
+                zero_var_mask = all_std == 0
+                
                 curvature_scaler = StandardScaler()
                 curvature_scaler.fit(all_curvature_features)
                 
-                # Check for zero variance
-                zero_var_mask = curvature_scaler.scale_ == 0
                 if np.any(zero_var_mask):
-                    logger.warning(f"Found {zero_var_mask.sum()} curvature features with zero variance")
-                    curvature_scaler.scale_ = np.where(
-                        curvature_scaler.scale_ == 0,
-                        1.0,
-                        curvature_scaler.scale_
-                    )
+                    logger.warning(f"Found {zero_var_mask.sum()} zero-variance features")
+                    curvature_scaler.mean_ = np.where(zero_var_mask, all_mean, curvature_scaler.mean_)
+                    curvature_scaler.scale_ = np.where(zero_var_mask, 1.0, curvature_scaler.scale_)
                     curvature_scaler.var_ = curvature_scaler.scale_ ** 2
                 
                 curvature_features_scaled = curvature_scaler.transform(all_curvature_features)
+                
+                self.original_scaler = original_scaler
+                self.curvature_scaler = curvature_scaler
             
-            # Combine scaled features
+            # Combine features
             enhanced_features = np.hstack([original_features_scaled, curvature_features_scaled])
             
-            # Store scalers for later use
-            self.original_scaler = original_scaler
-            self.curvature_scaler = curvature_scaler
+            # Final verification
+            logger.info(f"Enhanced features - mean: {enhanced_features.mean():.6f}, std: {enhanced_features.std():.6f}")
             
         else:
             # No normalization
