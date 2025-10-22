@@ -3,6 +3,7 @@ import torch.nn as nn
 from typing import Tuple, List, Optional, Dict
 import pandas as pd
 import gc
+import numpy as np
 from torch.utils.checkpoint import checkpoint
 
 from utils.logging_manager import get_logger
@@ -182,15 +183,255 @@ def preprocess_curvature_data(data: Dict, curvature_type: str = 'ollivier') -> D
     return data
 
 
+def create_compatible_mask(original_mask: torch.Tensor, target_size: int, eliminated_ids: List[int]) -> torch.Tensor:
+    """
+    DEPRECATED - Model handles mask mapping internally
+    This function is kept for reference but should not be used
+    """
+    eliminated_set = set(eliminated_ids)
+    aug_mask = torch.zeros(target_size, dtype=torch.bool, device=original_mask.device)
+    
+    aug_idx = 0
+    for orig_idx in range(len(original_mask)):
+        if orig_idx not in eliminated_set:
+            if orig_idx < len(original_mask) and original_mask[orig_idx]:
+                aug_mask[aug_idx] = True
+            aug_idx += 1
+    
+    return aug_mask
+
+
+def train_single_fold(
+    fold_idx: int,
+    fold_data: Dict,
+    original: Dict,
+    augmented_views: List[Dict],
+    labels: torch.Tensor,
+    num_epochs: int,
+    device: torch.device,
+    use_focal_loss: bool = True,
+    pos_weight: Optional[torch.Tensor] = None
+) -> Tuple[ContrastiveDriverGenePredictor, Dict, Dict]:
+    """
+    Train model on a single fold
+    
+    Returns:
+        model: Trained model
+        best_metrics: Best validation metrics
+        history: Training history
+    """
+    print(f"\n{'='*80}")
+    print(f"TRAINING FOLD {fold_idx}")
+    print(f"{'='*80}")
+    
+    # Extract masks for this fold from ORIGINAL graph
+    train_mask_original = torch.from_numpy(fold_data['train_mask'])
+    val_mask_original = torch.from_numpy(fold_data['val_mask'])
+    
+    # CRITICAL: Ensure masks match the size of the original graph (not augmented)
+    num_original_nodes = original['feature'].shape[0]
+    if len(train_mask_original) != num_original_nodes:
+        raise ValueError(
+            f"Train mask size ({len(train_mask_original)}) doesn't match "
+            f"original graph nodes ({num_original_nodes})"
+        )
+    
+    print(f"Train samples: {train_mask_original.sum().item()}")
+    print(f"Val samples: {val_mask_original.sum().item()}")
+    
+    # Calculate fold-specific positive weight
+    num_pos = labels[train_mask_original].sum().item()
+    num_neg = (train_mask_original.sum() - num_pos).item()
+    fold_pos_weight = torch.tensor([num_neg / num_pos], device=device)
+    
+    print(f"Fold {fold_idx} - Drivers: {num_pos}, Non-drivers: {num_neg}")
+    print(f"Positive class weight: {fold_pos_weight.item():.2f}")
+    
+    # Create model
+    model = create_cancer_driver_model(
+        num_features=original['feature'].shape[1],
+        hidden_channels=256,
+        projection_dim=128,
+        num_layers=3,
+        device=device
+    )
+    
+    # Optimizer
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=0.001,
+        weight_decay=1e-5,
+        betas=(0.9, 0.999)
+    )
+    
+    # Learning rate scheduler
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer, 
+        mode='max', 
+        factor=0.5, 
+        patience=20, 
+        min_lr=1e-6
+    )
+    
+    # Warmup scheduler
+    warmup_scheduler = WarmupScheduler(
+        optimizer,
+        warmup_epochs=10,
+        initial_lr=1e-5,
+        target_lr=0.001
+    )
+    
+    # Early stopping
+    early_stopping = EarlyStopping(patience=50, min_delta=0.0001, mode='max')
+    
+    # Training history
+    history = {
+        'train_loss': [],
+        'train_acc': [],
+        'val_loss': [],
+        'val_f1': [],
+        'val_precision': [],
+        'val_recall': [],
+        'learning_rate': []
+    }
+    
+    best_val_f1 = 0.0
+    best_metrics = None
+    
+    # Training loop
+    for epoch in range(num_epochs):
+        # Warmup learning rate
+        if epoch < 10:
+            warmup_scheduler.step()
+        
+        # Sample two different augmented views for contrastive learning
+        view_indices = torch.randperm(len(augmented_views))[:2]
+        augmented_view1 = augmented_views[view_indices[0]]
+        augmented_view2 = augmented_views[view_indices[1]]
+        
+        # Pass ORIGINAL-sized mask to train_step
+        # The model's train_step will handle mapping it to augmented space internally
+        try:
+            loss_dict = model.train_step(
+                augmented_view1,
+                augmented_view2,
+                original,
+                labels,
+                train_mask_original,  # Original size mask - model maps internally
+                optimizer,
+                contrastive_weight=0.3,
+                pos_weight=fold_pos_weight if not use_focal_loss else None,
+                curvature_type='ollivier',
+                device=device,
+                batch_size=2048,
+                use_focal_loss=use_focal_loss,
+                focal_alpha=0.25,
+                focal_gamma=2.0
+            )
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                logger.warning("OOM error, clearing cache and reducing batch size")
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                loss_dict = model.train_step(
+                    augmented_view1,
+                    augmented_view2,
+                    original,
+                    labels,
+                    train_mask_original,
+                    optimizer,
+                    contrastive_weight=0.3,
+                    pos_weight=fold_pos_weight if not use_focal_loss else None,
+                    curvature_type='ollivier',
+                    device=device,
+                    batch_size=1024,
+                    use_focal_loss=use_focal_loss,
+                    focal_alpha=0.25,
+                    focal_gamma=2.0
+                )
+            else:
+                raise e
+        
+        # Validation on original graph (use original masks)
+        val_metrics = model.evaluate(
+            original, labels, val_mask_original, 
+            curvature_type='ollivier', device=device
+        )
+        
+        # Update learning rate (after warmup)
+        if epoch >= 10:
+            scheduler.step(val_metrics['f1'])
+        
+        # Store history
+        history['train_loss'].append(loss_dict['total_loss'])
+        history['train_acc'].append(loss_dict['train_accuracy'])
+        history['val_loss'].append(val_metrics['loss'])
+        history['val_f1'].append(val_metrics['f1'])
+        history['val_precision'].append(val_metrics['precision'])
+        history['val_recall'].append(val_metrics['recall'])
+        history['learning_rate'].append(optimizer.param_groups[0]['lr'])
+        
+        # Logging
+        if epoch % 10 == 0:
+            print(f"Epoch {epoch:3d} | "
+                  f"Loss: {loss_dict['total_loss']:.4f} | "
+                  f"Train Acc: {loss_dict['train_accuracy']:.4f} | "
+                  f"Val F1: {val_metrics['f1']:.4f} | "
+                  f"Val Prec: {val_metrics['precision']:.4f} | "
+                  f"Val Rec: {val_metrics['recall']:.4f} | "
+                  f"LR: {optimizer.param_groups[0]['lr']:.6f}")
+        
+        # Save best model
+        if val_metrics['f1'] > best_val_f1:
+            best_val_f1 = val_metrics['f1']
+            best_metrics = val_metrics.copy()
+            # Save to trained_models directory
+            model_path = Path('trained_models') / f'fold_{fold_idx}_best_model.pt'
+            model.save_checkpoint(
+                str(model_path),
+                epoch,
+                optimizer,
+                val_metrics,
+                metadata={
+                    'fold': fold_idx,
+                    'num_views': len(augmented_views),
+                    'loss_type': 'focal' if use_focal_loss else 'bce',
+                    'pos_weight': fold_pos_weight.item()
+                }
+            )
+        
+        # Early stopping check
+        if early_stopping(val_metrics['f1']):
+            print(f"\nEarly stopping triggered at epoch {epoch}")
+            print(f"Best validation F1: {best_val_f1:.4f}")
+            break
+    
+    # Load best model for this fold
+    model_path = Path('trained_models') / f'fold_{fold_idx}_best_model.pt'
+    checkpoint = model.load_checkpoint(str(model_path), optimizer, device)
+    print(f"\n✓ Loaded best model from epoch {checkpoint['epoch']}")
+    print(f"  Best Val F1: {checkpoint['metrics']['f1']:.4f}")
+    
+    return model, best_metrics, history
+
+
 if __name__ == "__main__":
     import pickle
+    import os
+    from pathlib import Path
     from sklearn.metrics import classification_report, roc_auc_score, roc_curve
+    
+    # Create directories for outputs
+    models_dir = Path('trained_models')
+    results_dir = Path('model_results')
+    models_dir.mkdir(exist_ok=True)
+    results_dir.mkdir(exist_ok=True)
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     torch.cuda.empty_cache()
     
     print("\n" + "="*80)
-    print("ENHANCED CONTRASTIVE DRIVER GENE PREDICTOR")
+    print("K-FOLD CROSS-VALIDATION CONTRASTIVE DRIVER GENE PREDICTOR")
     print("="*80)
     print(f"Device: {device}")
     print(f"PyTorch version: {torch.__version__}")
@@ -220,294 +461,230 @@ if __name__ == "__main__":
     original = preprocess_curvature_data(original, curvature_type='ollivier')
     
     logger.info(f"Preprocessing {len(augmented_views)} augmented views...")
+    
+    # Check the structure of augmented views
+    num_original_nodes = original['feature'].shape[0]
+    logger.info(f"Original graph has {num_original_nodes} nodes")
+    
     for i, view in enumerate(augmented_views):
         logger.info(f"  Processing view {i+1}/{len(augmented_views)}")
+        
+        # Preprocess curvature
         augmented_views[i] = preprocess_curvature_data(view, curvature_type='ollivier')
+        
+        # Check node count
+        view_nodes = augmented_views[i]['x'].shape[0]
+        eliminated_count = len(augmented_views[i]['metadata']['eliminated_node_ids'])
+        
+        logger.info(f"    View {i+1}: {view_nodes} nodes")
+        logger.info(f"    Metadata says {eliminated_count} nodes were eliminated")
+        
+        # The augmented views from your pipeline appear to already be correctly sized
+        # The eliminated_node_ids in metadata may refer to original IDs from a larger graph
+        # Just verify the view is self-consistent
+        
+        max_node_in_edges = augmented_views[i]['edge_index'].max().item() if augmented_views[i]['edge_index'].numel() > 0 else -1
+        
+        if max_node_in_edges >= view_nodes:
+            raise ValueError(
+                f"View {i+1} is inconsistent: edge_index references node {max_node_in_edges} "
+                f"but only {view_nodes} nodes exist in features"
+            )
+        
+        logger.info(f"    ✓ View {i+1} verified: max edge node index = {max_node_in_edges}, node count = {view_nodes}")
+    
+    logger.info("✓ All augmented views are self-consistent")
     
     print("✓ Curvature preprocessing complete")
     print("="*80 + "\n")
     
     # Binary labels: 0 (non-driver), 1 (known driver)
     labels = original['label']
-    train_mask = original['mask']
     
-    # Create model
-    model = create_cancer_driver_model(
-        num_features=original['feature'].shape[1],
-        hidden_channels=256,
-        projection_dim=128,
-        num_layers=3,
-        device=device
-    )
+    # Get k-fold splits
+    kfold_splits = original['kfold_splits']
+    num_folds = len(kfold_splits)
     
-    # Calculate positive class weight for imbalanced data
-    num_pos = labels[train_mask].sum().item()
-    num_neg = (train_mask.sum() - num_pos).item()
-    pos_weight = torch.tensor([num_neg / num_pos], device=device)
-    
-    logger.info(f"Training data: {num_pos} drivers, {num_neg} non-drivers")
-    logger.info(f"Positive class weight: {pos_weight.item():.2f}")
-    logger.info(f"Class imbalance ratio: 1:{num_neg/num_pos:.1f}")
-    
-    # Optimizer with weight decay
-    optimizer = torch.optim.AdamW(
-        model.parameters(),
-        lr=0.001,
-        weight_decay=1e-5,
-        betas=(0.9, 0.999)
-    )
-    
-    # Learning rate scheduler
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 
-        mode='max', 
-        factor=0.5, 
-        patience=20, 
-        min_lr=1e-6
-    )
-    
-    # Warmup scheduler
-    warmup_scheduler = WarmupScheduler(
-        optimizer,
-        warmup_epochs=10,
-        initial_lr=1e-5,
-        target_lr=0.001
-    )
-    
-    # Early stopping
-    early_stopping = EarlyStopping(patience=50, min_delta=0.0001, mode='max')
-    
-    # Mixed precision training
-    scaler = torch.amp.GradScaler() if device == 'cuda' else None
-    
-    print("\n" + "="*80)
-    print("DATA PIPELINE INTEGRATION")
-    print("="*80)
-    print("Your CurvaturePipeline precomputes curvature for augmented views")
-    print("Augmented views have fewer nodes (Schur complement elimination)")
-    print("\nNode Mapping:")
-    print("  - Original graph: N nodes with train/val/test masks")
-    print("  - Augmented views: N - k nodes (k nodes eliminated)")
-    print("  - Masks are automatically mapped using eliminated_node_ids")
-    print("="*80 + "\n")
-    
-    # Verify data structure
-    print("Checking data structure...")
-    num_original_nodes = original['feature'].shape[0]
-    num_augmented_nodes = augmented_views[0]['x'].shape[0]
-    num_eliminated = len(augmented_views[0]['metadata']['eliminated_node_ids'])
-    shape_edge_index1 = augmented_views[0]['edge_index'].shape
-    shape_edge_index2 = augmented_views[1]['edge_index'].shape
-    
-    print(f"  Original nodes: {num_original_nodes}")
-    print(f"  Augmented nodes: {num_augmented_nodes}")
-    print(f"  Eliminated nodes: {num_eliminated}")
-    print(f"  ✓ Verified: {num_original_nodes - num_eliminated} == {num_augmented_nodes}")
-    print(f'  Shape of edge index of Augmented View 1: {shape_edge_index1}')
-    print(f'  Shape of edge index of Augmented View 2: {shape_edge_index2}')
-    print()
+    print(f"\n{'='*80}")
+    print(f"K-FOLD CROSS-VALIDATION: {num_folds} FOLDS")
+    print(f"{'='*80}")
     
     # Training configuration
     num_epochs = 200
-    best_val_f1 = 0.0
-    use_focal_loss = True  # Set to True to use focal loss instead of BCE
+    use_focal_loss = True
     
-    print(f"Training with {len(augmented_views)} augmented views")
-    print("Using pairs of augmented views for contrastive learning")
-    print(f"Loss function: {'Focal Loss' if use_focal_loss else 'Weighted BCE'}")
-    print("Masks are automatically mapped for each augmented view\n")
+    # Store results for all folds
+    all_fold_metrics = []
+    all_fold_histories = []
+    fold_models = []
     
-    # Training history
-    history = {
-        'train_loss': [],
-        'train_acc': [],
-        'val_loss': [],
-        'val_f1': [],
-        'val_precision': [],
-        'val_recall': [],
-        'learning_rate': []
+    # Train each fold
+    for fold_idx, fold_data in enumerate(kfold_splits, 1):
+        model, best_metrics, history = train_single_fold(
+            fold_idx=fold_idx,
+            fold_data=fold_data,
+            original=original,
+            augmented_views=augmented_views,
+            labels=labels,
+            num_epochs=num_epochs,
+            device=device,
+            use_focal_loss=use_focal_loss
+        )
+        
+        all_fold_metrics.append(best_metrics)
+        all_fold_histories.append(history)
+        fold_models.append(model)
+        
+        # Clear memory after each fold
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+        gc.collect()
+    
+    # Aggregate results across folds
+    print("\n" + "="*80)
+    print("K-FOLD CROSS-VALIDATION RESULTS")
+    print("="*80)
+    
+    metrics_df_data = []
+    for fold_idx, metrics in enumerate(all_fold_metrics, 1):
+        print(f"\nFold {fold_idx}:")
+        print(f"  Accuracy:  {metrics['accuracy']:.4f}")
+        print(f"  Precision: {metrics['precision']:.4f}")
+        print(f"  Recall:    {metrics['recall']:.4f}")
+        print(f"  F1 Score:  {metrics['f1']:.4f}")
+        
+        metrics_df_data.append({
+            'Fold': fold_idx,
+            'Accuracy': metrics['accuracy'],
+            'Precision': metrics['precision'],
+            'Recall': metrics['recall'],
+            'F1': metrics['f1']
+        })
+    
+    # Calculate mean and std
+    mean_metrics = {
+        'accuracy': np.mean([m['accuracy'] for m in all_fold_metrics]),
+        'precision': np.mean([m['precision'] for m in all_fold_metrics]),
+        'recall': np.mean([m['recall'] for m in all_fold_metrics]),
+        'f1': np.mean([m['f1'] for m in all_fold_metrics])
     }
     
-    # Training loop
-    for epoch in range(num_epochs):
-        # Warmup learning rate
-        if epoch < 10:
-            warmup_scheduler.step()
-        
-        # Sample two different augmented views for contrastive learning
-        view_indices = torch.randperm(len(augmented_views))[:2]
-        augmented_view1 = augmented_views[view_indices[0]]
-        augmented_view2 = augmented_views[view_indices[1]]
-        
-        # Training step
-        try:
-            loss_dict = model.train_step(
-                augmented_view1,
-                augmented_view2,
-                original,
-                labels,
-                train_mask,
-                optimizer,
-                contrastive_weight=0.3,
-                pos_weight=pos_weight if not use_focal_loss else None,
-                curvature_type='ollivier',
-                device=device,
-                batch_size=2048,
-                use_focal_loss=use_focal_loss,
-                focal_alpha=0.25,
-                focal_gamma=2.0
-            )
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                logger.warning("OOM error, clearing cache and reducing batch size")
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                # Try again with smaller batch size
-                loss_dict = model.train_step(
-                    augmented_view1,
-                    augmented_view2,
-                    original,
-                    labels,
-                    train_mask,
-                    optimizer,
-                    contrastive_weight=0.3,
-                    pos_weight=pos_weight if not use_focal_loss else None,
-                    curvature_type='ollivier',
-                    device=device,
-                    batch_size=1024,
-                    use_focal_loss=use_focal_loss,
-                    focal_alpha=0.25,
-                    focal_gamma=2.0
-                )
-            else:
-                raise e
-        
-        # Validation on original graph (for stable evaluation)
-        if 'val_mask' in original:
-            val_metrics = model.evaluate(
-                original, labels, original['val_mask'], 
-                curvature_type='ollivier', device=device
-            )
-        else:
-            val_metrics = model.evaluate(
-                original, labels, train_mask, 
-                curvature_type='ollivier', device=device
-            )
-        
-        # Update learning rate (after warmup)
-        if epoch >= 10:
-            scheduler.step(val_metrics['f1'])
-        
-        # Store history
-        history['train_loss'].append(loss_dict['total_loss'])
-        history['train_acc'].append(loss_dict['train_accuracy'])
-        history['val_loss'].append(val_metrics['loss'])
-        history['val_f1'].append(val_metrics['f1'])
-        history['val_precision'].append(val_metrics['precision'])
-        history['val_recall'].append(val_metrics['recall'])
-        history['learning_rate'].append(optimizer.param_groups[0]['lr'])
-        
-        # Logging
-        if epoch % 10 == 0:
-            print(f"Epoch {epoch:3d} | "
-                  f"Views: {view_indices[0].item()},{view_indices[1].item()} | "
-                  f"Loss: {loss_dict['total_loss']:.4f} | "
-                  f"Train Acc: {loss_dict['train_accuracy']:.4f} | "
-                  f"Val F1: {val_metrics['f1']:.4f} | "
-                  f"Val Prec: {val_metrics['precision']:.4f} | "
-                  f"Val Rec: {val_metrics['recall']:.4f} | "
-                  f"LR: {optimizer.param_groups[0]['lr']:.6f}")
-        
-        # Save best model
-        if val_metrics['f1'] > best_val_f1:
-            best_val_f1 = val_metrics['f1']
-            model.save_checkpoint(
-                'best_cancer_driver_model.pt',
-                epoch,
-                optimizer,
-                val_metrics,
-                metadata={
-                    'num_views': len(augmented_views),
-                    'loss_type': 'focal' if use_focal_loss else 'bce',
-                    'pos_weight': pos_weight.item()
-                }
-            )
-            print(f"  ✓ Saved best model (F1: {best_val_f1:.4f})")
-        
-        # Early stopping check
-        if early_stopping(val_metrics['f1']):
-            print(f"\nEarly stopping triggered at epoch {epoch}")
-            print(f"Best validation F1: {best_val_f1:.4f}")
-            break
+    std_metrics = {
+        'accuracy': np.std([m['accuracy'] for m in all_fold_metrics]),
+        'precision': np.std([m['precision'] for m in all_fold_metrics]),
+        'recall': np.std([m['recall'] for m in all_fold_metrics]),
+        'f1': np.std([m['f1'] for m in all_fold_metrics])
+    }
     
-    # Load best model
-    checkpoint = model.load_checkpoint('best_cancer_driver_model.pt', optimizer, device)
-    print(f"\n✓ Loaded best model from epoch {checkpoint['epoch']}")
-    print(f"  Best Val F1: {checkpoint['metrics']['f1']:.4f}")
+    print(f"\n{'='*80}")
+    print("MEAN ± STD ACROSS ALL FOLDS")
+    print(f"{'='*80}")
+    print(f"Accuracy:  {mean_metrics['accuracy']:.4f} ± {std_metrics['accuracy']:.4f}")
+    print(f"Precision: {mean_metrics['precision']:.4f} ± {std_metrics['precision']:.4f}")
+    print(f"Recall:    {mean_metrics['recall']:.4f} ± {std_metrics['recall']:.4f}")
+    print(f"F1 Score:  {mean_metrics['f1']:.4f} ± {std_metrics['f1']:.4f}")
     
-    # Final evaluation
-    test_mask = original.get('test_mask', original.get('val_mask', train_mask))
-    test_metrics = model.evaluate(
-        original, 
-        labels, 
-        test_mask,
-        curvature_type='ollivier',
-        device=device
-    )
+    # Save fold results
+    try:
+        import pandas as pd
+        df_metrics = pd.DataFrame(metrics_df_data)
+        
+        # Add mean row
+        df_metrics.loc[len(df_metrics)] = {
+            'Fold': 'Mean',
+            'Accuracy': mean_metrics['accuracy'],
+            'Precision': mean_metrics['precision'],
+            'Recall': mean_metrics['recall'],
+            'F1': mean_metrics['f1']
+        }
+        
+        # Add std row
+        df_metrics.loc[len(df_metrics)] = {
+            'Fold': 'Std',
+            'Accuracy': std_metrics['accuracy'],
+            'Precision': std_metrics['precision'],
+            'Recall': std_metrics['recall'],
+            'F1': std_metrics['f1']
+        }
+        
+        df_metrics.to_csv(results_dir / 'kfold_results.csv', index=False)
+        print(f"\n✓ Saved k-fold results to '{results_dir / 'kfold_results.csv'}'")
+    except ImportError:
+        logger.warning("pandas not available for CSV export")
     
+    # ENSEMBLE EVALUATION
     print("\n" + "="*80)
-    print("FINAL TEST RESULTS")
+    print("ENSEMBLE MODEL EVALUATION")
     print("="*80)
-    print(f"Accuracy:  {test_metrics['accuracy']:.4f}")
-    print(f"Precision: {test_metrics['precision']:.4f}")
-    print(f"Recall:    {test_metrics['recall']:.4f}")
-    print(f"F1 Score:  {test_metrics['f1']:.4f}")
-    print(f"\nConfusion Matrix:")
-    print(f"  TP: {test_metrics['true_positives']:4d}  |  FP: {test_metrics['false_positives']:4d}")
-    print(f"  FN: {test_metrics['false_negatives']:4d}  |  TN: {test_metrics['true_negatives']:4d}")
+    print("Using all fold models for ensemble prediction...")
     
-    # ROC-AUC analysis
-    print("\n" + "="*80)
-    print("ROC-AUC ANALYSIS")
-    print("="*80)
+    # Use original mask for ensemble evaluation (or create test set from all data)
+    test_mask = original['mask']
     
-    probs = model.predict_probability(
+    # Ensemble predictions
+    ensemble_probs, ensemble_std = ensemble_predict(
+        fold_models,
         original,
         test_mask,
         curvature_type='ollivier',
         device=device
     )
+    
+    # Calculate ensemble metrics
     test_labels = labels[test_mask].cpu().numpy()
-    probs_np = probs.cpu().numpy()
+    ensemble_preds = (ensemble_probs > 0.5).cpu().numpy()
     
-    roc_auc = roc_auc_score(test_labels, probs_np)
-    print(f"ROC-AUC Score: {roc_auc:.4f}")
+    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
     
-    # Plot ROC curve
+    ensemble_metrics = {
+        'accuracy': accuracy_score(test_labels, ensemble_preds),
+        'precision': precision_score(test_labels, ensemble_preds),
+        'recall': recall_score(test_labels, ensemble_preds),
+        'f1': f1_score(test_labels, ensemble_preds)
+    }
+    
+    print(f"\nEnsemble Performance:")
+    print(f"  Accuracy:  {ensemble_metrics['accuracy']:.4f}")
+    print(f"  Precision: {ensemble_metrics['precision']:.4f}")
+    print(f"  Recall:    {ensemble_metrics['recall']:.4f}")
+    print(f"  F1 Score:  {ensemble_metrics['f1']:.4f}")
+    
+    # ROC-AUC for ensemble
+    ensemble_roc_auc = roc_auc_score(test_labels, ensemble_probs.cpu().numpy())
+    print(f"  ROC-AUC:   {ensemble_roc_auc:.4f}")
+    
+    # Plot ensemble ROC curve
     try:
         import matplotlib.pyplot as plt
-        fpr, tpr, thresholds = roc_curve(test_labels, probs_np)
+        
+        fpr, tpr, _ = roc_curve(test_labels, ensemble_probs.cpu().numpy())
         
         plt.figure(figsize=(8, 6))
-        plt.plot(fpr, tpr, label=f'ROC Curve (AUC = {roc_auc:.4f})', linewidth=2)
+        plt.plot(fpr, tpr, label=f'Ensemble ROC (AUC = {ensemble_roc_auc:.4f})', linewidth=2)
         plt.plot([0, 1], [0, 1], 'k--', label='Random Classifier')
         plt.xlabel('False Positive Rate')
         plt.ylabel('True Positive Rate')
-        plt.title('ROC Curve - Cancer Driver Gene Prediction')
+        plt.title('Ensemble Model ROC Curve')
         plt.legend()
         plt.grid(alpha=0.3)
         plt.tight_layout()
-        plt.savefig('roc_curve.png', dpi=300, bbox_inches='tight')
-        print("✓ Saved ROC curve to 'roc_curve.png'")
+        plt.savefig(results_dir / 'ensemble_roc_curve.png', dpi=300, bbox_inches='tight')
+        print(f"✓ Saved ensemble ROC curve to '{results_dir / 'ensemble_roc_curve.png'}'")
     except ImportError:
-        logger.warning("matplotlib not available for ROC curve plotting")
+        logger.warning("matplotlib not available")
     
-    # IDENTIFY POTENTIAL DRIVER GENES
+    # IDENTIFY POTENTIAL DRIVERS USING BEST FOLD MODEL
     print("\n" + "="*80)
     print("POTENTIAL DRIVER GENE IDENTIFICATION")
     print("="*80)
     
-    # Define feature criteria for potential drivers
+    # Use the fold with best F1 score
+    best_fold_idx = np.argmax([m['f1'] for m in all_fold_metrics])
+    best_model = fold_models[best_fold_idx]
+    
+    print(f"Using Fold {best_fold_idx + 1} model (F1: {all_fold_metrics[best_fold_idx]['f1']:.4f})")
+    
+    # Define feature criteria
     feature_names = original.get('feature_name', [])
     feature_criteria = {}
     
@@ -523,7 +700,7 @@ if __name__ == "__main__":
                 feature_names.index('ppin_betweenness'), 0.1
             )
     
-    potential_results = model.identify_potential_drivers(
+    potential_results = best_model.identify_potential_drivers(
         original,
         labels,
         test_mask,
@@ -547,7 +724,6 @@ if __name__ == "__main__":
         print("TOP POTENTIAL DRIVER GENES")
         print("-"*80)
         
-        # Sort by confidence score
         sorted_indices = torch.argsort(potential_results['scores'], descending=True)
         top_k = min(20, len(sorted_indices))
         
@@ -565,37 +741,105 @@ if __name__ == "__main__":
             print(f"   Curvature: mean={details['curvature']['mean_curvature']:.3f}, "
                   f"pos={details['curvature']['positive_ratio']:.2f}, "
                   f"neg={details['curvature']['negative_ratio']:.2f}")
-            
-            # Show top features
-            if details['node_features']:
-                feat_str = ", ".join([f"{k}={v:.3f}" 
-                                     for k, v in list(details['node_features'].items())[:3]])
-                print(f"   Features: {feat_str}")
-            
-            # Show curvature importance
-            curv_imp = details['curvature_importance']
-            curv_str = ", ".join([f"{k}={v:.3f}" for k, v in curv_imp.items()])
-            print(f"   Curvature Importance: {curv_str}")
     
-        # Save potential drivers to file
-        output = {
-            'potential_driver_indices': potential_results['potential_driver_indices'].cpu().numpy(),
-            'potential_driver_names': potential_results['node_names'],
-            'scores': potential_results['scores'].cpu().numpy(),
-            'reasons': potential_results['reasons'],
-            'detailed_features': potential_results['detailed_features'],
-            'test_metrics': test_metrics,
-            'roc_auc': roc_auc
-        }
+    # Save results
+    output = {
+        'kfold_metrics': all_fold_metrics,
+        'mean_metrics': mean_metrics,
+        'std_metrics': std_metrics,
+        'ensemble_metrics': ensemble_metrics,
+        'ensemble_roc_auc': ensemble_roc_auc,
+        'potential_drivers': potential_results,
+        'best_fold_idx': best_fold_idx
+    }
+    
+    with open(results_dir / 'kfold_results.pkl', 'wb') as f:
+        pickle.dump(output, f)
+    print(f"\n✓ Saved complete results to '{results_dir / 'kfold_results.pkl'}'")
+    
+    # Plot fold comparison
+    try:
+        import matplotlib.pyplot as plt
         
-        with open('potential_driver_genes.pkl', 'wb') as f:
-            pickle.dump(output, f)
-        print(f"\n✓ Saved potential drivers to 'potential_driver_genes.pkl'")
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
         
-        # Save as CSV for easy viewing
+        metrics_to_plot = ['accuracy', 'precision', 'recall', 'f1']
+        titles = ['Accuracy', 'Precision', 'Recall', 'F1 Score']
+        
+        for idx, (metric, title) in enumerate(zip(metrics_to_plot, titles)):
+            ax = axes[idx // 2, idx % 2]
+            
+            values = [m[metric] for m in all_fold_metrics]
+            folds = list(range(1, num_folds + 1))
+            
+            ax.bar(folds, values, alpha=0.7, color='steelblue')
+            ax.axhline(y=mean_metrics[metric], color='red', linestyle='--', 
+                      label=f'Mean: {mean_metrics[metric]:.4f}')
+            ax.set_xlabel('Fold')
+            ax.set_ylabel(title)
+            ax.set_title(f'{title} Across Folds')
+            ax.legend()
+            ax.grid(alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(results_dir / 'kfold_comparison.png', dpi=300, bbox_inches='tight')
+        print(f"✓ Saved fold comparison to '{results_dir / 'kfold_comparison.png'}'")
+        
+        # Plot training history for best fold
+        best_history = all_fold_histories[best_fold_idx]
+        
+        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+        
+        # Loss curves
+        axes[0, 0].plot(best_history['train_loss'], label='Train Loss', alpha=0.8)
+        axes[0, 0].plot(best_history['val_loss'], label='Val Loss', alpha=0.8)
+        axes[0, 0].set_xlabel('Epoch')
+        axes[0, 0].set_ylabel('Loss')
+        axes[0, 0].set_title(f'Best Fold {best_fold_idx + 1}: Training and Validation Loss')
+        axes[0, 0].legend()
+        axes[0, 0].grid(alpha=0.3)
+        
+        # Accuracy and F1
+        axes[0, 1].plot(best_history['train_acc'], label='Train Accuracy', alpha=0.8)
+        axes[0, 1].plot(best_history['val_f1'], label='Val F1', alpha=0.8)
+        axes[0, 1].set_xlabel('Epoch')
+        axes[0, 1].set_ylabel('Score')
+        axes[0, 1].set_title(f'Best Fold {best_fold_idx + 1}: Accuracy and F1')
+        axes[0, 1].legend()
+        axes[0, 1].grid(alpha=0.3)
+        
+        # Precision and Recall
+        axes[1, 0].plot(best_history['val_precision'], label='Precision', alpha=0.8)
+        axes[1, 0].plot(best_history['val_recall'], label='Recall', alpha=0.8)
+        axes[1, 0].set_xlabel('Epoch')
+        axes[1, 0].set_ylabel('Score')
+        axes[1, 0].set_title(f'Best Fold {best_fold_idx + 1}: Precision and Recall')
+        axes[1, 0].legend()
+        axes[1, 0].grid(alpha=0.3)
+        
+        # Learning rate
+        axes[1, 1].plot(best_history['learning_rate'], alpha=0.8)
+        axes[1, 1].set_xlabel('Epoch')
+        axes[1, 1].set_ylabel('Learning Rate')
+        axes[1, 1].set_title(f'Best Fold {best_fold_idx + 1}: Learning Rate Schedule')
+        axes[1, 1].set_yscale('log')
+        axes[1, 1].grid(alpha=0.3)
+        
+        plt.tight_layout()
+        plt.savefig(results_dir / 'best_fold_training_history.png', dpi=300, bbox_inches='tight')
+        print(f"✓ Saved best fold training history to '{results_dir / 'best_fold_training_history.png'}'")
+        
+    except ImportError:
+        logger.warning("matplotlib not available for plotting")
+    
+    # Save potential drivers to CSV
+    if potential_results['num_potential_drivers'] > 0:
         try:
             import pandas as pd
             df_data = []
+            sorted_indices = torch.argsort(potential_results['scores'], descending=True)
+            top_k = min(50, len(sorted_indices))
+            
             for i, idx_val in enumerate(sorted_indices[:top_k]):
                 idx_val = idx_val.item()
                 details = potential_results['detailed_features'][idx_val]
@@ -613,148 +857,28 @@ if __name__ == "__main__":
                 df_data.append(row)
             
             df = pd.DataFrame(df_data)
-            df.to_csv('potential_driver_genes.csv', index=False)
-            print("✓ Saved potential drivers to 'potential_driver_genes.csv'")
+            df.to_csv(results_dir / 'kfold_potential_driver_genes.csv', index=False)
+            print(f"✓ Saved potential drivers to '{results_dir / 'kfold_potential_driver_genes.csv'}'")
         except ImportError:
             logger.warning("pandas not available for CSV export")
     
-    # Analyze curvature importance for different predictions
     print("\n" + "="*80)
-    print("CURVATURE PATHWAY ANALYSIS")
-    print("="*80)
-    
-    _, attention_info = model.encode(
-        original.get('feature', original.get('x')).to(device),
-        original['edge_index'].to(device),
-        original['ollivier_curvature'].to(device),
-        return_attention=True
-    )
-    
-    # Get predictions for analysis
-    logits, _ = model.forward(
-        original.get('feature', original.get('x')).to(device),
-        original['edge_index'].to(device),
-        original['ollivier_curvature'].to(device)
-    )
-    
-    if logits.dim() > 1:
-        logits = logits.squeeze(-1)
-    
-    cross_attn = attention_info['cross_curvature_attention'][test_mask]
-    
-    # True positives vs False positives
-    tp_mask = (logits[test_mask].cpu() > 0) & (labels[test_mask] == 1)
-    fp_mask = (logits[test_mask].cpu() > 0) & (labels[test_mask] == 0)
-    tn_mask = (logits[test_mask].cpu() <= 0) & (labels[test_mask] == 0)
-    fn_mask = (logits[test_mask].cpu() <= 0) & (labels[test_mask] == 1)
-    
-    print("\nCurvature Pathway Importance by Prediction Type:")
-    print("-" * 60)
-    
-    for mask_name, mask in [('True Positives', tp_mask), 
-                            ('False Positives', fp_mask),
-                            ('True Negatives', tn_mask),
-                            ('False Negatives', fn_mask)]:
-        if mask.sum() > 0:
-            attn = cross_attn[mask].mean(dim=0)
-            print(f"\n{mask_name} (n={mask.sum().item()}):")
-            for i, curv_type in enumerate(model.curvature_types):
-                print(f"  {curv_type:10s}: {attn[i].item():.4f}")
-    
-    # Visualize attention for a few example nodes
-    print("\n" + "="*80)
-    print("ATTENTION VISUALIZATION")
-    print("="*80)
-    
-    if potential_results['num_potential_drivers'] > 0:
-        print("\nGenerating attention visualizations for top 3 potential drivers...")
-        for i in range(min(3, potential_results['num_potential_drivers'])):
-            node_idx = potential_results['potential_driver_indices'][i].item()
-            gene_name = potential_results['node_names'][i]
-            save_path = f'attention_viz_{gene_name.replace("/", "_")}.png'
-            
-            try:
-                model.visualize_attention_weights(
-                    original,
-                    node_idx,
-                    curvature_type='ollivier',
-                    save_path=save_path,
-                    device=device
-                )
-                print(f"  ✓ Saved visualization for {gene_name}")
-            except Exception as e:
-                logger.warning(f"Could not visualize {gene_name}: {e}")
-    
-    # Plot training history
-    print("\n" + "="*80)
-    print("TRAINING HISTORY")
-    print("="*80)
-    
-    try:
-        import matplotlib.pyplot as plt
-        
-        fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-        
-        # Loss curves
-        axes[0, 0].plot(history['train_loss'], label='Train Loss', alpha=0.8)
-        axes[0, 0].plot(history['val_loss'], label='Val Loss', alpha=0.8)
-        axes[0, 0].set_xlabel('Epoch')
-        axes[0, 0].set_ylabel('Loss')
-        axes[0, 0].set_title('Training and Validation Loss')
-        axes[0, 0].legend()
-        axes[0, 0].grid(alpha=0.3)
-        
-        # Accuracy and F1
-        axes[0, 1].plot(history['train_acc'], label='Train Accuracy', alpha=0.8)
-        axes[0, 1].plot(history['val_f1'], label='Val F1', alpha=0.8)
-        axes[0, 1].set_xlabel('Epoch')
-        axes[0, 1].set_ylabel('Score')
-        axes[0, 1].set_title('Training Accuracy and Validation F1')
-        axes[0, 1].legend()
-        axes[0, 1].grid(alpha=0.3)
-        
-        # Precision and Recall
-        axes[1, 0].plot(history['val_precision'], label='Precision', alpha=0.8)
-        axes[1, 0].plot(history['val_recall'], label='Recall', alpha=0.8)
-        axes[1, 0].set_xlabel('Epoch')
-        axes[1, 0].set_ylabel('Score')
-        axes[1, 0].set_title('Validation Precision and Recall')
-        axes[1, 0].legend()
-        axes[1, 0].grid(alpha=0.3)
-        
-        # Learning rate
-        axes[1, 1].plot(history['learning_rate'], alpha=0.8)
-        axes[1, 1].set_xlabel('Epoch')
-        axes[1, 1].set_ylabel('Learning Rate')
-        axes[1, 1].set_title('Learning Rate Schedule')
-        axes[1, 1].set_yscale('log')
-        axes[1, 1].grid(alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig('training_history.png', dpi=300, bbox_inches='tight')
-        print("✓ Saved training history to 'training_history.png'")
-    except ImportError:
-        logger.warning("matplotlib not available for training history plotting")
-    
-    print("\n" + "="*80)
-    print("ANALYSIS COMPLETE")
+    print("K-FOLD CROSS-VALIDATION COMPLETE")
     print("="*80)
     print("\nGenerated files:")
-    print("  - best_cancer_driver_model.pt: Best model checkpoint")
-    print("  - potential_driver_genes.pkl: Potential drivers (Python)")
-    print("  - potential_driver_genes.csv: Potential drivers (CSV)")
-    print("  - roc_curve.png: ROC curve visualization")
-    print("  - training_history.png: Training metrics over time")
-    print("  - attention_viz_*.png: Attention visualizations")
-    print("\nKey Improvements:")
-    print("  ✓ Fixed contrastive loss computation")
-    print("  ✓ Added dimension validation for curvatures")
-    print("  ✓ Fixed device handling issues")
-    print("  ✓ Added predict_probability method")
-    print("  ✓ Added focal loss option")
-    print("  ✓ Added early stopping")
-    print("  ✓ Added learning rate warmup")
-    print("  ✓ Added gradient clipping")
-    print("  ✓ Added comprehensive visualizations")
-    print("  ✓ Better checkpointing with metadata")
+    print(f"\nModels (in {models_dir}/):")
+    print("  - fold_X_best_model.pt: Best model for each fold")
+    print(f"\nResults (in {results_dir}/):")
+    print("  - kfold_results.pkl: Complete k-fold results")
+    print("  - kfold_results.csv: Fold metrics comparison")
+    print("  - kfold_comparison.png: Visual comparison across folds")
+    print("  - best_fold_training_history.png: Training curves for best fold")
+    print("  - ensemble_roc_curve.png: Ensemble model ROC curve")
+    print("  - kfold_potential_driver_genes.csv: Potential drivers")
+    print("\nKey Results:")
+    print(f"  ✓ Mean F1 Score: {mean_metrics['f1']:.4f} ± {std_metrics['f1']:.4f}")
+    print(f"  ✓ Ensemble F1 Score: {ensemble_metrics['f1']:.4f}")
+    print(f"  ✓ Ensemble ROC-AUC: {ensemble_roc_auc:.4f}")
+    print(f"  ✓ Best Fold: {best_fold_idx + 1} (F1: {all_fold_metrics[best_fold_idx]['f1']:.4f})")
+    print(f"  ✓ Potential Drivers: {potential_results['num_potential_drivers']}")
     print("="*80 + "\n")

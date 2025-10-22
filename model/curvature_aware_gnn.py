@@ -29,7 +29,8 @@ class CurvatureAwareGNN(nn.Module):
         curvature_types:List[str] = ['positive', 'negative', 'both'],
         hop_type: str = 'one_hop',
         use_attention: bool = True,
-        dropout: float = 0.2
+        dropout: float = 0.2,
+        min_edge_ratio: float = 0.15
     ):
         super().__init__()
         self.num_layers = num_layers
@@ -51,7 +52,8 @@ class CurvatureAwareGNN(nn.Module):
                         hop_type=hop_type,
                         aggregation='add',
                         use_attention=use_attention,
-                        dropout=dropout
+                        dropout=dropout,
+                        min_edge_ratio=min_edge_ratio
                     )
                 )
         

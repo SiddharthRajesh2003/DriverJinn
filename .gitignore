@@ -7,6 +7,5 @@ curvature_output/
 .env
 model/__pycache__
 model/model_tester.py
-results/
-roc_curve.png
-training_history.png
+model_results/
+results.tar.gz

@@ -619,7 +619,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         
         return original_predictions
     
-    @torch.cuda.amp.autocast()
+    @torch.amp.autocast('cuda')
     def train_step(
         self,
         view1: Dict,
@@ -641,7 +641,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         """
         Combined training step with contrastive and classification objectives
         
-        FIXED: All device issues, dimension mismatches, and edge validation
+        FIXED: Robust mask and label mapping handling Schur complement augmentation
         """
         self.train()
         
@@ -649,7 +649,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
-        # FIX 1: Ensure consistent device usage
+        # Ensure consistent device usage
         device = device if device else self.device
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -660,19 +660,19 @@ class ContrastiveDriverGenePredictor(nn.Module):
         curvature_type = curvature_type.lower()
         curv_key = f'{curvature_type}_curvature'
         
-        # FIX 2: Move all data to device BEFORE any operations
+        # Move all data to device BEFORE any operations
         view1['x'] = view1['x'].to(device)
         view1['edge_index'] = view1['edge_index'].to(device)
         view2['x'] = view2['x'].to(device)
         view2['edge_index'] = view2['edge_index'].to(device)
         
-        # Move labels and masks to device - FIX 4
+        # Move labels and masks to device
         labels = labels.to(device)
-        train_mask = train_mask
+        train_mask = train_mask.to(device)
         if pos_weight is not None:
             pos_weight = pos_weight.to(device)
         
-        # FIX 3: Validate edge indices before processing
+        # Validate edge indices before processing
         def validate_edge_index(edge_index, num_nodes, view_name):
             if edge_index.numel() == 0:
                 logger.warning(f"{view_name}: Empty edge index")
@@ -687,10 +687,10 @@ class ContrastiveDriverGenePredictor(nn.Module):
                 
             return edge_index, valid_edges
         
-        view1['edge_index'], valid_edges1 = validate_edge_index(
+        view1['edge_index'], _ = validate_edge_index(
             view1['edge_index'], view1['x'].shape[0], "View1"
         )
-        view2['edge_index'], valid_edges2 = validate_edge_index(
+        view2['edge_index'], _ = validate_edge_index(
             view2['edge_index'], view2['x'].shape[0], "View2"
         )
         
@@ -733,27 +733,67 @@ class ContrastiveDriverGenePredictor(nn.Module):
                 curvature_type=curvature_type
             )
         
-        # Map masks and labels to augmented views
+        # ROBUST FIX: Handle label and mask mapping for Schur complement augmentation
         num_original_nodes = labels.shape[0]
-        eliminated_ids_1 = view1['metadata']['eliminated_node_ids']
-        eliminated_ids_2 = view2['metadata']['eliminated_node_ids']
+        aug_size_1 = view1['x'].shape[0]
+        aug_size_2 = view2['x'].shape[0]
         
-        aug_train_mask1 = self.map_original_mask_to_augmented(
-            train_mask, eliminated_ids_1, num_original_nodes
-        ).to(device)
+        eliminated_ids_1 = set(view1['metadata']['eliminated_node_ids'])
+        eliminated_ids_2 = set(view2['metadata']['eliminated_node_ids'])
         
-        aug_train_mask2 = self.map_original_mask_to_augmented(
-            train_mask, eliminated_ids_2, num_original_nodes
-        ).to(device)
+        # Create mapping from original indices to augmented indices
+        def create_index_mapping(num_orig, eliminated_set):
+            """Map original node indices to augmented node indices"""
+            orig_to_aug = {}
+            aug_idx = 0
+            for orig_idx in range(num_orig):
+                if orig_idx not in eliminated_set:
+                    orig_to_aug[orig_idx] = aug_idx
+                    aug_idx += 1
+            return orig_to_aug, aug_idx
         
-        # FIX 6: Properly convert labels
-        aug_labels1 = self.map_original_mask_to_augmented(
-            labels.bool(), eliminated_ids_1, num_original_nodes
-        ).long().to(device)
+        orig_to_aug1, mapped_count1 = create_index_mapping(num_original_nodes, eliminated_ids_1)
+        orig_to_aug2, mapped_count2 = create_index_mapping(num_original_nodes, eliminated_ids_2)
         
-        aug_labels2 = self.map_original_mask_to_augmented(
-            labels.bool(), eliminated_ids_2, num_original_nodes
-        ).long().to(device)
+        # Initialize augmented labels and masks
+        # Use -100 (ignore index) for unmapped nodes
+        aug_labels1 = torch.full((aug_size_1,), -100, dtype=torch.long, device=device)
+        aug_labels2 = torch.full((aug_size_2,), -100, dtype=torch.long, device=device)
+        aug_train_mask1 = torch.zeros(aug_size_1, dtype=torch.bool, device=device)
+        aug_train_mask2 = torch.zeros(aug_size_2, dtype=torch.bool, device=device)
+        
+        # Map labels and masks using the mapping
+        for orig_idx in range(num_original_nodes):
+            if orig_idx in orig_to_aug1:
+                aug_idx = orig_to_aug1[orig_idx]
+                if aug_idx < aug_size_1:  # Safety check
+                    aug_labels1[aug_idx] = labels[orig_idx]
+                    aug_train_mask1[aug_idx] = train_mask[orig_idx]
+            
+            if orig_idx in orig_to_aug2:
+                aug_idx = orig_to_aug2[orig_idx]
+                if aug_idx < aug_size_2:  # Safety check
+                    aug_labels2[aug_idx] = labels[orig_idx]
+                    aug_train_mask2[aug_idx] = train_mask[orig_idx]
+        
+        # Handle case where augmented graph is larger than expected
+        # (Schur complement may create "virtual" nodes)
+        if mapped_count1 < aug_size_1:
+            logger.warning(f"View1: Mapped {mapped_count1} nodes but graph has {aug_size_1} nodes. "
+                        f"Extra {aug_size_1 - mapped_count1} nodes will be ignored in training.")
+            # Set extra nodes' labels to 0 (non-driver) and exclude from training
+            aug_labels1[mapped_count1:] = 0
+            aug_train_mask1[mapped_count1:] = False
+        
+        if mapped_count2 < aug_size_2:
+            logger.warning(f"View2: Mapped {mapped_count2} nodes but graph has {aug_size_2} nodes. "
+                        f"Extra {aug_size_2 - mapped_count2} nodes will be ignored in training.")
+            aug_labels2[mapped_count2:] = 0
+            aug_train_mask2[mapped_count2:] = False
+        
+        # Verify we have training samples
+        if aug_train_mask1.sum() == 0 or aug_train_mask2.sum() == 0:
+            raise ValueError("No training samples after mapping! Check eliminated_node_ids.")
         
         # Zero gradients
         optimizer.zero_grad()
@@ -777,7 +817,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
             edge_curvature=curv2
         )
         
-        # FIX 7: Ensure logits are 1D
+        # Ensure logits are 1D
         if logits1.dim() > 1:
             logits1 = logits1.squeeze(-1)
         if logits2.dim() > 1:
@@ -807,11 +847,13 @@ class ContrastiveDriverGenePredictor(nn.Module):
         
         total_loss.backward()
         
-        # FIX 8: Gradient clipping to prevent instability
+        # Gradient clipping to prevent instability
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
         
         optimizer.step()
-        torch.cuda.empty_cache()
+        
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
         
         # Training metrics
         with torch.no_grad():
@@ -820,7 +862,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
                 pred1 = (probs1 > 0.5).long()
                 train_acc = (pred1 == aug_labels1[aug_train_mask1]).float().mean()
             else:
-                train_acc = torch.tensor(0.0)
+                train_acc = torch.tensor(0.0, device=device)
         
         return {
             'total_loss': total_loss.item(),
@@ -828,7 +870,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
             'classification_loss': classification_loss.item(),
             'train_accuracy': train_acc.item()
         }
-    
+        
     @torch.no_grad()
     def evaluate(
         self,

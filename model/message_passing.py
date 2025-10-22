@@ -28,13 +28,13 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
         self, 
         in_channels: int,
         out_channels: int,
-        curvature_type:str = 'positive',
-        hop_type:str = 'one_hop',
+        curvature_type: str = 'positive',
+        hop_type: str = 'one_hop',
         aggregation: str = 'add',
         use_attention: bool = False,
-        dropout: float = 0.0
+        dropout: float = 0.0,
+        min_edge_ratio: float = 0.1  # Add this parameter
     ):
-        
         super().__init__(aggr=aggregation)
         
         self.in_channels = in_channels
@@ -43,6 +43,7 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
         self.hop_type = hop_type.lower()
         self.use_attention = use_attention
         self.dropout = dropout
+        self.min_edge_ratio = min_edge_ratio  # Store it
         
         # Transformation Weights
         self.lin = nn.Linear(self.in_channels, self.out_channels)
@@ -120,37 +121,82 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
         self,
         edge_index: torch.Tensor,
         edge_curvature: torch.Tensor,
-        edge_attr: Optional[torch.Tensor] = None
+        edge_attr: Optional[torch.Tensor] = None,
+        min_edge_ratio: float = 0.1  # Ensure at least 10% of edges remain
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
         Filter edges based on curvature type (positive/negative)
         
+        Args:
+            min_edge_ratio: Minimum fraction of edges to keep (prevents empty graphs)
+        
         Returns:
             Filtered edge_index and edge_attr
         """
-        # Sanity: ensure edge_index is [2, num_edges]
         num_edges_index = edge_index.shape[1]
         num_curv = edge_curvature.shape[0]
-
-        # Use a small epsilon for numerical stability
-        eps = 1e-8
         
-        if self.curvature_type == 'positive':
-            threshold = edge_curvature.mean() if edge_curvature.numel() > 0 else 0.0
-            base_mask = edge_curvature > (threshold + eps)
-        elif self.curvature_type == 'negative':
-            threshold = edge_curvature.mean() if edge_curvature.numel() > 0 else 0.0
-            base_mask = edge_curvature <= (threshold - eps)
-        elif self.curvature_type == 'both':
+        # Handle empty edge cases first
+        if num_curv == 0 or num_edges_index == 0:
+            return edge_index, edge_attr
+        
+        # Initialize base_mask based on curvature type
+        if self.curvature_type == 'both':
+            # Keep all edges
             base_mask = torch.ones_like(edge_curvature, dtype=torch.bool)
         else:
-            raise ValueError(f'Invalid Curvature type: {self.curvature_type}')
+            # Use percentile-based filtering for positive/negative
+            if self.curvature_type == 'positive':
+                # Keep edges with curvature above median (top 50%)
+                threshold = torch.median(edge_curvature)
+                base_mask = edge_curvature >= threshold
+                
+                # If all edges have same curvature (std ~ 0), keep all
+                if base_mask.sum() == 0 or base_mask.sum() == num_curv:
+                    logger.warning(
+                        f"Curvature values too uniform for '{self.curvature_type}'. "
+                        f"Keeping all edges."
+                    )
+                    base_mask = torch.ones_like(edge_curvature, dtype=torch.bool)
+                    
+            elif self.curvature_type == 'negative':
+                # Keep edges with curvature below median (bottom 50%)
+                threshold = torch.median(edge_curvature)
+                base_mask = edge_curvature <= threshold
+                
+                # If all edges have same curvature (std ~ 0), keep all
+                if base_mask.sum() == 0 or base_mask.sum() == num_curv:
+                    logger.warning(
+                        f"Curvature values too uniform for '{self.curvature_type}'. "
+                        f"Keeping all edges."
+                    )
+                    base_mask = torch.ones_like(edge_curvature, dtype=torch.bool)
+            else:
+                raise ValueError(f'Invalid Curvature type: {self.curvature_type}')
+            
+            # Ensure minimum edge ratio is maintained
+            if base_mask.sum() < int(num_curv * min_edge_ratio):
+                logger.warning(
+                    f"Filter too aggressive for '{self.curvature_type}': "
+                    f"only {base_mask.sum()} edges selected. Using top-k fallback."
+                )
+                k = max(1, int(num_curv * min_edge_ratio))
+                
+                if self.curvature_type == 'positive':
+                    # Keep top-k highest curvature edges
+                    _, indices = torch.topk(edge_curvature, k)
+                else:  # negative
+                    # Keep top-k lowest curvature edges
+                    _, indices = torch.topk(edge_curvature, k, largest=False)
+                
+                base_mask = torch.zeros_like(edge_curvature, dtype=torch.bool)
+                base_mask[indices] = True
 
         # Handle different edge_curvature and edge_index dimensions
         if num_curv == num_edges_index:
             mask = base_mask
         elif num_curv * 2 == num_edges_index:
-            # Undirected graph: curvature per undirected edge, but edge_index has both directions
+            # Undirected graph: curvature per undirected edge
             mask = torch.repeat_interleave(base_mask, 2)
         else:
             raise IndexError(
@@ -161,11 +207,14 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
         filtered_edge_index = edge_index[:, mask]
         filtered_edge_attr = edge_attr[mask] if edge_attr is not None else None
 
-        logger.debug(f"Filtered edges: {mask.sum().item()} / {len(mask)} "
-                    f"({100 * mask.sum().item() / max(len(mask), 1):.1f}%) "
-                    f"for curvature_type='{self.curvature_type}'")
+        logger.debug(
+            f"Filtered edges: {mask.sum().item()} / {len(mask)} "
+            f"({100 * mask.sum().item() / max(len(mask), 1):.1f}%) "
+            f"for curvature_type='{self.curvature_type}'"
+        )
 
         return filtered_edge_index, filtered_edge_attr
+
     
     def two_hop_propagation(
         self,
