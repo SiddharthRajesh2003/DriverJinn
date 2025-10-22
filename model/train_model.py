@@ -4,7 +4,11 @@ from typing import Tuple, List, Optional, Dict
 import pandas as pd
 import gc
 import numpy as np
-from torch.utils.checkpoint import checkpoint
+import pickle
+import os
+from pathlib import Path
+from sklearn.metrics import classification_report, roc_auc_score, roc_curve
+import argparse
 
 from utils.logging_manager import get_logger
 from model.DriverGenePredictor import ContrastiveDriverGenePredictor
@@ -415,15 +419,19 @@ def train_single_fold(
     return model, best_metrics, history
 
 
-if __name__ == "__main__":
-    import pickle
-    import os
-    from pathlib import Path
-    from sklearn.metrics import classification_report, roc_auc_score, roc_curve
+def main():
     
+    parser = argparse.ArgumentParser(description = 'Train the Contrastive Driver Gene Predictor')
+    parser.add_argument('--dataset_file', type=str, help='Input dataset pickle file')
+    parser.add_argument('--train_metrics_dir', type = str, help = 'Specify the output directory for Training and Evaluation Metrics', default='model_results')
+    parser.add_argument('--model_out_dir', type = str, help='Specify the directory to output the model checkpoints', default='trained_models')
+    
+    args = parser.parse_args()
+    
+    dataset_file = args.dataset_file
     # Create directories for outputs
-    models_dir = Path('trained_models')
-    results_dir = Path('model_results')
+    models_dir = Path(args.model_out_dir)
+    results_dir = Path(args.train_metrics_dir)
     models_dir.mkdir(exist_ok=True)
     results_dir.mkdir(exist_ok=True)
     
@@ -443,7 +451,7 @@ if __name__ == "__main__":
     
     # Load data
     try:
-        with open('curvature_output/GGNet_contrastive_v2_priority_r0.2.pkl', 'rb') as f:
+        with open(dataset_file, 'rb') as f:
             data = pickle.load(f)
     except FileNotFoundError:
         logger.error("Data file not found. Please check the path.")
