@@ -22,8 +22,6 @@ gc.collect()
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
-logger = get_logger(__name__)
-
 @torch.no_grad()
 def ensemble_predict(
     models: List[nn.Module],
@@ -425,7 +423,27 @@ def main():
     parser.add_argument('--dataset_file', type=str, help='Input dataset pickle file')
     parser.add_argument('--train_metrics_dir', type = str, help = 'Specify the output directory for Training and Evaluation Metrics', default='model_results')
     parser.add_argument('--model_out_dir', type = str, help='Specify the directory to output the model checkpoints', default='trained_models')
-    
+    parser.add_argument('--num_folds', type=int, default=None, 
+                    help='Number of folds to use (default: use all folds in dataset)')
+    parser.add_argument('--specific_folds', type=int, nargs='+', default=None,
+                        help='Train only specific folds (e.g., --specific_folds 1 3 5)')
+    parser.add_argument('--num_epochs', type=int, default=200,
+                        help='Number of training epochs per fold')
+    parser.add_argument('--batch_size', type=int, default=2048,
+                        help='Training batch size')
+    parser.add_argument('--learning_rate', type=float, default=0.001,
+                        help='Initial learning rate')
+    parser.add_argument('--hidden_channels', type=int, default=256,
+                        help='Hidden layer channels')
+    parser.add_argument('--use_focal_loss', action='store_true', default=True,
+                        help='Use focal loss for class imbalance')
+    parser.add_argument('--early_stopping_patience', type=int, default=50,
+                        help='Early stopping patience')
+    parser.add_argument('--save_all_checkpoints', action='store_true',
+                        help='Save checkpoints every N epochs (not just best)')
+    parser.add_argument('--checkpoint_frequency', type=int, default=10,
+                        help='Save checkpoint every N epochs when --save_all_checkpoints is used')
+
     args = parser.parse_args()
     
     dataset_file = args.dataset_file
@@ -890,3 +908,7 @@ def main():
     print(f"  ✓ Best Fold: {best_fold_idx + 1} (F1: {all_fold_metrics[best_fold_idx]['f1']:.4f})")
     print(f"  ✓ Potential Drivers: {potential_results['num_potential_drivers']}")
     print("="*80 + "\n")
+
+if __name__ == '__main__':
+    logger = get_logger(__name__)
+    main()

@@ -156,29 +156,36 @@ class SchurComplementAugmentation:
             if 'weight' not in G_aug[u][v]:
                 G_aug[u][v]['weight'] = 1.0
         
+        # CRITICAL: Force cleanup any remaining eliminated nodes
+        G_aug, cleaned_count = self.force_cleanup_eliminated_nodes(G_aug, eliminated_nodes, None)
+        if cleaned_count > 0:
+            logger.warning(f"Priority: Force cleaned {cleaned_count} nodes that weren't properly eliminated")
+        
+        # Get final node mapping (use graph as source of truth)
+        nodes = list(G.nodes())
+        final_node_list, node_mapping = self.get_final_node_mapping(
+            G, G_aug, nodes, eliminated_nodes, 'priority'
+        )
+        
+        # CRITICAL: Restore edges for isolated nodes from original graph
+        G_aug, edges_restored = self.restore_edges_for_isolated_nodes(
+            G, G_aug, final_node_list, 'priority'
+        )
+        
         augmented_features = None
         if node_features is not None:
-            nodes = list(G.nodes())
-            augmented_features = self.update_node_features(
-                node_features, nodes, eliminated_nodes, G_aug
+            # Align features with actual graph nodes
+            augmented_features = self.align_features_with_graph(
+                node_features, nodes, final_node_list, 'priority'
             )
-            # Verify consistency
-            remaining_nodes = sorted([n for n in nodes if n not in eliminated_nodes])
-            is_consistent = self.verify_feature_graph_consistency(
-                G_aug, augmented_features, remaining_nodes
-            )
-            
-            if not is_consistent:
-                logger.error("Feature-graph mismatch in priority augmentation! Using fallback")
-                keep_mask = np.array([node not in eliminated_nodes for node in nodes])
-                augmented_features = node_features[keep_mask]
-            
             augmented_features = torch.from_numpy(augmented_features)
             
         metadata = {
             'original_nodes': num_nodes,
             'augmented_nodes': G_aug.number_of_nodes(),
-            'augmented_node_ids': G_aug.nodes(),
+            'augmented_node_ids': list(G_aug.nodes()),
+            'final_node_list': final_node_list,
+            'node_mapping': node_mapping,
             'eliminated_nodes': len(eliminated_nodes),
             'original_edges': G_aug.number_of_edges(),
             'added_edges': len(added_edges),
@@ -187,8 +194,10 @@ class SchurComplementAugmentation:
             'strategy': 'priority'
         }
         
+        self.verify_no_synthetic_nodes(G, G_aug, eliminated_nodes, 'priority')
+        
         logger.info(f"Priority augmentation complete: {metadata['original_nodes']} → "
-                   f"{metadata['augmented_nodes']} nodes")
+                    f"{metadata['augmented_nodes']} nodes")
         
         return G_aug, augmented_features, metadata
     
@@ -257,33 +266,37 @@ class SchurComplementAugmentation:
         for u, v in G_aug.edges():
             if 'weight' not in G_aug[u][v]:
                 G_aug[u][v]['weight'] = 1.0
+                
+        # CRITICAL: Force cleanup any remaining eliminated nodes
+        G_aug, cleaned_count = self.force_cleanup_eliminated_nodes(G_aug, eliminated_nodes, None)
+        if cleaned_count > 0:
+            logger.warning(f"Random: Force cleaned {cleaned_count} nodes that weren't properly eliminated")
+        
+        # Get final node mapping (use graph as source of truth)
+        nodes = list(G.nodes())
+        final_node_list, node_mapping = self.get_final_node_mapping(
+            G, G_aug, nodes, eliminated_nodes, 'random'
+        )
+        
+        # CRITICAL: Restore edges for isolated nodes from original graph
+        G_aug, edges_restored = self.restore_edges_for_isolated_nodes(
+            G, G_aug, final_node_list, 'random'
+        )
         
         augmented_features = None
         if node_features is not None:
-            nodes = list(G.nodes())
-            augmented_features = self.update_node_features(
-                node_features, nodes, eliminated_nodes, G_aug
+            # Align features with actual graph nodes
+            augmented_features = self.align_features_with_graph(
+                node_features, nodes, final_node_list, 'random'
             )
-            
-            # Verify consistency
-            remaining_nodes = sorted([n for n in nodes if n not in eliminated_nodes])
-            is_consistent = self.verify_feature_graph_consistency(
-                G_aug, augmented_features, remaining_nodes
-            )
-            
-            if not is_consistent:
-                logger.error("Feature-graph mismatch in random augmentation! Using simple removal")
-                keep_mask = np.array([node not in eliminated_nodes for node in nodes])
-                augmented_features = node_features[keep_mask]
-                
-                remaining_nodes = [node for node in nodes if node not in eliminated_nodes]
-            
             augmented_features = torch.from_numpy(augmented_features)
         
         metadata = {
             'original_nodes': num_nodes,
             'augmented_nodes': G_aug.number_of_nodes(),
-            'augmented_node_ids': G_aug.nodes(),
+            'augmented_node_ids': list(G_aug.nodes()),
+            'final_node_list': final_node_list,
+            'node_mapping': node_mapping,
             'eliminated_nodes': len(eliminated_nodes),
             'original_edges': G_aug.number_of_edges(),
             'added_edges': len(added_edges),
@@ -291,6 +304,8 @@ class SchurComplementAugmentation:
             'eliminated_node_ids': eliminated_nodes,
             'strategy': 'random'
         }
+        
+        self.verify_no_synthetic_nodes(G, G_aug, eliminated_nodes, 'random')
         
         logger.info(f'Random Augmentation Complete')
         return G_aug, augmented_features, metadata
@@ -379,36 +394,44 @@ class SchurComplementAugmentation:
             if 'weight' not in G_aug[u][v]:
                 G_aug[u][v]['weight'] = 1.0
         
+        # CRITICAL: Force cleanup any remaining eliminated nodes
+        G_aug, cleaned_count = self.force_cleanup_eliminated_nodes(G_aug, eliminated_nodes, None)
+        if cleaned_count > 0:
+            logger.warning(f"Coarsening: Force cleaned {cleaned_count} nodes that weren't properly eliminated")
+        
+        # Get final node mapping (use graph as source of truth)
+        nodes = list(G.nodes())
+        final_node_list, node_mapping = self.get_final_node_mapping(
+            G, G_aug, nodes, eliminated_nodes, 'coarsening'
+        )
+        
+        # CRITICAL: Restore edges for isolated nodes from original graph
+        G_aug, edges_restored = self.restore_edges_for_isolated_nodes(
+            G, G_aug, final_node_list, 'coarsening'
+        )
+        
         augmented_features = None
         if node_features is not None:
-            nodes = list(G.nodes())
-            augmented_features = self.update_node_features_coarsened(
-                node_features, nodes, eliminated_nodes, collapsed_mapping, G_aug
+            # Align features with actual graph nodes
+            augmented_features = self.align_features_with_graph(
+                node_features, nodes, final_node_list, 'coarsening'
             )
-            
-            # Verify consistency
-            remaining_nodes = sorted([n for n in nodes if n not in eliminated_nodes])
-            is_consistent = self.verify_feature_graph_consistency(
-                G_aug, augmented_features, remaining_nodes
-            )
-            
-            if not is_consistent:
-                logger.error("Feature-graph mismatch in coarsening augmentation! Using simple removal")
-                keep_mask = np.array([node not in eliminated_nodes for node in nodes])
-                augmented_features = node_features[keep_mask]
-            
             augmented_features = torch.from_numpy(augmented_features)
         
         metadata = {
             'original_nodes': num_nodes,
             'augmented_nodes': G_aug.number_of_nodes(),
-            'augmented_node_ids': G_aug.nodes(),
+            'augmented_node_ids': list(G_aug.nodes()),
+            'final_node_list': final_node_list,
+            'node_mapping': node_mapping,
             'eliminated_nodes': len(eliminated_nodes),
             'original_edges': G.number_of_edges(),
             'augmented_edges': G_aug.number_of_edges(),
             'collapsed_mapping': collapsed_mapping,
             'strategy': 'coarsening'
         }
+        
+        self.verify_no_synthetic_nodes(G, G_aug, eliminated_nodes, 'coarsening')
         
         logger.info(f'Coarsening augmentation complete!')
         return G_aug, augmented_features, metadata
@@ -912,6 +935,372 @@ class SchurComplementAugmentation:
         
         return consistent
     
+    def verify_no_synthetic_nodes(
+        self,
+        G_original: nx.Graph,
+        G_aug: nx.Graph,
+        eliminated_nodes: List[int],
+        strategy: str
+    ):
+        """
+        Verify that no new synthetic nodes are added during augmentation.
+        Only node elimination is allowed - no node creation.
+        
+        Raises ValueError if any inconsistencies are found.
+        
+        Args:
+            G_original: Original graph before augmentation
+            G_aug: Augmented graph after augmentation
+            eliminated_nodes: List of eliminated node IDs
+            strategy: Augmentation strategy name
+        """
+        original_nodes = set(G_original.nodes())
+        augmented_nodes = set(G_aug.nodes())
+        eliminated_set = set(eliminated_nodes)
+        expected_remaining = original_nodes - eliminated_set
+        
+        # CRITICAL CHECK 1: No new nodes allowed
+        new_nodes = augmented_nodes - original_nodes
+        if new_nodes:
+            logger.error(f"[{strategy}] FATAL: {len(new_nodes)} synthetic nodes created: {list(new_nodes)[:20]}")
+            raise ValueError(
+                f"Augmentation created {len(new_nodes)} new nodes! "
+                f"Only elimination is allowed. New nodes: {list(new_nodes)[:10]}"
+            )
+        
+        # CRITICAL CHECK 2: Eliminated nodes must be removed
+        still_present = eliminated_set.intersection(augmented_nodes)
+        if still_present:
+            logger.error(f"[{strategy}] FATAL: {len(still_present)} eliminated nodes still present: {list(still_present)[:20]}")
+            raise ValueError(
+                f"Eliminated nodes still in graph: {list(still_present)[:10]}"
+            )
+        
+        # CRITICAL CHECK 3: Node set must match exactly
+        if augmented_nodes != expected_remaining:
+            missing = expected_remaining - augmented_nodes
+            extra = augmented_nodes - expected_remaining
+            
+            error_msg = []
+            if missing:
+                error_msg.append(f"{len(missing)} expected nodes missing: {list(missing)[:10]}")
+            if extra:
+                error_msg.append(f"{len(extra)} unexpected nodes present: {list(extra)[:10]}")
+            
+            logger.error(f"[{strategy}] FATAL: Node set mismatch - {', '.join(error_msg)}")
+            raise ValueError(f"Node set mismatch: {', '.join(error_msg)}")
+        
+        # CRITICAL CHECK 4: All edges must connect only remaining nodes
+        invalid_edges = []
+        for u, v in G_aug.edges():
+            if u not in expected_remaining or v not in expected_remaining:
+                invalid_edges.append((u, v))
+        
+        if invalid_edges:
+            logger.error(f"[{strategy}] FATAL: {len(invalid_edges)} edges connect invalid nodes: {invalid_edges[:20]}")
+            raise ValueError(
+                f"{len(invalid_edges)} edges connect non-existent or eliminated nodes! "
+                f"Sample: {invalid_edges[:10]}"
+            )
+        
+        logger.info(f"[{strategy}] ✓ No synthetic nodes - consistency verified")
+    
+    def force_cleanup_eliminated_nodes(
+        self,
+        G_aug: nx.Graph,
+        eliminated_nodes: List[int],
+        edge_weights: Optional[Dict] = None
+    ) -> Tuple[nx.Graph, int]:
+        """
+        Force removal of any eliminated nodes that are still present in the graph.
+        Connects neighbors of removed nodes using Schur complement approach.
+        
+        This is a safety function to handle cases where node elimination failed.
+        
+        Args:
+            G_aug: Augmented graph that may still contain eliminated nodes
+            eliminated_nodes: List of nodes that should have been eliminated
+            edge_weights: Dictionary of edge weights
+            
+        Returns:
+            cleaned_graph: Graph with all eliminated nodes forcefully removed
+            num_cleaned: Number of nodes that were forcefully removed
+        """
+        eliminated_set = set(eliminated_nodes)
+        still_present = [n for n in eliminated_nodes if G_aug.has_node(n)]
+        
+        if not still_present:
+            logger.info("No cleanup needed - all eliminated nodes already removed")
+            return G_aug, 0
+        
+        logger.warning(f"Force cleaning {len(still_present)} nodes that should have been eliminated: {still_present[:20]}")
+        
+        cleaned_count = 0
+        
+        for node in still_present:
+            if not G_aug.has_node(node):
+                continue
+            
+            # Get neighbors before removal
+            neighbors = list(G_aug.neighbors(node))
+            
+            if len(neighbors) > 1:
+                # Connect neighbors in a clique-like fashion
+                for i in range(len(neighbors)):
+                    for j in range(i + 1, len(neighbors)):
+                        u, v = neighbors[i], neighbors[j]
+                        
+                        # Skip if nodes don't exist or are also being eliminated
+                        if not G_aug.has_node(u) or not G_aug.has_node(v):
+                            continue
+                        if u in eliminated_set or v in eliminated_set:
+                            continue
+                        
+                        # Get edge weights from graph directly
+                        w_u = G_aug[node][u].get('weight', 1.0) if G_aug.has_edge(node, u) else 1.0
+                        w_v = G_aug[node][v].get('weight', 1.0) if G_aug.has_edge(node, v) else 1.0
+                        
+                        # Compute Schur complement weight
+                        deg_node = len(neighbors)
+                        new_weight = (w_u * w_v) / max(deg_node, 1.0)
+                        
+                        # Add or update edge
+                        if G_aug.has_edge(u, v):
+                            G_aug[u][v]['weight'] = G_aug[u][v].get('weight', 0) + new_weight
+                        else:
+                            G_aug.add_edge(u, v, weight=new_weight)
+            
+            # Remove the node - this will automatically remove all its edges
+            G_aug.remove_node(node)
+            cleaned_count += 1
+            logger.debug(f"Force removed node {node} with {len(neighbors)} neighbors")
+        
+        logger.info(f"Force cleanup complete: removed {cleaned_count} nodes")
+        return G_aug, cleaned_count
+    
+    def remove_isolated_nodes(
+        self,
+        G_aug: nx.Graph,
+        strategy: str
+    ) -> Tuple[nx.Graph, List[int]]:
+        """
+        DEPRECATED: Do not use - removes nodes beyond intended elimination ratio.
+        This can cause information loss and interfere with k-fold CV.
+        
+        Use get_final_node_mapping() instead to align features with graph nodes.
+        """
+        logger.warning(f"[{strategy}] remove_isolated_nodes is deprecated - use get_final_node_mapping instead")
+        return G_aug, []
+    
+    def get_final_node_mapping(
+        self,
+        G_original: nx.Graph,
+        G_aug: nx.Graph,
+        original_nodes: List[int],
+        eliminated_nodes: List[int],
+        strategy: str
+    ) -> Tuple[List[int], Dict[int, int]]:
+        """
+        Get the final node list that matches the augmented graph exactly.
+        
+        This ensures node features align with graph structure without
+        eliminating additional nodes beyond the intended ratio.
+        
+        Args:
+            G_original: Original graph
+            G_aug: Augmented graph after elimination
+            original_nodes: Original ordered list of node IDs
+            eliminated_nodes: List of eliminated node IDs
+            strategy: Augmentation strategy name
+            
+        Returns:
+            final_node_list: Ordered list of node IDs in augmented graph
+            node_mapping: Dict mapping node IDs to indices in final list
+        """
+        aug_nodes = sorted(G_aug.nodes())
+        eliminated_set = set(eliminated_nodes)
+        
+        # Check for consistency
+        expected_remaining = set(original_nodes) - eliminated_set
+        actual_nodes = set(aug_nodes)
+        
+        # Identify discrepancies
+        extra_nodes = actual_nodes - expected_remaining  # Nodes that shouldn't be there
+        missing_nodes = expected_remaining - actual_nodes  # Expected nodes that are missing
+        
+        if extra_nodes:
+            logger.warning(f"[{strategy}] Found {len(extra_nodes)} unexpected nodes in graph: {list(extra_nodes)[:10]}")
+        
+        if missing_nodes:
+            logger.warning(f"[{strategy}] Missing {len(missing_nodes)} expected nodes from graph: {list(missing_nodes)[:10]}")
+        
+        # Use actual augmented graph nodes as source of truth
+        final_node_list = aug_nodes
+        node_mapping = {node: idx for idx, node in enumerate(final_node_list)}
+        
+        logger.info(f"[{strategy}] Final node mapping: {len(final_node_list)} nodes")
+        logger.info(f"[{strategy}] Original: {len(original_nodes)}, Eliminated: {len(eliminated_nodes)}, "
+                   f"Expected: {len(expected_remaining)}, Actual: {len(actual_nodes)}")
+        
+        return final_node_list, node_mapping
+    
+    def align_features_with_graph(
+        self,
+        features: np.ndarray,
+        original_nodes: List[int],
+        final_node_list: List[int],
+        strategy: str
+    ) -> np.ndarray:
+        """
+        Align feature matrix with the actual nodes in augmented graph.
+        
+        This ensures feature dimensions match graph nodes exactly,
+        using graph structure as the source of truth.
+        
+        Args:
+            features: Original feature matrix [num_original_nodes, feature_dim]
+            original_nodes: Original ordered list of node IDs
+            final_node_list: Final ordered list of node IDs from augmented graph
+            strategy: Augmentation strategy name
+            
+        Returns:
+            aligned_features: Feature matrix [len(final_node_list), feature_dim]
+        """
+        feature_dim = features.shape[1]
+        num_final = len(final_node_list)
+        
+        # Create mapping from node ID to feature index
+        node_to_feat_idx = {node: idx for idx, node in enumerate(original_nodes)}
+        
+        # Initialize aligned feature matrix
+        aligned_features = np.zeros((num_final, feature_dim))
+        
+        missing_count = 0
+        for i, node in enumerate(final_node_list):
+            if node in node_to_feat_idx:
+                feat_idx = node_to_feat_idx[node]
+                aligned_features[i] = features[feat_idx]
+            else:
+                # Node in graph but not in original features - use zeros
+                aligned_features[i] = np.zeros(feature_dim)
+                missing_count += 1
+        
+        if missing_count > 0:
+            logger.warning(f"[{strategy}] {missing_count} nodes in graph have no original features - using zeros")
+        
+        logger.info(f"[{strategy}] Aligned features: {aligned_features.shape}")
+        return aligned_features
+    
+    def restore_edges_for_isolated_nodes(
+        self,
+        G_original: nx.Graph,
+        G_aug: nx.Graph,
+        final_node_list: List[int],
+        strategy: str,
+        max_edges_per_node: int = 3,
+        min_edges_per_node: int = 1
+    ) -> Tuple[nx.Graph, int]:
+        """
+        Restore edges from original graph for nodes that became isolated in augmentation.
+        
+        This ensures all nodes in final_node_list have at least one edge by borrowing
+        edges from the original graph. Randomly selects a subset of original neighbors
+        to avoid connecting all isolated nodes to the same node.
+        
+        Args:
+            G_original: Original graph before augmentation
+            G_aug: Augmented graph (may have isolated nodes)
+            final_node_list: List of nodes that should be in the augmented graph
+            strategy: Augmentation strategy name
+            max_edges_per_node: Maximum number of edges to restore per isolated node
+            min_edges_per_node: Minimum number of edges to restore per isolated node
+            
+        Returns:
+            G_aug: Augmented graph with restored edges
+            num_restored: Number of edges restored
+        """
+        final_node_set = set(final_node_list)
+        isolated_nodes = []
+        
+        # Find nodes with no edges
+        for node in final_node_list:
+            if G_aug.has_node(node):
+                if G_aug.degree(node) == 0:
+                    isolated_nodes.append(node)
+            else:
+                # Node not in graph at all - add it
+                G_aug.add_node(node)
+                isolated_nodes.append(node)
+        
+        if not isolated_nodes:
+            logger.info(f"[{strategy}] No isolated nodes - all nodes have edges")
+            return G_aug, 0
+        
+        logger.warning(f"[{strategy}] Found {len(isolated_nodes)} isolated nodes, restoring edges from original graph")
+        
+        edges_restored = 0
+        
+        for node in isolated_nodes:
+            if not G_original.has_node(node):
+                logger.warning(f"[{strategy}] Node {node} not in original graph - cannot restore edges")
+                continue
+            
+            # Get original neighbors
+            original_neighbors = list(G_original.neighbors(node))
+            
+            # Filter to only neighbors that are in final node list (not eliminated)
+            valid_neighbors = [n for n in original_neighbors if n in final_node_set]
+            
+            if not valid_neighbors:
+                logger.warning(f"[{strategy}] Node {node} has no valid neighbors in final node list")
+                # As a fallback, randomly connect to nodes in final list
+                if len(final_node_list) > 1:
+                    # Pick random nodes that are not itself
+                    other_nodes = [n for n in final_node_list if n != node]
+                    if other_nodes:
+                        # Randomly select 1-3 nodes to connect to
+                        num_connections = min(min_edges_per_node, len(other_nodes))
+                        fallback_neighbors = np.random.choice(other_nodes, size=num_connections, replace=False)
+                        
+                        for fallback_neighbor in fallback_neighbors:
+                            G_aug.add_edge(node, fallback_neighbor, weight=1.0)
+                            edges_restored += 1
+                        
+                        logger.warning(f"[{strategy}] Added {num_connections} random fallback edges for node {node}")
+                continue
+            
+            # Randomly select a subset of valid neighbors to restore
+            num_edges_to_restore = min(
+                max_edges_per_node,
+                max(min_edges_per_node, len(valid_neighbors))
+            )
+            
+            # If we have few valid neighbors, use all of them
+            if len(valid_neighbors) <= max_edges_per_node:
+                selected_neighbors = valid_neighbors
+            else:
+                # Randomly sample neighbors
+                selected_neighbors = np.random.choice(
+                    valid_neighbors, 
+                    size=num_edges_to_restore, 
+                    replace=False
+                ).tolist()
+            
+            # Restore edges to selected neighbors
+            for neighbor in selected_neighbors:
+                if not G_aug.has_edge(node, neighbor):
+                    # Get original edge weight
+                    if G_original.has_edge(node, neighbor):
+                        weight = G_original[node][neighbor].get('weight', 1.0)
+                    else:
+                        weight = 1.0
+                    
+                    G_aug.add_edge(node, neighbor, weight=weight)
+                    edges_restored += 1
+        
+        logger.info(f"[{strategy}] Restored {edges_restored} edges for {len(isolated_nodes)} isolated nodes")
+        return G_aug, edges_restored
+    
     def generate_multiple_views(
         self,
         G: nx.Graph,
@@ -1000,52 +1389,3 @@ class SchurComplementAugmentation:
         if node_features is not None:
             x = torch.tensor(node_features, dtype=torch.float)
         return edge_index, edge_weights, x
-
-class ContrastiveSchurAugmentation:
-    """
-    Wrapper class for contrastive learning with Schur complement augmentation
-    
-    Generates pairs of augmented views for contrastive learning frameworks
-    """
-    
-    def __init__(
-        self,
-        elimination_ratio: float = 0.2,
-        num_views: int = 2,
-        neighbor_sort_method: str = 'weight',
-        random_seed: Optional[int] = None
-    ):
-        self.num_views = num_views
-        self.augmenters = [
-            SchurComplementAugmentation(
-                elimination_ratio=elimination_ratio,
-                neighbor_sort_method=neighbor_sort_method,
-                random_seed=random_seed + i if random_seed else None
-            )
-            for i in range(self.num_views)
-        ]
-        
-        logger.info(f"Initialized ContrastiveSchurAugmentation with {num_views} views")
-    
-    def generate_contrastive_pairs(
-        self,
-        G: nx.Graph,
-        node_features: Optional[torch.Tensor] = None, 
-        edge_weights: Optional[Dict] = None
-    ) -> List[Tuple[nx.Graph, Optional[np.ndarray], Dict]]:
-        """
-        Generate multiple augmented views for contrastive learning
-        
-        Returns list of augmented graph tuples for contrastive pairs
-        """  
-        augmented_views = []
-        
-        for i, augmenter in enumerate(self.augmenters):
-            logger.info(f"Generating contrastive view {i+1}/{self.num_views}")
-            aug_graph, aug_features, metadata = augmenter.augment(
-                G, node_features, edge_weights
-            )
-            
-            augmented_views.append((aug_graph,aug_features, metadata))
-        
-        return augmented_views
