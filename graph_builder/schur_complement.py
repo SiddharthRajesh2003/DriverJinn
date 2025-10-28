@@ -424,6 +424,7 @@ class SchurComplementAugmentation:
             'augmented_node_ids': list(G_aug.nodes()),
             'final_node_list': final_node_list,
             'node_mapping': node_mapping,
+            'eliminated_node_ids': eliminated_nodes,
             'eliminated_nodes': len(eliminated_nodes),
             'original_edges': G.number_of_edges(),
             'augmented_edges': G_aug.number_of_edges(),

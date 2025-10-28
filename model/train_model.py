@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn as nn
 from typing import Tuple, List, Optional, Dict
@@ -71,7 +72,7 @@ def create_cancer_driver_model(
         num_gnn_layers=num_layers,
         curvature_types=['positive', 'negative', 'both'],
         num_attention_heads=4,
-        temperature=0.5,
+        temperature=0.7,
         dropout=0.2,
         device=device
     ).to(device)
@@ -211,11 +212,26 @@ def train_single_fold(
     labels: torch.Tensor,
     num_epochs: int,
     device: torch.device,
+    model_save_dir: Path,
+    model_prefix: str = "",
     use_focal_loss: bool = True,
     pos_weight: Optional[torch.Tensor] = None
 ) -> Tuple[ContrastiveDriverGenePredictor, Dict, Dict]:
     """
     Train model on a single fold
+    
+    Args:
+        fold_idx: Fold index
+        fold_data: Fold data containing train/val masks
+        original: Original graph data
+        augmented_views: List of augmented graph views
+        labels: Node labels
+        num_epochs: Number of training epochs
+        device: Device to train on
+        model_save_dir: Directory to save model checkpoints
+        model_prefix: Prefix for model checkpoint filenames
+        use_focal_loss: Whether to use focal loss
+        pos_weight: Positive class weight
     
     Returns:
         model: Trained model
@@ -300,6 +316,14 @@ def train_single_fold(
     best_val_f1 = 0.0
     best_metrics = None
     
+    # Construct model filename with prefix
+    if model_prefix:
+        model_filename = f'{model_prefix}_fold_{fold_idx}_best_model.pt'
+    else:
+        model_filename = f'fold_{fold_idx}_best_model.pt'
+    
+    model_path = model_save_dir / model_filename
+    
     # Training loop
     for epoch in range(num_epochs):
         # Warmup learning rate
@@ -354,6 +378,10 @@ def train_single_fold(
             else:
                 raise e
         
+        if math.isnan(loss_dict['total_loss']):
+            logger.error(f"Epoch {epoch}: Training failed with NaN loss")
+            continue
+        
         # Validation on original graph (use original masks)
         val_metrics = model.evaluate(
             original, labels, val_mask_original, 
@@ -387,8 +415,7 @@ def train_single_fold(
         if val_metrics['f1'] > best_val_f1:
             best_val_f1 = val_metrics['f1']
             best_metrics = val_metrics.copy()
-            # Save to trained_models directory
-            model_path = Path('trained_models') / f'fold_{fold_idx}_best_model.pt'
+            # Save to specified directory with prefix
             model.save_checkpoint(
                 str(model_path),
                 epoch,
@@ -398,7 +425,8 @@ def train_single_fold(
                     'fold': fold_idx,
                     'num_views': len(augmented_views),
                     'loss_type': 'focal' if use_focal_loss else 'bce',
-                    'pos_weight': fold_pos_weight.item()
+                    'pos_weight': fold_pos_weight.item(),
+                    'model_prefix': model_prefix
                 }
             )
         
@@ -409,22 +437,29 @@ def train_single_fold(
             break
     
     # Load best model for this fold
-    model_path = Path('trained_models') / f'fold_{fold_idx}_best_model.pt'
     checkpoint = model.load_checkpoint(str(model_path), optimizer, device)
     print(f"\n✓ Loaded best model from epoch {checkpoint['epoch']}")
     print(f"  Best Val F1: {checkpoint['metrics']['f1']:.4f}")
+    print(f"  Saved to: {model_path}")
     
     return model, best_metrics, history
 
 
 def main():
     
-    parser = argparse.ArgumentParser(description = 'Train the Contrastive Driver Gene Predictor')
-    parser.add_argument('--dataset_file', type=str, help='Input dataset pickle file')
-    parser.add_argument('--train_metrics_dir', type = str, help = 'Specify the output directory for Training and Evaluation Metrics', default='model_results')
-    parser.add_argument('--model_out_dir', type = str, help='Specify the directory to output the model checkpoints', default='trained_models')
+    parser = argparse.ArgumentParser(description='Train the Contrastive Driver Gene Predictor')
+    parser.add_argument('--dataset_file', type=str, required=True,
+                        help='Input dataset pickle file')
+    parser.add_argument('--train_metrics_dir', type=str, 
+                        help='Specify the output directory for Training and Evaluation Metrics', 
+                        default='model_results')
+    parser.add_argument('--model_out_dir', type=str, 
+                        help='Specify the directory to output the model checkpoints', 
+                        default='trained_models')
+    parser.add_argument('--model_out_prefix', type=str, default='',
+                        help='Prefix for model checkpoint filenames (e.g., "dataset1", "cancer_type_A")')
     parser.add_argument('--num_folds', type=int, default=None, 
-                    help='Number of folds to use (default: use all folds in dataset)')
+                        help='Number of folds to use (default: use all folds in dataset)')
     parser.add_argument('--specific_folds', type=int, nargs='+', default=None,
                         help='Train only specific folds (e.g., --specific_folds 1 3 5)')
     parser.add_argument('--num_epochs', type=int, default=200,
@@ -435,7 +470,7 @@ def main():
                         help='Initial learning rate')
     parser.add_argument('--hidden_channels', type=int, default=256,
                         help='Hidden layer channels')
-    parser.add_argument('--use_focal_loss', action='store_true', default=True,
+    parser.add_argument('--use_focal_loss', action='store_true', default=False,
                         help='Use focal loss for class imbalance')
     parser.add_argument('--early_stopping_patience', type=int, default=50,
                         help='Early stopping patience')
@@ -447,11 +482,19 @@ def main():
     args = parser.parse_args()
     
     dataset_file = args.dataset_file
+    
     # Create directories for outputs
     models_dir = Path(args.model_out_dir)
     results_dir = Path(args.train_metrics_dir)
-    models_dir.mkdir(exist_ok=True)
-    results_dir.mkdir(exist_ok=True)
+    models_dir.mkdir(exist_ok=True, parents=True)
+    results_dir.mkdir(exist_ok=True, parents=True)
+    
+    # Add prefix to results directory if specified
+    if args.model_out_prefix:
+        results_subdir = results_dir / args.model_out_prefix
+        results_subdir.mkdir(exist_ok=True, parents=True)
+        results_dir = results_subdir
+        print(f"Results will be saved to: {results_dir}")
     
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     torch.cuda.empty_cache()
@@ -459,6 +502,11 @@ def main():
     print("\n" + "="*80)
     print("K-FOLD CROSS-VALIDATION CONTRASTIVE DRIVER GENE PREDICTOR")
     print("="*80)
+    print(f"Dataset: {dataset_file}")
+    if args.model_out_prefix:
+        print(f"Model Prefix: {args.model_out_prefix}")
+    print(f"Model Output Dir: {models_dir}")
+    print(f"Results Output Dir: {results_dir}")
     print(f"Device: {device}")
     print(f"PyTorch version: {torch.__version__}")
     if torch.cuda.is_available():
@@ -536,8 +584,8 @@ def main():
     print(f"{'='*80}")
     
     # Training configuration
-    num_epochs = 200
-    use_focal_loss = True
+    num_epochs = args.num_epochs
+    use_focal_loss = args.use_focal_loss
     
     # Store results for all folds
     all_fold_metrics = []
@@ -554,6 +602,8 @@ def main():
             labels=labels,
             num_epochs=num_epochs,
             device=device,
+            model_save_dir=models_dir,
+            model_prefix=args.model_out_prefix,
             use_focal_loss=use_focal_loss
         )
         
@@ -730,7 +780,7 @@ def main():
         original,
         labels,
         test_mask,
-        confidence_threshold=0.6,
+        confidence_threshold=0.2,
         curvature_threshold=0.0,
         feature_criteria=feature_criteria if feature_criteria else None,
         curvature_type='ollivier',
@@ -776,7 +826,9 @@ def main():
         'ensemble_metrics': ensemble_metrics,
         'ensemble_roc_auc': ensemble_roc_auc,
         'potential_drivers': potential_results,
-        'best_fold_idx': best_fold_idx
+        'best_fold_idx': best_fold_idx,
+        'dataset_file': dataset_file,
+        'model_prefix': args.model_out_prefix
     }
     
     with open(results_dir / 'kfold_results.pkl', 'wb') as f:
@@ -893,7 +945,10 @@ def main():
     print("="*80)
     print("\nGenerated files:")
     print(f"\nModels (in {models_dir}/):")
-    print("  - fold_X_best_model.pt: Best model for each fold")
+    if args.model_out_prefix:
+        print(f"  - {args.model_out_prefix}_fold_X_best_model.pt: Best model for each fold")
+    else:
+        print("  - fold_X_best_model.pt: Best model for each fold")
     print(f"\nResults (in {results_dir}/):")
     print("  - kfold_results.pkl: Complete k-fold results")
     print("  - kfold_results.csv: Fold metrics comparison")

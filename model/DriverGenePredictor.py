@@ -191,6 +191,9 @@ class ContrastiveDriverGenePredictor(nn.Module):
         # Compute similarity matrix
         sim_matrix = torch.mm(z, z.T) / self.temperature  # [2*batch_size, 2*batch_size]
         
+        # Clamp to prevent overflow in exp()
+        sim_matrix = torch.clamp(sim_matrix, min=-50, max=50)
+        
         # Create mask to remove self-similarity
         mask = torch.eye(2 * batch_size, device=z.device, dtype=torch.bool)
         mask_value = torch.finfo(sim_matrix.dtype).min
@@ -845,23 +848,73 @@ class ContrastiveDriverGenePredictor(nn.Module):
         total_loss = (contrastive_weight * contrastive_loss + 
                     (1 - contrastive_weight) * classification_loss)
         
+        # ===== ROBUST ERROR HANDLING =====
+        # Check for NaN/Inf in loss BEFORE backward
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            logger.error(f"Invalid total loss: {total_loss.item()}")
+            logger.error(f"  Contrastive loss: {contrastive_loss.item()}")
+            logger.error(f"  Classification loss: {classification_loss.item()}")
+            return {
+                'total_loss': float('nan'),
+                'contrastive_loss': contrastive_loss.item() if not torch.isnan(contrastive_loss) else float('nan'),
+                'classification_loss': classification_loss.item() if not torch.isnan(classification_loss) else float('nan'),
+                'train_accuracy': 0.0
+            }
+        
+        # Backward pass
         total_loss.backward()
         
-        # Gradient clipping to prevent instability
+        # Check for NaN gradients
+        has_nan_grad = False
+        max_grad = 0.0
+        for param in self.parameters():
+            if param.grad is not None:
+                if torch.isnan(param.grad).any():
+                    has_nan_grad = True
+                    break
+                max_grad = max(max_grad, param.grad.abs().max().item())
+        
+        if has_nan_grad:
+            logger.error("NaN gradient detected! Skipping update.")
+            logger.error(f"  Max grad before NaN: {max_grad}")
+            optimizer.zero_grad()
+            return {
+                'total_loss': float('nan'),
+                'contrastive_loss': contrastive_loss.item(),
+                'classification_loss': classification_loss.item(),
+                'train_accuracy': 0.0
+            }
+        
+        # Log if gradients are unusually large
+        if max_grad > 100:
+            logger.warning(f"Large gradient detected: {max_grad:.2f}")
+        
+        # Gradient clipping
         torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
         
+        # Optimizer step
         optimizer.step()
         
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         
-        # Training metrics
+        # ===== COMPUTE METRICS =====
         with torch.no_grad():
-            if aug_train_mask1.sum() > 0:
-                probs1 = torch.sigmoid(logits1[aug_train_mask1])
-                pred1 = (probs1 > 0.5).long()
-                train_acc = (pred1 == aug_labels1[aug_train_mask1]).float().mean()
-            else:
+            # Compute training accuracy safely
+            try:
+                if aug_train_mask1.sum() > 0:
+                    probs1 = torch.sigmoid(logits1[aug_train_mask1])
+                    pred1 = (probs1 > 0.5).long()
+                    train_acc = (pred1 == aug_labels1[aug_train_mask1]).float().mean()
+                else:
+                    train_acc = torch.tensor(0.0, device=device)
+                
+                # Ensure train_acc is a valid number
+                if torch.isnan(train_acc) or torch.isinf(train_acc):
+                    train_acc = torch.tensor(0.0, device=device)
+                    
+            except Exception as e:
+                logger.error(f"Error computing training accuracy: {e}")
                 train_acc = torch.tensor(0.0, device=device)
         
         return {
@@ -1009,7 +1062,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         data: Dict,
         labels: torch.Tensor,
         mask: torch.Tensor,
-        confidence_threshold: float = 0.6,
+        confidence_threshold: float = 0.2,
         curvature_threshold: float = 0.0,
         feature_criteria: Optional[Dict[str, Tuple[int, float]]] = None,
         curvature_type: str = 'ollivier',
