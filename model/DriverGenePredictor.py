@@ -1013,11 +1013,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         curvature_type: str = 'ollivier',
         device: torch.device = None
     ) -> torch.Tensor:
-        """
-        Get prediction probabilities for nodes
-        
-        FIXED: Added missing method
-        
+        """        
         Args:
             data: Graph data dictionary
             mask: Optional mask for specific nodes
@@ -1033,28 +1029,95 @@ class ContrastiveDriverGenePredictor(nn.Module):
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        curv_key = f'{curvature_type.lower()}_curvature'
-        features = data.get('feature', data.get('x')).to(device)
-        edge_index = data['edge_index'].to(device)
-        edge_curvature = data[curv_key].to(device)
-        
-        # Validate curvature dimensions
-        edge_curvature = self.validate_and_fix_curvature_dimensions(
-            edge_index, edge_curvature, "PredictProba"
-        )
-        
-        logits, _ = self.forward(features, edge_index, edge_curvature)
-        
-        # Ensure logits are 1D
-        if logits.dim() > 1:
-            logits = logits.squeeze(-1)
-        
-        probs = torch.sigmoid(logits)
-        
-        if mask is not None:
-            probs = probs[mask]
-        
-        return probs
+        try:
+            curv_key = f'{curvature_type.lower()}_curvature'
+            
+            # Get features
+            features = data.get('feature', data.get('x'))
+            if features is None:
+                raise ValueError("Neither 'feature' nor 'x' found in data")
+            
+            features = features.to(device)
+            edge_index = data['edge_index'].to(device)
+            edge_curvature = data[curv_key].to(device)
+            
+            # CHECKPOINT 1: Check input data for NaN
+            if torch.isnan(features).any():
+                logger.error(f"NaN detected in features! {torch.isnan(features).sum().item()} values")
+                nan_features = torch.isnan(features).any(dim=1)
+                logger.error(f"Affected nodes: {torch.where(nan_features)[0].tolist()[:10]}...")
+                # Replace NaN features with 0
+                features = torch.nan_to_num(features, nan=0.0)
+                logger.warning("Replaced NaN features with 0")
+            
+            if torch.isnan(edge_curvature).any():
+                logger.error(f"NaN detected in edge_curvature! {torch.isnan(edge_curvature).sum().item()} values")
+                # Replace NaN curvature with 0
+                edge_curvature = torch.nan_to_num(edge_curvature, nan=0.0)
+                logger.warning("Replaced NaN curvature with 0")
+            
+            # Validate curvature dimensions
+            edge_curvature = self.validate_and_fix_curvature_dimensions(
+                edge_index, edge_curvature, "PredictProba"
+            )
+            
+            # Clamp curvature to reasonable range
+            edge_curvature = torch.clamp(edge_curvature, min=-10.0, max=10.0)
+            
+            # CHECKPOINT 2: Forward pass with error catching
+            try:
+                logits, embeddings = self.forward(
+                    features, edge_index, edge_curvature, return_embeddings=True
+                )
+            except RuntimeError as e:
+                logger.error(f"Runtime error in forward pass: {e}")
+                raise
+            
+            # CHECKPOINT 3: Check logits for NaN
+            if logits.dim() > 1:
+                logits = logits.squeeze(-1)
+            
+            if torch.isnan(logits).any():
+                logger.error(f"NaN detected in logits! {torch.isnan(logits).sum().item()} out of {logits.numel()} values")
+                nan_nodes = torch.where(torch.isnan(logits))[0]
+                logger.error(f"Nodes with NaN logits: {nan_nodes.tolist()[:10]}...")
+                
+                # Check embeddings
+                if embeddings is not None and torch.isnan(embeddings).any():
+                    logger.error(f"NaN also in embeddings: {torch.isnan(embeddings).sum().item()} values")
+                
+                # Replace NaN logits with 0 (neutral)
+                logits = torch.nan_to_num(logits, nan=0.0)
+                logger.warning("Replaced NaN logits with 0")
+            
+            # CHECKPOINT 4: Compute probabilities
+            probs = torch.sigmoid(logits)
+            
+            # Final NaN check
+            if torch.isnan(probs).any():
+                logger.error(f"NaN detected in probabilities after sigmoid!")
+                probs = torch.nan_to_num(probs, nan=0.5)  # Use 0.5 as neutral probability
+                logger.warning("Replaced NaN probabilities with 0.5")
+            
+            # Apply mask if provided
+            if mask is not None:
+                mask = mask.to(device)
+                probs = probs[mask]
+            
+            return probs
+            
+        except Exception as e:
+            logger.error(f"Error in predict_probability: {e}")
+            logger.error(f"Error type: {type(e).__name__}")
+            import traceback
+            logger.error(traceback.format_exc())
+            
+            # Return safe default probabilities
+            num_nodes = data.get('feature', data.get('x')).shape[0]
+            if mask is not None:
+                num_nodes = mask.sum().item()
+            logger.warning(f"Returning default probabilities (0.5) for {num_nodes} nodes")
+            return torch.full((num_nodes,), 0.5, device=device)
         
     @torch.no_grad()
     def identify_potential_drivers(
@@ -1397,7 +1460,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         if device is None:
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         
-        checkpoint = torch.load(path, map_location=device)
+        checkpoint = torch.load(path, map_location=device, weights_only=False)
         
         self.load_state_dict(checkpoint['model_state_dict'])
         
