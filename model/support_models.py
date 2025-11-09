@@ -61,6 +61,8 @@ class ProjectionHead(nn.Module):
     
 class BinaryClassifier(nn.Module):
     """
+    DEPRECATED: Converted the DriverGenePredictor to use ranking instead of classification.
+    
     A binary classifier for predicting driver genes in cancer genomics.
     This classifier takes graph-based gene representations and predicts
     whether a gene is a cancer driver or non-driver.
@@ -242,3 +244,76 @@ class WarmupScheduler:
     
     def get_lr(self):
         return self.optimizer.param_groups[0]['lr']
+    
+
+class RankingLoss(nn.Module):
+    """
+    Ranking loss that directly optimizes for driver genes to score higher.
+    """
+    def __init__(
+        self,
+        margin: float = 1.0,
+        loss_type: str = 'pairwise'
+    ):
+        super().__init__()
+        self.margin = margin
+        self.loss_type = loss_type
+        
+    def forward(
+        self,
+        scores: torch.Tensor,
+        labels: torch.Tensor,
+        mask: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Args:
+            scores: [num_nodes] driver likelihood scores
+            labels: [num_nodes] binary labels (1=driver, 0=non-driver)
+            mask: [num_nodes] training mask
+        """
+        
+        scores = scores[mask]
+        labels = labels[mask]
+        
+        driver_mask = (labels == 1)
+        non_driver_mask = (labels == 0)
+        
+        if driver_mask.sum() == 0 or non_driver_mask.sum() == 0:
+            return torch.tensor(0.0, device=scores.device)
+        
+        driver_scores = scores[driver_mask]
+        non_driver_scores = scores[non_driver_mask]
+        
+        if self.loss_type == 'pairwise':
+            # Pairwise ranking: driver_score > non_driver_score + margin
+            driver_expanded = driver_scores.unsqueeze(1) # [n_drivers, 1]
+            non_driver_expanded = non_driver_scores.unsqueeze(0)  # [1, n_non_drivers]
+            
+            loss = F.relu(self.margin - driver_expanded + non_driver_expanded)
+            return loss.mean()
+        
+        elif self.loss_type == 'listwise':
+            # ListNet-style cross-entropy
+            ideal_probs = labels.float()
+            ideal_probs = ideal_probs / (ideal_probs.sum() + 1e-10)
+            pred_probs = F.softmax(scores, dim=0)
+            loss = -torch.sum(ideal_probs * torch.log(pred_probs + 1e-10))
+            return loss
+        
+        elif self.loss_type == 'approxndcg':
+            # Approximate NDCG loss
+            sorted_indices = torch.argsort(scores, descending=True)
+            sorted_labels = labels[sorted_indices].float()
+            
+            gains = sorted_labels
+            ranks = torch.arange(1, len(gains) + 1, device=gains.device).float()
+            discounts = 1.0 / torch.log2(ranks + 1)
+            
+            dcg = (gains * discounts).sum()
+            ideal_gains = torch.sort(sorted_labels, descending=True)[0]
+            idcg = (ideal_gains * discounts).sum()
+            
+            ndcg = dcg / (idcg + 1e-10)
+            loss = 1.0 - ndcg
+            return loss
+        

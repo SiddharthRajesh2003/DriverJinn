@@ -12,19 +12,20 @@ from sklearn.metrics import (
     classification_report, roc_auc_score, roc_curve, 
     average_precision_score, precision_recall_curve
 )
+from statsmodels.stats.multitest import multipletests
 import argparse
 import matplotlib.pyplot as plt
 import seaborn as sns
 
 from utils.logging_manager import get_logger
 from model.DriverGenePredictor import ContrastiveDriverGenePredictor
-from model.support_models import WarmupScheduler, EarlyStopping
+from model.support_models import WarmupScheduler, EarlyStopping, RankingLoss
 
-# At the beginning of your script, after imports
+# Memory optimization
 torch.cuda.empty_cache()
 gc.collect()
 
-# Enable memory efficient attention if using transformers
+# Enable efficient operations
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
@@ -46,37 +47,28 @@ def check_for_nans(tensor, name="tensor", raise_error=True):
             return True
     return False
 
-
 def sanitize_curvature(edge_curvature, name="curvature"):
     """Replace NaN/Inf values in curvature with safe defaults"""
     if edge_curvature is None or edge_curvature.numel() == 0:
         return edge_curvature
     
-    # Check for problematic values
     nan_mask = torch.isnan(edge_curvature)
     inf_mask = torch.isinf(edge_curvature)
     
     if nan_mask.any() or inf_mask.any():
         logger.warning(f"{name}: Found {nan_mask.sum().item()} NaN and {inf_mask.sum().item()} Inf values")
-        
-        # Replace NaN/Inf with 0 (neutral curvature)
         edge_curvature = edge_curvature.clone()
         edge_curvature[nan_mask] = 0.0
         edge_curvature[inf_mask] = 0.0
-        
         logger.warning(f"{name}: Replaced problematic values with 0")
     
-    # Clamp to reasonable range to prevent numerical issues
     edge_curvature = torch.clamp(edge_curvature, min=-10.0, max=10.0)
-    
     return edge_curvature
-
 
 def validate_graph_data(data, name="graph", strict=False):
     """Validate graph data structure for NaN/Inf values"""
     issues = []
     
-    # Check features
     features = data.get('feature', data.get('x'))
     if features is not None:
         if torch.isnan(features).any():
@@ -88,7 +80,6 @@ def validate_graph_data(data, name="graph", strict=False):
             if strict:
                 raise ValueError(issues[-1])
     
-    # Check edge index
     edge_index = data.get('edge_index')
     if edge_index is not None:
         num_nodes = features.shape[0] if features is not None else edge_index.max().item() + 1
@@ -97,7 +88,6 @@ def validate_graph_data(data, name="graph", strict=False):
         if edge_index.max() >= num_nodes:
             issues.append(f"{name}: Edge index exceeds number of nodes")
     
-    # Check curvature
     for curv_key in ['ollivier_curvature', 'forman_curvature']:
         if curv_key in data:
             curv = data[curv_key]
@@ -114,14 +104,8 @@ def validate_graph_data(data, name="graph", strict=False):
     
     return len(issues) == 0
 
-
-# UPDATE the preprocess_curvature_data function to include sanitization
 def preprocess_curvature_data(data: Dict, curvature_type: str = 'ollivier') -> Dict:
-    """
-    Preprocess data to ensure curvature dimensions match edge_index.
-    Call this once before training to fix all curvature issues upfront.
-    NOW WITH NaN/Inf DETECTION AND SANITIZATION!
-    """
+    """Preprocess data to ensure curvature dimensions match edge_index with NaN/Inf sanitization"""
     curv_key = f'{curvature_type}_curvature'
     
     if curv_key not in data:
@@ -131,7 +115,7 @@ def preprocess_curvature_data(data: Dict, curvature_type: str = 'ollivier') -> D
     edge_index = data['edge_index']
     edge_curvature = data[curv_key]
     
-    # STEP 1: Sanitize curvature values BEFORE dimension matching
+    # Sanitize curvature values
     logger.info(f"Sanitizing {curv_key} values...")
     edge_curvature = sanitize_curvature(edge_curvature, name=curv_key)
     
@@ -141,8 +125,8 @@ def preprocess_curvature_data(data: Dict, curvature_type: str = 'ollivier') -> D
     logger.info(f"Preprocessing curvature: {num_curvatures} curvatures for {num_edges} edges")
     
     if num_curvatures == num_edges:
-        logger.info("Curvature dimensions already match, no preprocessing needed")
-        data[curv_key] = edge_curvature  # Store sanitized version
+        logger.info("Curvature dimensions already match")
+        data[curv_key] = edge_curvature
         return data
     
     if num_curvatures * 2 == num_edges:
@@ -179,8 +163,6 @@ def preprocess_curvature_data(data: Dict, curvature_type: str = 'ollivier') -> D
     
     else:
         logger.warning(f"Unusual ratio: {num_curvatures} curvatures for {num_edges} edges")
-        logger.warning("Attempting best-effort matching...")
-        
         device = edge_curvature.device
         matched_curvature = torch.zeros(num_edges, device=device, dtype=edge_curvature.dtype)
         
@@ -203,18 +185,15 @@ def preprocess_curvature_data(data: Dict, curvature_type: str = 'ollivier') -> D
             if curv_idx < num_curvatures:
                 matched_curvature[i] = edge_curvature[curv_idx]
             else:
-                matched_curvature[i] = 0.0  # Use 0 instead of mean for missing
+                matched_curvature[i] = 0.0
         
         data[curv_key] = matched_curvature
-        logger.info(f"Best-effort matching complete")
     
-    # STEP 2: Final sanitization after matching
+    # Final sanitization
     data[curv_key] = sanitize_curvature(data[curv_key], name=f"{curv_key}_matched")
     
     return data
 
-
-# UPDATE the evaluate_with_ranking_metrics function to handle NaN gracefully
 def evaluate_with_ranking_metrics(
     model: nn.Module,
     data: Dict,
@@ -223,271 +202,63 @@ def evaluate_with_ranking_metrics(
     curvature_type: str = 'ollivier',
     device: torch.device = None
 ) -> Dict[str, float]:
-    """
-    Evaluate model using ranking metrics (AUPRC, AUROC, Precision@K, Recall@K).
-    Better for imbalanced data than accuracy/F1.
-    NOW WITH NaN DETECTION!
-    """
+    """Evaluate model using ranking metrics (AUROC, AUPRC, NDCG, MRR, Precision@K)"""
     model.eval()
     
     try:
         with torch.no_grad():
-            probs = model.predict_probability(data, mask, curvature_type, device)
+            metrics = model.evaluate(  # <-- This should return a dict
+                data, labels, mask,
+                curvature_type=curvature_type,
+                device=device,
+                k_values=[10, 20, 50, 100]
+            )
         
-        # CHECK FOR NaN IN PREDICTIONS
-        if torch.isnan(probs).any():
-            logger.error(f"NaN detected in predictions! {torch.isnan(probs).sum().item()} out of {probs.numel()} values")
-            
-            # Return zero metrics to allow training to continue
+        # Ensure metrics is a dict
+        if not isinstance(metrics, dict):
+            logger.error(f"model.evaluate() returned {type(metrics)}, expected dict")
             return {
-                'auc_roc': 0.0,
-                'auc_pr': 0.0,
-                'optimal_threshold': 0.5,
-                'optimal_f1': 0.0,
-                'optimal_precision': 0.0,
-                'optimal_recall': 0.0,
-                'precision@10': 0.0,
-                'recall@10': 0.0
+                'auroc': 0.0,
+                'auprc': 0.0,
+                'ndcg@50': 0.0,
+                'precision@50': 0.0,
+                'mrr': 0.0
             }
         
-        probs_np = probs.cpu().numpy()
-        labels_np = labels[mask].cpu().numpy()
-        
-        # Double-check numpy arrays
-        if np.isnan(probs_np).any():
-            logger.error(f"NaN in numpy predictions after conversion!")
-            return {
-                'auc_roc': 0.0,
-                'auc_pr': 0.0,
-                'optimal_threshold': 0.5,
-                'optimal_f1': 0.0,
-                'optimal_precision': 0.0,
-                'optimal_recall': 0.0
-            }
-        
-        metrics = {}
-        
-        # AUPRC and AUROC with try-catch
-        try:
-            metrics['auc_roc'] = roc_auc_score(labels_np, probs_np)
-            metrics['auc_pr'] = average_precision_score(labels_np, probs_np)
-        except ValueError as e:
-            logger.warning(f"Could not compute AUC metrics: {e}")
-            metrics['auc_roc'] = 0.0
-            metrics['auc_pr'] = 0.0
-        
-        # Find optimal threshold
-        try:
-            threshold_results = find_optimal_threshold_f1(probs_np, labels_np)
-            metrics['optimal_threshold'] = threshold_results['optimal_threshold']
-            metrics['optimal_f1'] = threshold_results['max_f1']
-            metrics['optimal_precision'] = threshold_results['precision']
-            metrics['optimal_recall'] = threshold_results['recall']
-        except Exception as e:
-            logger.warning(f"Could not find optimal threshold: {e}")
-            metrics['optimal_threshold'] = 0.5
-            metrics['optimal_f1'] = 0.0
-            metrics['optimal_precision'] = 0.0
-            metrics['optimal_recall'] = 0.0
-        
-        # Precision@K and Recall@K
-        n_positives = labels_np.sum()
-        k_values = [10, 20, 50, 100]
-        
-        for k in k_values:
-            if k > len(probs_np):
-                continue
-            
-            top_k_indices = np.argsort(-probs_np)[:k]
-            top_k_labels = labels_np[top_k_indices]
-            
-            precision_at_k = top_k_labels.sum() / k
-            recall_at_k = top_k_labels.sum() / n_positives if n_positives > 0 else 0
-            
-            metrics[f'precision@{k}'] = precision_at_k
-            metrics[f'recall@{k}'] = recall_at_k
+        # Check for NaN in metrics
+        for key, value in metrics.items():
+            if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+                logger.warning(f"Invalid metric {key}: {value}, setting to 0")
+                metrics[key] = 0.0
         
         return metrics
         
     except Exception as e:
         logger.error(f"Error in evaluate_with_ranking_metrics: {e}")
-        logger.error(f"Error type: {type(e).__name__}")
         import traceback
         logger.error(traceback.format_exc())
         
-        # Return zero metrics to allow training to continue
         return {
-            'auc_roc': 0.0,
-            'auc_pr': 0.0,
-            'optimal_threshold': 0.5,
-            'optimal_f1': 0.0,
-            'optimal_precision': 0.0,
-            'optimal_recall': 0.0
+            'auroc': 0.0,
+            'auprc': 0.0,
+            'ndcg@10': 0.0,
+            'ndcg@50': 0.0,
+            'precision@10': 0.0,
+            'precision@50': 0.0,
+            'mrr': 0.0
         }
-
-# ============================================================================
-# HELPER FUNCTIONS FOR THRESHOLD OPTIMIZATION
-# ============================================================================
-
-def find_optimal_threshold_f1(probs: np.ndarray, labels: np.ndarray) -> Dict:
-    """Find threshold that maximizes F1 score."""
-    precision, recall, thresholds = precision_recall_curve(labels, probs)
-    f1_scores = 2 * (precision * recall) / (precision + recall + 1e-10)
-    optimal_idx = np.argmax(f1_scores)
-    optimal_threshold = thresholds[optimal_idx] if optimal_idx < len(thresholds) else 0.5
-    
-    predictions = (probs >= optimal_threshold).astype(int)
-    tp = ((predictions == 1) & (labels == 1)).sum()
-    fp = ((predictions == 1) & (labels == 0)).sum()
-    tn = ((predictions == 0) & (labels == 0)).sum()
-    fn = ((predictions == 0) & (labels == 1)).sum()
-    
-    return {
-        'optimal_threshold': optimal_threshold,
-        'max_f1': f1_scores[optimal_idx],
-        'precision': precision[optimal_idx],
-        'recall': recall[optimal_idx],
-        'tp': tp, 'fp': fp, 'tn': tn, 'fn': fn,
-        'accuracy': (tp + tn) / (tp + fp + tn + fn)
-    }
-
-
-def analyze_driver_distribution(probs: np.ndarray, labels: np.ndarray) -> Dict:
-    """Analyze probability distribution of known drivers vs non-drivers."""
-    driver_probs = probs[labels == 1]
-    non_driver_probs = probs[labels == 0]
-    
-    if len(driver_probs) == 0:
-        return {
-            'driver_mean': 0.0,
-            'driver_median': 0.0,
-            'non_driver_mean': non_driver_probs.mean() if len(non_driver_probs) > 0 else 0.0,
-            'separation': 0.0,
-            'suggested_conservative': 0.5,
-            'suggested_balanced': 0.5,
-            'suggested_liberal': 0.7
-        }
-    
-    stats = {
-        'driver_mean': driver_probs.mean(),
-        'driver_median': np.median(driver_probs),
-        'driver_std': driver_probs.std(),
-        'driver_min': driver_probs.min(),
-        'driver_max': driver_probs.max(),
-        'driver_q25': np.percentile(driver_probs, 25),
-        'driver_q75': np.percentile(driver_probs, 75),
-        'non_driver_mean': non_driver_probs.mean(),
-        'non_driver_median': np.median(non_driver_probs),
-        'separation': driver_probs.mean() - non_driver_probs.mean()
-    }
-    
-    # Suggested thresholds based on percentiles
-    stats['suggested_conservative'] = np.percentile(driver_probs, 25)
-    stats['suggested_balanced'] = np.percentile(driver_probs, 50)
-    stats['suggested_liberal'] = np.percentile(driver_probs, 75)
-    
-    return stats
-
-
-def plot_threshold_analysis(
-    probs: np.ndarray,
-    labels: np.ndarray,
-    save_path: Path,
-    fold_idx: int
-):
-    """Create threshold analysis plots."""
-    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-    
-    # Distribution comparison
-    driver_probs = probs[labels == 1]
-    non_driver_probs = probs[labels == 0]
-    
-    axes[0, 0].hist(non_driver_probs, bins=50, alpha=0.5, label='Non-drivers', 
-                   density=True, color='blue')
-    axes[0, 0].hist(driver_probs, bins=50, alpha=0.5, label='Known drivers', 
-                   density=True, color='red')
-    axes[0, 0].set_xlabel('Probability Score')
-    axes[0, 0].set_ylabel('Density')
-    axes[0, 0].set_title(f'Fold {fold_idx}: Probability Distribution')
-    axes[0, 0].legend()
-    axes[0, 0].grid(True, alpha=0.3)
-    
-    # Precision-Recall curve
-    precision, recall, thresholds = precision_recall_curve(labels, probs)
-    axes[0, 1].plot(recall, precision, linewidth=2)
-    axes[0, 1].set_xlabel('Recall')
-    axes[0, 1].set_ylabel('Precision')
-    axes[0, 1].set_title(f'Fold {fold_idx}: Precision-Recall Curve')
-    axes[0, 1].grid(True, alpha=0.3)
-    
-    # F1 vs threshold
-    f1_scores = 2 * (precision * recall) / (precision + recall + 1e-10)
-    axes[1, 0].plot(thresholds, f1_scores[:-1], linewidth=2)
-    optimal_idx = np.argmax(f1_scores)
-    optimal_threshold = thresholds[optimal_idx] if optimal_idx < len(thresholds) else 0.5
-    axes[1, 0].axvline(optimal_threshold, color='r', linestyle='--', 
-                      label=f'Optimal: {optimal_threshold:.3f}')
-    axes[1, 0].set_xlabel('Threshold')
-    axes[1, 0].set_ylabel('F1 Score')
-    axes[1, 0].set_title(f'Fold {fold_idx}: F1 Score vs Threshold')
-    axes[1, 0].legend()
-    axes[1, 0].grid(True, alpha=0.3)
-    
-    # ROC curve
-    fpr, tpr, _ = roc_curve(labels, probs)
-    auc_roc = roc_auc_score(labels, probs)
-    axes[1, 1].plot(fpr, tpr, linewidth=2, label=f'AUC={auc_roc:.3f}')
-    axes[1, 1].plot([0, 1], [0, 1], 'k--', alpha=0.3)
-    axes[1, 1].set_xlabel('False Positive Rate')
-    axes[1, 1].set_ylabel('True Positive Rate')
-    axes[1, 1].set_title(f'Fold {fold_idx}: ROC Curve')
-    axes[1, 1].legend()
-    axes[1, 1].grid(True, alpha=0.3)
-    
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300, bbox_inches='tight')
-    plt.close()
-
-
-@torch.no_grad()
-def ensemble_predict(
-    models: List[nn.Module],
-    data: Dict,
-    mask: Optional[torch.Tensor] = None,
-    curvature_type: str = 'ollivier',
-    device: torch.device = None
-) -> Tuple[torch.Tensor, torch.Tensor]:
-    """
-    Ensemble prediction from multiple models
-    
-    Returns:
-        mean_probs: Average probabilities
-        std_probs: Standard deviation (uncertainty estimate)
-    """
-    all_probs = []
-    
-    for model in models:
-        model.eval()
-        probs = model.predict_probability(data, mask, curvature_type, device)
-        all_probs.append(probs)
-    
-    all_probs = torch.stack(all_probs)
-    mean_probs = all_probs.mean(dim=0)
-    std_probs = all_probs.std(dim=0)
-    
-    return mean_probs, std_probs
-
 
 def create_cancer_driver_model(
     num_features: int = 74,
     hidden_channels: int = 256,
     projection_dim: int = 128,
     num_layers: int = 3,
+    attention_mode: str = 'hybrid',
+    num_heads: int = 4,
+    concat_heads: bool = True,
     device: torch.device = None
 ) -> ContrastiveDriverGenePredictor:
-    """
-    Factory function to create cancer driver prediction model
-    """
+    """Factory function to create cancer driver prediction model"""
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     
@@ -497,18 +268,23 @@ def create_cancer_driver_model(
         projection_dim=projection_dim,
         num_gnn_layers=num_layers,
         curvature_types=['positive', 'negative', 'both'],
-        num_attention_heads=4,
+        hop_types=['one_hop', 'two_hop'],
+        num_attention_heads=num_heads,
+        use_attention=True,
+        attention_mode=attention_mode,
+        concat=concat_heads,
         temperature=0.7,
         dropout=0.2,
         device=device
     ).to(device)
 
-    logger.info(f"Created ContrastiveCancerDriverPredictor model:")
+    logger.info(f"Created ContrastiveDriverGenePredictor model:")
     logger.info(f"  - Input features: {num_features}")
     logger.info(f"  - Hidden channels: {hidden_channels}")
+    logger.info(f"  - Attention mode: {attention_mode}")
+    logger.info(f"  - Attention heads: {num_heads} (concat={concat_heads})")
     logger.info(f"  - Device: {device}")
-    logger.info(f"  - Binary classification: driver vs non-driver")
-    logger.info(f"  - Imbalance handling: focal loss enabled")
+    logger.info(f"  - Training objective: Ranking (not binary classification)")
     
     return model
 
@@ -523,20 +299,17 @@ def train_single_fold(
     model_save_dir: Path,
     results_dir: Path,
     model_prefix: str = "",
-    use_focal_loss: bool = True,
-    focal_alpha: float = 0.25,
-    focal_gamma: float = 2.0,
-    pos_weight: Optional[torch.Tensor] = None
-) -> Tuple[ContrastiveDriverGenePredictor, Dict, Dict, Dict]:
-    """
-    Train model on a single fold with imbalance handling and threshold optimization.
+    attention_mode: str = 'hybrid',
+    num_heads: int = 4,
+    concat_heads: bool = True,
+    ranking_loss_type: str = 'pairwise',
+    ranking_margin: float = 1.0,
+    gradient_accumulation_steps: int = 4,
+    mixed_precision: bool = True,
+    reduce_model_size: bool = True
+) -> Tuple[ContrastiveDriverGenePredictor, Dict, Dict]:
     
-    Returns:
-        model: Trained model
-        best_metrics: Best validation metrics
-        history: Training history
-        threshold_info: Optimal threshold information
-    """
+    """Train model on a single fold with ranking objective"""
     print(f"\n{'='*80}")
     print(f"TRAINING FOLD {fold_idx}")
     print(f"{'='*80}")
@@ -545,14 +318,19 @@ def train_single_fold(
     train_mask_original = torch.from_numpy(fold_data['train_mask'])
     val_mask_original = torch.from_numpy(fold_data['val_mask'])
     
-    num_original_nodes = original['feature'].shape[0]
+    # Get features - handle both 'feature' and 'x' keys
+    features = original.get('feature', original.get('x'))
+    if features is None:
+        raise ValueError("No 'feature' or 'x' key found in original data")
+    
+    num_original_nodes = features.shape[0]
     if len(train_mask_original) != num_original_nodes:
         raise ValueError(
             f"Train mask size ({len(train_mask_original)}) doesn't match "
             f"original graph nodes ({num_original_nodes})"
         )
     
-    # Analyze class imbalance
+    # Analyze class distribution
     train_labels = labels[train_mask_original]
     num_pos = (train_labels == 1).sum().item()
     num_neg = (train_labels == 0).sum().item()
@@ -563,34 +341,29 @@ def train_single_fold(
     print(f"  Positive (drivers): {num_pos} ({100*num_pos/len(train_labels):.2f}%)")
     print(f"  Negative: {num_neg} ({100*num_neg/len(train_labels):.2f}%)")
     print(f"  Imbalance ratio: 1:{imbalance_ratio:.1f}")
-    
-    # Adjust focal loss parameters based on imbalance severity
-    if imbalance_ratio > 50:
-        focal_alpha_adjusted = 0.15
-        focal_gamma_adjusted = 3.0
-        print(f"  → Using aggressive focal loss (extreme imbalance)")
-    elif imbalance_ratio > 20:
-        focal_alpha_adjusted = 0.20
-        focal_gamma_adjusted = 2.5
-        print(f"  → Using strong focal loss (severe imbalance)")
-    else:
-        focal_alpha_adjusted = focal_alpha
-        focal_gamma_adjusted = focal_gamma
-        print(f"  → Using standard focal loss (moderate imbalance)")
-    
-    print(f"  Focal loss parameters: alpha={focal_alpha_adjusted}, gamma={focal_gamma_adjusted}")
-    
-    # Calculate fold-specific positive weight (for non-focal loss)
-    fold_pos_weight = torch.tensor([num_neg / num_pos], device=device) if num_pos > 0 else torch.tensor([1.0], device=device)
-    
     print(f"  Val samples: {val_mask_original.sum().item()}")
     
-    # Create model
+    # EMERGENCY: Reduce model size if still OOM
+    if reduce_model_size:
+        logger.warning("Using reduced model size due to memory constraints")
+        hidden_channels = 64
+        projection_dim = 32
+        num_layers = 2
+        num_heads = 1
+    else:
+        hidden_channels = 256
+        projection_dim = 128
+        num_layers = 3
+    
+    # Create model with reduced size
     model = create_cancer_driver_model(
-        num_features=original['feature'].shape[1],
-        hidden_channels=256,
-        projection_dim=128,
-        num_layers=3,
+        num_features=features.shape[1],  # Use features variable instead
+        hidden_channels=hidden_channels,
+        projection_dim=projection_dim,
+        num_layers=num_layers,
+        attention_mode=attention_mode,
+        num_heads=num_heads,
+        concat_heads=True,
         device=device
     )
     
@@ -602,10 +375,10 @@ def train_single_fold(
         betas=(0.9, 0.999)
     )
     
-    # Learning rate scheduler
+    # Learning rate scheduler (maximize NDCG)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer, 
-        mode='max',  # Maximize AUPRC
+        mode='max',
         factor=0.5, 
         patience=20, 
         min_lr=1e-6
@@ -619,25 +392,44 @@ def train_single_fold(
         target_lr=0.001
     )
     
-    # Early stopping based on AUPRC (better for imbalanced data)
+    # Early stopping based on NDCG@50
     early_stopping = EarlyStopping(patience=50, min_delta=0.0001, mode='max')
+    
+    # Mixed precision scaler
+    scaler = torch.amp.GradScaler('cuda') if mixed_precision and torch.cuda.is_available() else None
+    
+    # Pre-process original data ONCE and keep on device
+    logger.info("Pre-processing original graph data...")
+    original_device = {
+        'x': features.to(device),  # Use features variable
+        'edge_index': original['edge_index'].to(device),
+        'ollivier_curvature': original['ollivier_curvature'].to(device),
+    }
+    
+    # Don't delete from original - other folds need it!
+    # Just clear CUDA cache
+    gc.collect()
+    torch.cuda.empty_cache()
+    
+    labels = labels.to(device)
+    train_mask_original = train_mask_original.to(device)
+    val_mask_original = val_mask_original.to(device)
     
     # Training history
     history = {
         'train_loss': [],
-        'train_acc': [],
-        'val_auprc': [],  # NEW: Primary metric
-        'val_auroc': [],  # NEW: Secondary metric
+        'train_ndcg': [],
+        'val_auroc': [],
+        'val_auprc': [],
         'val_f1': [],
-        'val_precision': [],
-        'val_recall': [],
-        'val_precision@50': [],  # NEW: Interpretable metric
+        'val_ndcg@50': [],
+        'val_precision@50': [],
+        'val_mrr': [],
         'learning_rate': []
     }
     
-    best_val_auprc = 0.0
+    best_val_ndcg = 0.0
     best_metrics = None
-    threshold_info = None
     
     # Construct model filename
     if model_prefix:
@@ -648,403 +440,615 @@ def train_single_fold(
     model_path = model_save_dir / model_filename
     
     print(f"\n{'='*80}")
-    print("TRAINING WITH IMBALANCE HANDLING")
+    print("TRAINING WITH RANKING OBJECTIVE")
     print(f"{'='*80}")
-    print(f"Loss type: {'Focal Loss' if use_focal_loss else 'Weighted BCE'}")
-    print(f"Early stopping metric: AUPRC (better for imbalanced data)")
+    print(f"Loss type: Contrastive + {ranking_loss_type.capitalize()} Ranking")
+    print(f"Ranking margin: {ranking_margin}")
+    print(f"Early stopping metric: NDCG@50")
+    print(f"Attention mode: {attention_mode}")
     print(f"{'='*80}\n")
     
-    # Training loop
     for epoch in range(num_epochs):
-        # Warmup learning rate
+        # Clear cache at start of epoch
+        torch.cuda.empty_cache()
+        gc.collect()
+        
         if epoch < 10:
             warmup_scheduler.step()
         
-        # Sample two different augmented views
-        view_indices = torch.randperm(len(augmented_views))[:2]
-        augmented_view1 = augmented_views[view_indices[0]]
-        augmented_view2 = augmented_views[view_indices[1]]
+        # Zero gradients once
+        optimizer.zero_grad()
         
-        # Train step with focal loss
-        try:
-            loss_dict = model.train_step(
-                augmented_view1,
-                augmented_view2,
-                original,
-                labels,
-                train_mask_original,
-                optimizer,
-                contrastive_weight=0.3,
-                pos_weight=fold_pos_weight if not use_focal_loss else None,
-                curvature_type='ollivier',
-                device=device,
-                batch_size=2048,
-                use_focal_loss=use_focal_loss,
-                focal_alpha=focal_alpha_adjusted,
-                focal_gamma=focal_gamma_adjusted
-            )
-        except RuntimeError as e:
-            if "out of memory" in str(e):
-                logger.warning("OOM error, clearing cache and reducing batch size")
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                loss_dict = model.train_step(
-                    augmented_view1,
-                    augmented_view2,
-                    original,
-                    labels,
-                    train_mask_original,
-                    optimizer,
-                    contrastive_weight=0.3,
-                    pos_weight=fold_pos_weight if not use_focal_loss else None,
-                    curvature_type='ollivier',
-                    device=device,
-                    batch_size=1024,
-                    use_focal_loss=use_focal_loss,
-                    focal_alpha=focal_alpha_adjusted,
-                    focal_gamma=focal_gamma_adjusted
+        accumulated_loss = 0.0
+        accumulated_metrics = {'train_ndcg': 0.0}
+        successful_steps = 0
+        
+        # Process one view at a time with smaller chunks
+        for accum_step in range(gradient_accumulation_steps):
+            try:
+                # Sample ONE view per step to minimize memory
+                view_idx = torch.randint(0, len(augmented_views), (1,)).item()
+                view = augmented_views[view_idx]
+                
+                # Move view to device ONLY when needed
+                view_x = view['x'].to(device)
+                view_edge_index = view['edge_index'].to(device)
+                view_curvature = view.get('ollivier_curvature')
+                
+                if view_curvature is not None:
+                    view_curvature = view_curvature.to(device)
+                else:
+                    # Compute curvature on-the-fly
+                    view_curvature = model.compute_augmented_curvature(
+                        view_edge_index,
+                        None,
+                        view_x,
+                        original_curvature=original_device['ollivier_curvature'],
+                        original_edge_index=original_device['edge_index'],
+                        method='transfer'
+                    )
+                
+                # Validate curvature
+                view_curvature = model.validate_and_fix_curvature_dimensions(
+                    view_edge_index, view_curvature, f"View{accum_step}"
                 )
-            else:
-                raise e
+                
+                # Map labels/masks
+                eliminated_ids = set(view['metadata']['eliminated_node_ids'])
+                aug_size = view_x.shape[0]
+                num_original = labels.shape[0]
+                
+                orig_to_aug = {}
+                aug_idx = 0
+                for orig_idx in range(num_original):
+                    if orig_idx not in eliminated_ids:
+                        orig_to_aug[orig_idx] = aug_idx
+                        aug_idx += 1
+                
+                aug_labels = torch.full((aug_size,), -100, dtype=torch.long, device=device)
+                aug_mask = torch.zeros(aug_size, dtype=torch.bool, device=device)
+                
+                for orig_idx in range(num_original):
+                    if orig_idx in orig_to_aug:
+                        aug_idx = orig_to_aug[orig_idx]
+                        if aug_idx < aug_size:
+                            aug_labels[aug_idx] = labels[orig_idx]
+                            aug_mask[aug_idx] = train_mask_original[orig_idx]
+                
+                if aug_mask.sum() == 0:
+                    logger.warning(f"Step {accum_step}: No training samples after mapping")
+                    continue
+                
+                # Forward pass with mixed precision
+                with torch.amp.autocast('cuda') if scaler else torch.no_grad():
+                    # Get scores
+                    scores, _ = model.forward(view_x, view_edge_index, view_curvature)
+                    
+                    # Compute ranking loss
+                    ranking_criterion = RankingLoss(
+                        margin=ranking_margin, 
+                        loss_type=ranking_loss_type
+                    )
+                    loss = ranking_criterion(scores, aug_labels, aug_mask)
+                    
+                    # Scale for accumulation
+                    loss = loss / gradient_accumulation_steps
+                
+                # Backward
+                if scaler:
+                    scaler.scale(loss).backward()
+                else:
+                    loss.backward()
+                
+                accumulated_loss += loss.item() * gradient_accumulation_steps
+                successful_steps += 1
+                
+                # Clean up immediately
+                del view_x, view_edge_index, view_curvature
+                del aug_labels, aug_mask, scores, loss
+                torch.cuda.empty_cache()
+                
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    logger.warning(f"OOM at epoch {epoch}, step {accum_step}")
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                    continue
+                else:
+                    raise e
         
-        if math.isnan(loss_dict['total_loss']):
-            logger.error(f"Epoch {epoch}: Training failed with NaN loss")
+        # Check if we had any successful steps
+        if successful_steps == 0:
+            logger.error(f"Epoch {epoch}: All steps failed with OOM. Skipping epoch.")
+            optimizer.zero_grad()
+            torch.cuda.empty_cache()
             continue
         
-        # Validation with RANKING METRICS (better for imbalanced data)
-        ranking_metrics = evaluate_with_ranking_metrics(
-            model, original, labels, val_mask_original,
-            curvature_type='ollivier', device=device
-        )
+        # Average loss
+        avg_loss = accumulated_loss / successful_steps
         
-        # Also get standard metrics for compatibility
-        val_metrics = model.evaluate(
-            original, labels, val_mask_original,
-            curvature_type='ollivier', device=device
-        )
+        # Check for NaN
+        if math.isnan(avg_loss):
+            logger.error(f"Epoch {epoch}: NaN loss")
+            optimizer.zero_grad()
+            continue
         
-        # Update learning rate based on AUPRC (not F1!)
-        if epoch >= 10:
-            scheduler.step(ranking_metrics['auc_pr'])
+        # Gradient clipping
+        if scaler is not None:
+            scaler.unscale_(optimizer)
+        
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        
+        # Optimizer step
+        if scaler is not None:
+            scaler.step(optimizer)
+            scaler.update()
+        else:
+            optimizer.step()
+        
+        optimizer.zero_grad()
+        torch.cuda.empty_cache()
+        
+        # Validation (less frequently to save time)
+        if epoch % 5 == 0 or epoch == num_epochs - 1:
+            val_metrics = evaluate_with_ranking_metrics(
+                model, original_device, labels, val_mask_original,
+                curvature_type='ollivier', device=device
+            )
+            
+            # SAFETY CHECK: Ensure val_metrics is a dict
+            if not isinstance(val_metrics, dict):
+                logger.error(f"val_metrics is {type(val_metrics)}, expected dict. Creating empty dict.")
+                val_metrics = {
+                    'auroc': 0.0,
+                    'auprc': 0.0,
+                    'f1': 0.0,
+                    'ndcg@50': 0.0,
+                    'precision@50': 0.0,
+                    'mrr': 0.0
+                }
+            
+            # Update scheduler
+            if epoch >= 10:
+                scheduler.step(val_metrics.get('ndcg@50', 0))
+        else:
+            # Skip validation - reuse previous metrics as dict
+            if history['val_ndcg@50']:
+                val_metrics = {
+                    'ndcg@50': history['val_ndcg@50'][-1],
+                    'auroc': history['val_auroc'][-1] if history['val_auroc'] else 0,
+                    'auprc': history['val_auprc'][-1] if history['val_auprc'] else 0,
+                    'f1': history['val_f1'][-1] if history['val_f1'] else 0,
+                    'precision@50': history['val_precision@50'][-1] if history['val_precision@50'] else 0,
+                    'mrr': history['val_mrr'][-1] if history['val_mrr'] else 0
+                }
+            else:
+                val_metrics = {'ndcg@50': 0, 'auroc': 0, 'auprc': 0, 'f1': 0, 'precision@50': 0, 'mrr': 0}
         
         # Store history
-        history['train_loss'].append(loss_dict['total_loss'])
-        history['train_acc'].append(loss_dict['train_accuracy'])
-        history['val_auprc'].append(ranking_metrics['auc_pr'])
-        history['val_auroc'].append(ranking_metrics['auc_roc'])
-        history['val_f1'].append(val_metrics['f1'])
-        history['val_precision'].append(val_metrics['precision'])
-        history['val_recall'].append(val_metrics['recall'])
-        history['val_precision@50'].append(ranking_metrics.get('precision@50', 0))
+        history['train_loss'].append(avg_loss)
+        history['val_auroc'].append(val_metrics.get('auroc', 0))
+        history['val_auprc'].append(val_metrics.get('auprc', 0))
+        history['val_f1'].append(val_metrics.get('f1', 0))
+        history['val_ndcg@50'].append(val_metrics.get('ndcg@50', 0))
+        history['val_precision@50'].append(val_metrics.get('precision@50', 0))
+        history['val_mrr'].append(val_metrics.get('mrr', 0))
         history['learning_rate'].append(optimizer.param_groups[0]['lr'])
         
         # Logging
         if epoch % 10 == 0:
-            print(f"Epoch {epoch:3d} | "
-                  f"Loss: {loss_dict['total_loss']:.4f} | "
-                  f"AUPRC: {ranking_metrics['auc_pr']:.4f} | "
-                  f"AUROC: {ranking_metrics['auc_roc']:.4f} | "
-                  f"P@50: {ranking_metrics.get('precision@50', 0):.4f} | "
-                  f"F1: {val_metrics['f1']:.4f} | "
-                  f"LR: {optimizer.param_groups[0]['lr']:.6f}")
-        
-        # Save best model based on AUPRC (not F1!)
-        if ranking_metrics['auc_pr'] > best_val_auprc:
-            best_val_auprc = ranking_metrics['auc_pr']
-            best_metrics = {**val_metrics, **ranking_metrics}
-            
-            # Save model
-            model.save_checkpoint(
-                str(model_path),
-                epoch,
-                optimizer,
-                best_metrics,
-                metadata={
-                    'fold': fold_idx,
-                    'num_views': len(augmented_views),
-                    'loss_type': 'focal' if use_focal_loss else 'bce',
-                    'focal_alpha': focal_alpha_adjusted if use_focal_loss else None,
-                    'focal_gamma': focal_gamma_adjusted if use_focal_loss else None,
-                    'imbalance_ratio': imbalance_ratio,
-                    'model_prefix': model_prefix
-                }
+            print(
+                f"Epoch {epoch:3d} | "
+                f"Loss: {avg_loss:.4f} | "
+                f"Steps: {successful_steps}/{gradient_accumulation_steps} | "
+                f"NDCG@50: {val_metrics.get('ndcg@50', 0):.4f} | "
+                f"LR: {optimizer.param_groups[0]['lr']:.6f}"
             )
         
-        # Early stopping based on AUPRC
-        if early_stopping(ranking_metrics['auc_pr']):
-            print(f"\nEarly stopping triggered at epoch {epoch}")
-            print(f"Best validation AUPRC: {best_val_auprc:.4f}")
+        # Save best model
+        if val_metrics.get('ndcg@50', 0) > best_val_ndcg:
+            best_val_ndcg = val_metrics.get('ndcg@50', 0)
+            best_metrics = val_metrics
+            
+            model.save_checkpoint(
+                str(model_path), epoch, optimizer, best_metrics,
+                metadata={'fold': fold_idx}
+            )
+        
+        # Early stopping
+        if early_stopping(val_metrics.get('ndcg@50', 0)):
+            logger.info(f"Early stopping at epoch {epoch}")
             break
     
     # Load best model
     checkpoint = model.load_checkpoint(str(model_path), optimizer, device)
     print(f"\n✓ Loaded best model from epoch {checkpoint['epoch']}")
-    print(f"  Best Val AUPRC: {best_val_auprc:.4f}")
-    print(f"  Best Val AUROC: {best_metrics.get('auc_roc', 0):.4f}")
-    print(f"  Best Val F1: {best_metrics.get('f1', 0):.4f}")
+    print(f"  Best Val NDCG@50: {best_val_ndcg:.4f}")
+    print(f"  Best Val AUROC: {best_metrics.get('auroc', 0):.4f}")
+    print(f"  Best Val MRR: {best_metrics.get('mrr', 0):.4f}")
     print(f"  Saved to: {model_path}")
     
-    # THRESHOLD OPTIMIZATION on validation set
+    # Score all genes with statistical significance
     print(f"\n{'='*80}")
-    print("THRESHOLD OPTIMIZATION (Validation Set)")
+    print(f"SCORING ALL GENES - FOLD {fold_idx}")
     print(f"{'='*80}")
     
-    with torch.no_grad():
-        val_probs = model.predict_probability(
-            original, val_mask_original, curvature_type='ollivier', device=device
-        )
+    scored_genes_df = model.score_genes_with_statistics(
+        data=original_device,
+        labels=labels,
+        curvature_type='ollivier',
+        num_permutations=1000,
+        device=device,
+        save_path=results_dir,
+        save_prefix=f"{model_prefix}_fold_{fold_idx}" if model_prefix else f"fold_{fold_idx}"
+    )
     
-    val_probs_np = val_probs.cpu().numpy()
-    val_labels_np = labels[val_mask_original].cpu().numpy()
-    
-    # Analyze distribution
-    driver_stats = analyze_driver_distribution(val_probs_np, val_labels_np)
-    
-    print(f"\nKnown Driver Distribution:")
-    print(f"  Mean probability: {driver_stats['driver_mean']:.3f}")
-    print(f"  Median probability: {driver_stats['driver_median']:.3f}")
-    print(f"  Separation from non-drivers: {driver_stats['separation']:.3f}")
-    
-    # Find optimal threshold
-    threshold_results = find_optimal_threshold_f1(val_probs_np, val_labels_np)
-    
-    print(f"\nOptimal Threshold (F1-based):")
-    print(f"  Threshold: {threshold_results['optimal_threshold']:.3f}")
-    print(f"  Expected F1: {threshold_results['max_f1']:.3f}")
-    print(f"  Expected Precision: {threshold_results['precision']:.3f}")
-    print(f"  Expected Recall: {threshold_results['recall']:.3f}")
-    
-    print(f"\nSuggested Thresholds (based on driver distribution):")
-    print(f"  Conservative (75% drivers): {driver_stats['suggested_conservative']:.3f}")
-    print(f"  Balanced (50% drivers): {driver_stats['suggested_balanced']:.3f}")
-    print(f"  Liberal (25% drivers): {driver_stats['suggested_liberal']:.3f}")
-    print(f"{'='*80}\n")
-    
-    # Store threshold information
-    threshold_info = {
-        'optimal_f1_threshold': threshold_results['optimal_threshold'],
-        'expected_f1': threshold_results['max_f1'],
-        'expected_precision': threshold_results['precision'],
-        'expected_recall': threshold_results['recall'],
-        'driver_stats': driver_stats,
-        'conservative_threshold': driver_stats['suggested_conservative'],
-        'balanced_threshold': driver_stats['suggested_balanced'],
-        'liberal_threshold': driver_stats['suggested_liberal']
-    }
-    
-    # Create threshold analysis plots
-    plot_path = results_dir / f'fold_{fold_idx}_threshold_analysis.png'
-    try:
-        plot_threshold_analysis(val_probs_np, val_labels_np, plot_path, fold_idx)
-        print(f"✓ Saved threshold analysis to: {plot_path}")
-    except Exception as e:
-        logger.warning(f"Could not create threshold plots: {e}")
-    
-    return model, best_metrics, history, threshold_info
+    return model, best_metrics, history, scored_genes_df
 
+def plot_training_curves(histories: List[Dict], save_dir: Path, prefix: str = ""):
+    """Plot training curves for all folds"""
+    try:
+        num_folds = len(histories)
+        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
+        fig.suptitle('Training Curves Across Folds', fontsize=16)
+        
+        metrics_to_plot = [
+            ('train_loss', 'Training Loss', 'lower'),
+            ('train_ndcg', 'Training NDCG', 'upper'),
+            ('val_auroc', 'Validation AUROC', 'upper'),
+            ('val_ndcg@50', 'Validation NDCG@50', 'upper'),
+            ('val_precision@50', 'Validation Precision@50', 'upper'),
+            ('learning_rate', 'Learning Rate', 'log')
+        ]
+        
+        for idx, (metric_key, title, scale) in enumerate(metrics_to_plot):
+            ax = axes[idx // 3, idx % 3]
+            
+            for fold_idx, history in enumerate(histories, 1):
+                if metric_key in history and len(history[metric_key]) > 0:
+                    epochs = range(1, len(history[metric_key]) + 1)
+                    ax.plot(epochs, history[metric_key], label=f'Fold {fold_idx}', alpha=0.7)
+            
+            ax.set_xlabel('Epoch')
+            ax.set_ylabel(metric_key)
+            ax.set_title(title)
+            ax.legend(loc='best')
+            ax.grid(True, alpha=0.3)
+            
+            if scale == 'log':
+                ax.set_yscale('log')
+        
+        plt.tight_layout()
+        
+        output_file = save_dir / f"{prefix}training_curves.png"
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"✓ Saved training curves to: {output_file}")
+        
+    except Exception as e:
+        logger.error(f"Error plotting training curves: {e}")
+
+def plot_metrics_comparison(metrics_data: List[Dict], save_dir: Path, prefix: str = ""):
+    """Plot comparison of metrics across folds"""
+    try:
+        df = pd.DataFrame(metrics_data)
+        
+        fig, axes = plt.subplots(1, 2, figsize=(15, 6))
+        fig.suptitle('Performance Metrics Across Folds', fontsize=16)
+        
+        # Bar plot
+        metrics_cols = ['NDCG@50', 'AUROC', 'AUPRC', 'Precision@50', 'MRR']
+        x = np.arange(len(metrics_cols))
+        width = 0.15
+        
+        for idx, fold_idx in enumerate(df['Fold']):
+            offset = (idx - len(df) / 2) * width
+            values = [df.loc[idx, col] for col in metrics_cols]
+            axes[0].bar(x + offset, values, width, label=f'Fold {fold_idx}', alpha=0.8)
+        
+        axes[0].set_xlabel('Metrics')
+        axes[0].set_ylabel('Score')
+        axes[0].set_title('Metrics by Fold')
+        axes[0].set_xticks(x)
+        axes[0].set_xticklabels(metrics_cols, rotation=45, ha='right')
+        axes[0].legend(loc='best')
+        axes[0].grid(True, alpha=0.3, axis='y')
+        axes[0].set_ylim([0, 1])
+        
+        # Box plot
+        box_data = [df[col].values for col in metrics_cols]
+        bp = axes[1].boxplot(box_data, labels=metrics_cols, patch_artist=True)
+        
+        for patch in bp['boxes']:
+            patch.set_facecolor('lightblue')
+            patch.set_alpha(0.7)
+        
+        axes[1].set_xlabel('Metrics')
+        axes[1].set_ylabel('Score')
+        axes[1].set_title('Metrics Distribution')
+        axes[1].grid(True, alpha=0.3, axis='y')
+        axes[1].set_xticklabels(metrics_cols, rotation=45, ha='right')
+        axes[1].set_ylim([0, 1])
+        
+        plt.tight_layout()
+        
+        output_file = save_dir / f"{prefix}metrics_comparison.png"
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        
+        print(f"✓ Saved metrics comparison to: {output_file}")
+        
+    except Exception as e:
+        logger.error(f"Error plotting metrics comparison: {e}")
+
+def aggregate_gene_scores(all_fold_dfs: List[pd.DataFrame], save_dir: Path, prefix: str = ""):
+    """
+    Aggregate gene scores across all folds.
+    
+    For each gene, compute:
+    - Mean score across folds
+    - Std score across folds
+    - Number of folds where gene was significant
+    - Consensus significance (significant in majority of folds)
+    """
+    try:
+        print(f"\nAggregating scores from {len(all_fold_dfs)} folds...")
+        
+        # Get gene IDs from first fold (should be same across all folds)
+        gene_ids = all_fold_dfs[0]['gene_id'].values
+        gene_names = all_fold_dfs[0]['gene_name'].values
+        true_labels = all_fold_dfs[0]['true_label'].values
+        
+        # Collect scores from each fold
+        scores_matrix = np.array([df['driver_score'].values for df in all_fold_dfs])
+        pvalues_matrix = np.array([df['adjusted_pvalue'].values for df in all_fold_dfs])
+        ranks_matrix = np.array([df['rank'].values for df in all_fold_dfs])
+        
+        # Compute aggregate statistics
+        mean_scores = scores_matrix.mean(axis=0)
+        std_scores = scores_matrix.std(axis=0)
+        median_scores = np.median(scores_matrix, axis=0)
+        
+        mean_pvalues = pvalues_matrix.mean(axis=0)
+        median_ranks = np.median(ranks_matrix, axis=0)
+        
+        # Count how many folds each gene was significant in
+        significant_counts = (pvalues_matrix < 0.05).sum(axis=0)
+        consensus_significant = significant_counts >= (len(all_fold_dfs) / 2)
+        
+        # Create aggregate DataFrame
+        aggregate_df = pd.DataFrame({
+            'gene_id': gene_ids,
+            'gene_name': gene_names,
+            'true_label': true_labels,
+            'is_known_driver': true_labels == 1,
+            'mean_score': mean_scores,
+            'std_score': std_scores,
+            'median_score': median_scores,
+            'mean_adjusted_pvalue': mean_pvalues,
+            'median_rank': median_ranks,
+            'folds_significant': significant_counts,
+            'total_folds': len(all_fold_dfs),
+            'consensus_significant': consensus_significant & (true_labels == 0)  # Only unknowns
+        })
+        
+        # Sort by mean score
+        aggregate_df = aggregate_df.sort_values('mean_score', ascending=False)
+        aggregate_df['aggregate_rank'] = range(1, len(aggregate_df) + 1)
+        
+        # Reorder columns
+        aggregate_df = aggregate_df[[
+            'aggregate_rank', 'gene_id', 'gene_name', 'is_known_driver',
+            'mean_score', 'std_score', 'median_score', 
+            'mean_adjusted_pvalue', 'median_rank',
+            'folds_significant', 'total_folds', 'consensus_significant'
+        ]]
+        
+        # Get consensus significant genes
+        consensus_genes = aggregate_df[aggregate_df['consensus_significant']]
+        
+        print(f"\n{'='*80}")
+        print("AGGREGATE RESULTS")
+        print(f"{'='*80}")
+        print(f"\nTotal genes: {len(aggregate_df)}")
+        print(f"Known drivers: {(aggregate_df['is_known_driver']).sum()}")
+        print(f"Consensus significant genes: {len(consensus_genes)}")
+        
+        if len(consensus_genes) > 0:
+            print(f"\nTop 20 Consensus Significant Genes:")
+            print("-" * 80)
+            display_cols = ['aggregate_rank', 'gene_name', 'mean_score', 'std_score',
+                          'folds_significant', 'total_folds', 'mean_adjusted_pvalue']
+            print(consensus_genes[display_cols].head(20).to_string(index=False))
+        
+        # Save aggregate results
+        output_prefix = f"{prefix}_" if prefix else ""
+        
+        # Save all aggregated scores
+        all_file = save_dir / f"{output_prefix}aggregated_all_genes.csv"
+        aggregate_df.to_csv(all_file, index=False)
+        print(f"\n✓ Saved aggregated scores to: {all_file}")
+        
+        # Save consensus significant genes
+        if len(consensus_genes) > 0:
+            consensus_file = save_dir / f"{output_prefix}aggregated_consensus_significant.csv"
+            consensus_genes.to_csv(consensus_file, index=False)
+            print(f"✓ Saved {len(consensus_genes)} consensus genes to: {consensus_file}")
+        
+        # Save summary
+        summary_file = save_dir / f"{output_prefix}aggregated_summary.txt"
+        with open(summary_file, 'w') as f:
+            f.write("="*80 + "\n")
+            f.write("AGGREGATED GENE SCORING SUMMARY (ACROSS ALL FOLDS)\n")
+            f.write("="*80 + "\n\n")
+            
+            f.write(f"Number of folds: {len(all_fold_dfs)}\n")
+            f.write(f"Total genes: {len(aggregate_df)}\n")
+            f.write(f"Known driver genes: {(aggregate_df['is_known_driver']).sum()}\n")
+            f.write(f"Unknown genes: {(~aggregate_df['is_known_driver']).sum()}\n\n")
+            
+            f.write(f"Consensus significant genes (sig in ≥{len(all_fold_dfs)/2:.0f} folds): {len(consensus_genes)}\n\n")
+            
+            if len(consensus_genes) > 0:
+                f.write("Score Statistics for Consensus Genes:\n")
+                f.write(f"  Mean score: {consensus_genes['mean_score'].mean():.4f}\n")
+                f.write(f"  Median score: {consensus_genes['mean_score'].median():.4f}\n")
+                f.write(f"  Min rank: {consensus_genes['aggregate_rank'].min()}\n")
+                f.write(f"  Max rank: {consensus_genes['aggregate_rank'].max()}\n\n")
+                
+                f.write("Top 20 Consensus Significant Genes:\n")
+                f.write("-"*80 + "\n")
+                top_20 = consensus_genes.head(20)[
+                    ['aggregate_rank', 'gene_name', 'mean_score', 'folds_significant', 'mean_adjusted_pvalue']
+                ]
+                f.write(top_20.to_string(index=False))
+        
+        print(f"✓ Saved aggregate summary to: {summary_file}")
+        print(f"\n{'='*80}\n")
+        
+        return aggregate_df
+        
+    except Exception as e:
+        logger.error(f"Error aggregating gene scores: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
 
 def main():
-    
-    parser = argparse.ArgumentParser(description='Train the Contrastive Driver Gene Predictor with Imbalance Handling')
+    parser = argparse.ArgumentParser(
+        description='Train Contrastive Driver Gene Predictor with Advanced Attention'
+    )
     parser.add_argument('--dataset_file', type=str, required=True,
                         help='Input dataset pickle file')
-    parser.add_argument('--train_metrics_dir', type=str, 
-                        help='Specify the output directory for Training and Evaluation Metrics', 
+    parser.add_argument('--train_metrics_dir', type=str,
+                        help='Output directory for training metrics', 
                         default='model_results')
     parser.add_argument('--model_out_dir', type=str, 
-                        help='Specify the directory to output the model checkpoints', 
+                        help='Directory to output model checkpoints', 
                         default='trained_models')
     parser.add_argument('--model_out_prefix', type=str, default='',
-                        help='Prefix for model checkpoint filenames (e.g., "dataset1", "cancer_type_A")')
-    parser.add_argument('--num_folds', type=int, default=None, 
-                        help='Number of folds to use (default: use all folds in dataset)')
+                        help='Prefix for model checkpoint filenames')
+    parser.add_argument('--num_folds', type=int, default=5, 
+                        help='Number of folds to use')
     parser.add_argument('--specific_folds', type=int, nargs='+', default=None,
-                        help='Train only specific folds (e.g., --specific_folds 1 3 5)')
+                        help='Train only specific folds')
     parser.add_argument('--num_epochs', type=int, default=200,
                         help='Number of training epochs per fold')
-    parser.add_argument('--batch_size', type=int, default=2048,
-                        help='Training batch size')
-    parser.add_argument('--learning_rate', type=float, default=0.001,
-                        help='Initial learning rate')
     parser.add_argument('--hidden_channels', type=int, default=256,
                         help='Hidden layer channels')
-    parser.add_argument('--use_focal_loss', action='store_true', default=False,
-                        help='Use focal loss for class imbalance (DEFAULT: True)')
-    parser.add_argument('--focal_alpha', type=float, default=0.25,
-                        help='Focal loss alpha parameter (weight for positive class)')
-    parser.add_argument('--focal_gamma', type=float, default=2.0,
-                        help='Focal loss gamma parameter (focusing parameter)')
+    parser.add_argument('--attention_mode', type=str, default='hybrid',
+                        choices=['standard', 'edge_feature', 'bias', 'gated', 'hybrid'],
+                        help='Attention mode for message passing')
+    parser.add_argument('--num_heads', type=int, default=4,
+                        help='Number of attention heads')
+    parser.add_argument('--concat_heads', action='store_true', default=True,
+                        help='Concatenate attention heads (vs average)')
+    parser.add_argument('--ranking_loss_type', type=str, default='pairwise',
+                        choices=['pairwise', 'listwise', 'pointwise'],
+                        help='Type of ranking loss')
+    parser.add_argument('--ranking_margin', type=float, default=1.0,
+                        help='Margin for pairwise ranking loss')
     parser.add_argument('--early_stopping_patience', type=int, default=50,
                         help='Early stopping patience')
-    parser.add_argument('--save_all_checkpoints', action='store_true',
-                        help='Save checkpoints every N epochs (not just best)')
-    parser.add_argument('--checkpoint_frequency', type=int, default=10,
-                        help='Save checkpoint every N epochs when --save_all_checkpoints is used')
-    parser.add_argument('--optimal_threshold', type = float, default=0.5, 
-                        help = 'Select the optimal threshold for identifying potential drivers')
-
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=4,
+                    help='Number of gradient accumulation steps')
+    parser.add_argument('--mixed_precision', action='store_true',
+                        help='Use mixed precision training')
+    parser.add_argument('--max_views_per_step', type=int, default=2,
+                        help='Maximum augmented views to use per training step')
+    parser.add_argument('--checkpoint_layers', action='store_true',
+                        help='Use gradient checkpointing for each layer')
+    # Add command-line argument for emergency mode
+    parser.add_argument('--emergency_mode', action='store_true',
+                        help='Use drastically reduced model for OOM issues')
+    parser.add_argument('--max_augmented_views', type=int, default=3,
+                        help='Maximum number of augmented views to keep in memory')
+    parser.add_argument('--reduce_model_size', action='store_true', default = False,
+                        help = 'For OOM issues, use this arg to reduce the model size')
     args = parser.parse_args()
     
-    dataset_file = args.dataset_file
-    
-    # Create directories for outputs
+    # Create directories
     models_dir = Path(args.model_out_dir)
     results_dir = Path(args.train_metrics_dir)
     models_dir.mkdir(exist_ok=True, parents=True)
     results_dir.mkdir(exist_ok=True, parents=True)
     
-    # Add prefix to results directory if specified
     if args.model_out_prefix:
         results_subdir = results_dir / args.model_out_prefix
         results_subdir.mkdir(exist_ok=True, parents=True)
         results_dir = results_subdir
-        print(f"Results will be saved to: {results_dir}")
     
-    device = 'cuda' if torch.cuda.is_available() else 'cpu'
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.cuda.empty_cache()
     
     print("\n" + "="*80)
-    print("K-FOLD CONTRASTIVE DRIVER GENE PREDICTOR WITH IMBALANCE HANDLING")
+    print("K-FOLD DRIVER GENE PREDICTOR WITH ADVANCED ATTENTION")
     print("="*80)
-    print(f"Dataset: {dataset_file}")
-    if args.model_out_prefix:
-        print(f"Model Prefix: {args.model_out_prefix}")
-    print(f"Model Output Dir: {models_dir}")
-    print(f"Results Output Dir: {results_dir}")
+    print(f"Dataset: {args.dataset_file}")
+    print(f"Attention Mode: {args.attention_mode}")
+    print(f"Multi-head: {args.num_heads} heads (concat={args.concat_heads})")
+    print(f"Ranking Loss: {args.ranking_loss_type}")
     print(f"Device: {device}")
-    print(f"Loss: {'Focal Loss' if args.use_focal_loss else 'Weighted BCE'}")
-    if args.use_focal_loss:
-        print(f"  Focal alpha: {args.focal_alpha}")
-        print(f"  Focal gamma: {args.focal_gamma}")
-    print(f"PyTorch version: {torch.__version__}")
     if torch.cuda.is_available():
-        print(f"CUDA version: {torch.version.cuda}")
         print(f"GPU: {torch.cuda.get_device_name(0)}")
-        print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
     print("="*80 + "\n")
     
     # Load data
-    try:
-        with open(dataset_file, 'rb') as f:
-            data = pickle.load(f)
-    except FileNotFoundError:
-        logger.error("Data file not found. Please check the path.")
-        exit(1)    
+    with open(args.dataset_file, 'rb') as f:
+        data = pickle.load(f)
     
     original = data['original']
     augmented_views = data['augmented_views']
     
+    # Validate and preprocess
     print("\n" + "="*80)
-    print("VALIDATING INPUT DATA")
+    print("VALIDATING AND PREPROCESSING DATA")
     print("="*80)
     
-    logger.info("Checking original graph for NaN/Inf values...")
-    validate_graph_data(original, name="Original Graph", strict=False)
+    validate_graph_data(original, "Original Graph")
     
-    # Check and sanitize features
+    # Sanitize features
     features = original.get('feature', original.get('x'))
     if torch.isnan(features).any() or torch.isinf(features).any():
-        logger.warning("Found NaN/Inf in features, sanitizing...")
         features = torch.nan_to_num(features, nan=0.0, posinf=1.0, neginf=-1.0)
         if 'feature' in original:
             original['feature'] = features
         else:
             original['x'] = features
-        logger.info("✓ Features sanitized")
     
-    # Check labels
-    labels = original['label']
-    if torch.isnan(labels).any():
-        logger.error("Labels contain NaN! This is a critical error.")
-        raise ValueError("Labels cannot contain NaN")
-    
-    logger.info("Checking augmented views for NaN/Inf values...")
-    for i, view in enumerate(augmented_views):
-        try:
-            validate_graph_data(view, name=f"Augmented View {i+1}", strict=False)
-            
-            # Sanitize view features if needed
-            view_features = view.get('x', view.get('feature'))
-            if view_features is not None:
-                if torch.isnan(view_features).any() or torch.isinf(view_features).any():
-                    logger.warning(f"View {i+1}: Found NaN/Inf in features, sanitizing...")
-                    view_features = torch.nan_to_num(view_features, nan=0.0, posinf=1.0, neginf=-1.0)
-                    if 'x' in view:
-                        view['x'] = view_features
-                    else:
-                        view['feature'] = view_features
-        except Exception as e:
-            logger.error(f"Validation failed for view {i+1}: {e}")
-    
-    print("✓ Data validation complete")
-    print("="*80 + "\n")
-    
-    # IMPORTANT: Preprocess curvature data
-    print("\n" + "="*80)
-    print("PREPROCESSING CURVATURE DATA")
-    print("="*80)
-    
-    logger.info("Preprocessing original graph curvature...")
+    # Preprocess curvature
     original = preprocess_curvature_data(original, curvature_type='ollivier')
     
-    logger.info(f"Preprocessing {len(augmented_views)} augmented views...")
-    
-    num_original_nodes = original['feature'].shape[0]
-    logger.info(f"Original graph has {num_original_nodes} nodes")
-    
     for i, view in enumerate(augmented_views):
-        logger.info(f"  Processing view {i+1}/{len(augmented_views)}")
         augmented_views[i] = preprocess_curvature_data(view, curvature_type='ollivier')
-        
-        view_nodes = augmented_views[i]['x'].shape[0]
-        eliminated_count = len(augmented_views[i]['metadata']['eliminated_node_ids'])
-        
-        logger.info(f"    View {i+1}: {view_nodes} nodes")
-        logger.info(f"    Metadata says {eliminated_count} nodes were eliminated")
-        
-        max_node_in_edges = augmented_views[i]['edge_index'].max().item() if augmented_views[i]['edge_index'].numel() > 0 else -1
-        
-        if max_node_in_edges >= view_nodes:
-            raise ValueError(
-                f"View {i+1} is inconsistent: edge_index references node {max_node_in_edges} "
-                f"but only {view_nodes} nodes exist in features"
-            )
-        
-        logger.info(f"    ✓ View {i+1} verified: max edge node index = {max_node_in_edges}, node count = {view_nodes}")
     
-    logger.info("✓ All augmented views are self-consistent")
-    print("✓ Curvature preprocessing complete")
+    print("✓ Data validation and preprocessing complete")
     print("="*80 + "\n")
     
-    # Binary labels
     labels = original['label']
-    
-    # Get k-fold splits
     kfold_splits = original['kfold_splits']
-    num_folds = len(kfold_splits)
     
     # Filter folds if specified
     if args.specific_folds:
+        num_folds = len(kfold_splits)
         folds_to_train = [i-1 for i in args.specific_folds if 1 <= i <= num_folds]
         kfold_splits = [kfold_splits[i] for i in folds_to_train]
-        print(f"Training only folds: {args.specific_folds}")
-    elif args.num_folds and args.num_folds < num_folds:
+    elif args.num_folds:
         kfold_splits = kfold_splits[:args.num_folds]
-        print(f"Training only first {args.num_folds} folds")
     
     print(f"\n{'='*80}")
     print(f"K-FOLD CROSS-VALIDATION: {len(kfold_splits)} FOLDS")
     print(f"{'='*80}")
     
-    # Store results
+    # Train each fold
     all_fold_metrics = []
     all_fold_histories = []
-    all_threshold_info = []
     fold_models = []
+    all_fold_scored_genes = []
     
-    # Train each fold
     for fold_idx, fold_data in enumerate(kfold_splits, 1):
-        model, best_metrics, history, threshold_info = train_single_fold(
+        model, best_metrics, history, scored_genes_df = train_single_fold(
             fold_idx=fold_idx,
             fold_data=fold_data,
             original=original,
@@ -1055,17 +1059,19 @@ def main():
             model_save_dir=models_dir,
             results_dir=results_dir,
             model_prefix=args.model_out_prefix,
-            use_focal_loss=args.use_focal_loss,
-            focal_alpha=args.focal_alpha,
-            focal_gamma=args.focal_gamma
+            attention_mode=args.attention_mode,
+            num_heads=args.num_heads,
+            concat_heads=args.concat_heads,
+            ranking_loss_type=args.ranking_loss_type,
+            ranking_margin=args.ranking_margin,
+            reduce_model_size=args.reduce_model_size
         )
         
         all_fold_metrics.append(best_metrics)
         all_fold_histories.append(history)
-        all_threshold_info.append(threshold_info)
         fold_models.append(model)
+        all_fold_scored_genes.append(scored_genes_df)
         
-        # Clear memory
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
         gc.collect()
@@ -1078,335 +1084,102 @@ def main():
     metrics_df_data = []
     for fold_idx, metrics in enumerate(all_fold_metrics, 1):
         print(f"\nFold {fold_idx}:")
-        print(f"  AUPRC:     {metrics.get('auc_pr', 0):.4f}  ← PRIMARY METRIC")
-        print(f"  AUROC:     {metrics.get('auc_roc', 0):.4f}")
-        print(f"  F1 Score:  {metrics['f1']:.4f}")
-        print(f"  Precision: {metrics['precision']:.4f}")
-        print(f"  Recall:    {metrics['recall']:.4f}")
+        print(f"  NDCG@50:   {metrics.get('ndcg@50', 0):.4f}  ← PRIMARY")
+        print(f"  AUROC:     {metrics.get('auroc', 0):.4f}")
+        print(f"  AUPRC:     {metrics.get('auprc', 0):.4f}")
         print(f"  P@50:      {metrics.get('precision@50', 0):.4f}")
+        print(f"  MRR:       {metrics.get('mrr', 0):.4f}")
         
         metrics_df_data.append({
             'Fold': fold_idx,
-            'AUPRC': metrics.get('auc_pr', 0),
-            'AUROC': metrics.get('auc_roc', 0),
-            'F1': metrics['f1'],
-            'Precision': metrics['precision'],
-            'Recall': metrics['recall'],
+            'NDCG@50': metrics.get('ndcg@50', 0),
+            'AUROC': metrics.get('auroc', 0),
+            'AUPRC': metrics.get('auprc', 0),
             'Precision@50': metrics.get('precision@50', 0),
-            'Optimal_Threshold': all_threshold_info[fold_idx-1]['optimal_f1_threshold']
+            'MRR': metrics.get('mrr', 0)
         })
     
     # Calculate statistics
     mean_metrics = {
-        'auprc': np.mean([m.get('auc_pr', 0) for m in all_fold_metrics]),
-        'auroc': np.mean([m.get('auc_roc', 0) for m in all_fold_metrics]),
-        'f1': np.mean([m['f1'] for m in all_fold_metrics]),
-        'precision': np.mean([m['precision'] for m in all_fold_metrics]),
-        'recall': np.mean([m['recall'] for m in all_fold_metrics]),
-        'precision@50': np.mean([m.get('precision@50', 0) for m in all_fold_metrics])
+        key: np.mean([m.get(key, 0) for m in all_fold_metrics])
+        for key in ['ndcg@50', 'auroc', 'auprc', 'precision@50', 'mrr']
     }
     
     std_metrics = {
-        'auprc': np.std([m.get('auc_pr', 0) for m in all_fold_metrics]),
-        'auroc': np.std([m.get('auc_roc', 0) for m in all_fold_metrics]),
-        'f1': np.std([m['f1'] for m in all_fold_metrics]),
-        'precision': np.std([m['precision'] for m in all_fold_metrics]),
-        'recall': np.std([m['recall'] for m in all_fold_metrics]),
-        'precision@50': np.std([m.get('precision@50', 0) for m in all_fold_metrics])
+        key: np.std([m.get(key, 0) for m in all_fold_metrics])
+        for key in ['ndcg@50', 'auroc', 'auprc', 'precision@50', 'mrr']
     }
     
     print(f"\n{'='*80}")
-    print("MEAN ± STD ACROSS ALL FOLDS")
+    print("AGGREGATE STATISTICS")
     print(f"{'='*80}")
-    print(f"AUPRC:        {mean_metrics['auprc']:.4f} ± {std_metrics['auprc']:.4f}  ← PRIMARY")
-    print(f"AUROC:        {mean_metrics['auroc']:.4f} ± {std_metrics['auroc']:.4f}")
-    print(f"F1 Score:     {mean_metrics['f1']:.4f} ± {std_metrics['f1']:.4f}")
-    print(f"Precision:    {mean_metrics['precision']:.4f} ± {std_metrics['precision']:.4f}")
-    print(f"Recall:       {mean_metrics['recall']:.4f} ± {std_metrics['recall']:.4f}")
-    print(f"Precision@50: {mean_metrics['precision@50']:.4f} ± {std_metrics['precision@50']:.4f}")
+    print(f"\nMean ± Std across {len(all_fold_metrics)} folds:")
+    print(f"  NDCG@50:      {mean_metrics['ndcg@50']:.4f} ± {std_metrics['ndcg@50']:.4f}")
+    print(f"  AUROC:        {mean_metrics['auroc']:.4f} ± {std_metrics['auroc']:.4f}")
+    print(f"  AUPRC:        {mean_metrics['auprc']:.4f} ± {std_metrics['auprc']:.4f}")
+    print(f"  Precision@50: {mean_metrics['precision@50']:.4f} ± {std_metrics['precision@50']:.4f}")
+    print(f"  MRR:          {mean_metrics['mrr']:.4f} ± {std_metrics['mrr']:.4f}")
+    print(f"{'='*80}\n")
     
-    # Threshold statistics
-    optimal_thresholds = [t['optimal_f1_threshold'] for t in all_threshold_info]
-    mean_threshold = np.mean(optimal_thresholds)
-    std_threshold = np.std(optimal_thresholds)
-    print(f"\nOptimal Threshold: {mean_threshold:.3f} ± {std_threshold:.3f}")
-    print(f"  (Use this instead of 0.5 for binary classification)")
+    # Save metrics to CSV
+    metrics_df = pd.DataFrame(metrics_df_data)
     
-    # Save fold results
-    df_metrics = pd.DataFrame(metrics_df_data)
-    
-    # Add mean row
-    df_metrics.loc[len(df_metrics)] = {
+    # Add mean and std rows
+    mean_row = {
         'Fold': 'Mean',
-        'AUPRC': mean_metrics['auprc'],
+        'NDCG@50': mean_metrics['ndcg@50'],
         'AUROC': mean_metrics['auroc'],
-        'F1': mean_metrics['f1'],
-        'Precision': mean_metrics['precision'],
-        'Recall': mean_metrics['recall'],
+        'AUPRC': mean_metrics['auprc'],
         'Precision@50': mean_metrics['precision@50'],
-        'Optimal_Threshold': mean_threshold
+        'MRR': mean_metrics['mrr']
     }
     
-    # Add std row
-    df_metrics.loc[len(df_metrics)] = {
+    std_row = {
         'Fold': 'Std',
-        'AUPRC': std_metrics['auprc'],
+        'NDCG@50': std_metrics['ndcg@50'],
         'AUROC': std_metrics['auroc'],
-        'F1': std_metrics['f1'],
-        'Precision': std_metrics['precision'],
-        'Recall': std_metrics['recall'],
+        'AUPRC': std_metrics['auprc'],
         'Precision@50': std_metrics['precision@50'],
-        'Optimal_Threshold': std_threshold
+        'MRR': std_metrics['mrr']
     }
     
-    df_metrics.to_csv(results_dir / 'kfold_results.csv', index=False)
-    print(f"\n✓ Saved k-fold results to '{results_dir / 'kfold_results.csv'}'")
+    metrics_df = pd.concat([
+        metrics_df,
+        pd.DataFrame([mean_row, std_row])
+    ], ignore_index=True)
     
-    # ENSEMBLE EVALUATION
-    print("\n" + "="*80)
-    print("ENSEMBLE MODEL EVALUATION")
-    print("="*80)
+    # Save metrics
+    prefix = f"{args.model_out_prefix}_" if args.model_out_prefix else ""
+    metrics_file = results_dir / f"{prefix}kfold_metrics.csv"
+    metrics_df.to_csv(metrics_file, index=False)
+    print(f"✓ Saved metrics to: {metrics_file}")
     
-    test_mask = original['mask']
+    # Save training histories
+    history_file = results_dir / f"{prefix}training_history.pkl"
+    with open(history_file, 'wb') as f:
+        pickle.dump(all_fold_histories, f)
+    print(f"✓ Saved training histories to: {history_file}")
     
-    # Ensemble predictions
-    ensemble_probs, ensemble_std = ensemble_predict(
-        fold_models, original, test_mask,
-        curvature_type='ollivier', device=device
-    )
+    # Plot training curves
+    plot_training_curves(all_fold_histories, results_dir, prefix)
     
-    # Calculate ensemble metrics
-    test_labels = labels[test_mask].cpu().numpy()
+    # Plot metrics comparison
+    plot_metrics_comparison(metrics_df_data, results_dir, prefix)
     
-    # Ranking metrics for ensemble
-    ensemble_ranking_metrics = {
-        'auc_roc': roc_auc_score(test_labels, ensemble_probs.cpu().numpy()),
-        'auc_pr': average_precision_score(test_labels, ensemble_probs.cpu().numpy())
-    }
+    # Aggregate gene scores across folds
+    print(f"\n{'='*80}")
+    print("AGGREGATING GENE SCORES ACROSS FOLDS")
+    print(f"{'='*80}")
     
-    # Find optimal threshold for ensemble
-    ensemble_threshold_results = find_optimal_threshold_f1(
-        ensemble_probs.cpu().numpy(), test_labels
-    )
+    aggregate_gene_scores(all_fold_scored_genes, results_dir, prefix)
     
-    ensemble_preds = (ensemble_probs >= ensemble_threshold_results['optimal_threshold']).cpu().numpy()
+    print(f"\n{'='*80}")
+    print("TRAINING COMPLETE")
+    print(f"{'='*80}")
+    print(f"Models saved to: {models_dir}")
+    print(f"Results saved to: {results_dir}")
+    print(f"{'='*80}\n")
     
-    from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
-    
-    ensemble_metrics = {
-        'accuracy': accuracy_score(test_labels, ensemble_preds),
-        'precision': precision_score(test_labels, ensemble_preds, zero_division=0),
-        'recall': recall_score(test_labels, ensemble_preds, zero_division=0),
-        'f1': f1_score(test_labels, ensemble_preds, zero_division=0),
-        'auc_roc': ensemble_ranking_metrics['auc_roc'],
-        'auc_pr': ensemble_ranking_metrics['auc_pr'],
-        'optimal_threshold': ensemble_threshold_results['optimal_threshold']
-    }
-    
-    print(f"\nEnsemble Performance:")
-    print(f"  AUPRC:     {ensemble_metrics['auc_pr']:.4f}  ← PRIMARY")
-    print(f"  AUROC:     {ensemble_metrics['auc_roc']:.4f}")
-    print(f"  F1 Score:  {ensemble_metrics['f1']:.4f}")
-    print(f"  Precision: {ensemble_metrics['precision']:.4f}")
-    print(f"  Recall:    {ensemble_metrics['recall']:.4f}")
-    print(f"  Optimal Threshold: {ensemble_metrics['optimal_threshold']:.3f}")
-    
-    # Calculate Precision@K for ensemble
-    k_values = [10, 20, 50, 100]
-    n_positives = test_labels.sum()
-    ensemble_probs_np = ensemble_probs.cpu().numpy()
-    
-    print(f"\n  Precision@K:")
-    for k in k_values:
-        if k <= len(test_labels):
-            top_k_indices = np.argsort(-ensemble_probs_np)[:k]
-            top_k_labels = test_labels[top_k_indices]
-            p_at_k = top_k_labels.sum() / k
-            r_at_k = top_k_labels.sum() / n_positives if n_positives > 0 else 0
-            print(f"    P@{k}: {p_at_k:.4f} (R@{k}: {r_at_k:.4f})")
-            ensemble_metrics[f'precision@{k}'] = p_at_k
-            ensemble_metrics[f'recall@{k}'] = r_at_k
-    
-    # Plot ensemble ROC and PR curves
-    try:
-        fig, axes = plt.subplots(1, 2, figsize=(14, 6))
-        
-        # ROC curve
-        fpr, tpr, _ = roc_curve(test_labels, ensemble_probs_np)
-        axes[0].plot(fpr, tpr, label=f'Ensemble (AUC={ensemble_metrics["auc_roc"]:.3f})', linewidth=2)
-        axes[0].plot([0, 1], [0, 1], 'k--', label='Random', alpha=0.3)
-        axes[0].set_xlabel('False Positive Rate')
-        axes[0].set_ylabel('True Positive Rate')
-        axes[0].set_title('Ensemble ROC Curve')
-        axes[0].legend()
-        axes[0].grid(alpha=0.3)
-        
-        # Precision-Recall curve
-        precision, recall, _ = precision_recall_curve(test_labels, ensemble_probs_np)
-        baseline = test_labels.sum() / len(test_labels)
-        axes[1].plot(recall, precision, label=f'Ensemble (AP={ensemble_metrics["auc_pr"]:.3f})', linewidth=2)
-        axes[1].axhline(baseline, color='k', linestyle='--', label=f'Random ({baseline:.3f})', alpha=0.3)
-        axes[1].set_xlabel('Recall')
-        axes[1].set_ylabel('Precision')
-        axes[1].set_title('Ensemble Precision-Recall Curve')
-        axes[1].legend()
-        axes[1].grid(alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig(results_dir / 'ensemble_curves.png', dpi=300, bbox_inches='tight')
-        print(f"✓ Saved ensemble curves to '{results_dir / 'ensemble_curves.png'}'")
-        plt.close()
-    except Exception as e:
-        logger.warning(f"Could not create ensemble plots: {e}")
-    
-    # GENERATE RANKINGS (Better than binary classification!)
-    print("\n" + "="*80)
-    print("GENERATING GENE RANKINGS")
-    print("="*80)
-    
-    # Use best fold model for ranking
-    best_fold_idx = np.argmax([m.get('auc_pr', 0) for m in all_fold_metrics])
-    best_model = fold_models[best_fold_idx]
-    
-    print(f"Using Fold {best_fold_idx + 1} model (AUPRC: {all_fold_metrics[best_fold_idx].get('auc_pr', 0):.4f})")
-    
-    # Generate full rankings
-    try:
-        ranking_df = best_model.rank_genes_by_driver_likelihood(
-            original,
-            curvature_type='ollivier',
-            top_k=None,  # All genes
-            min_confidence=0.0,
-            device=device
-        )
-        
-        ranking_df.to_csv(results_dir / 'all_genes_ranked.csv', index=False)
-        print(f"✓ Saved full rankings to '{results_dir / 'all_genes_ranked.csv'}'")
-        
-        # Top candidates
-        top_100 = ranking_df.head(100)
-        top_100.to_csv(results_dir / 'top_100_driver_candidates.csv', index=False)
-        print(f"✓ Saved top 100 to '{results_dir / 'top_100_driver_candidates.csv'}'")
-        
-        print(f"\nTop 10 Predicted Drivers:")
-        print(top_100.head(10).to_string(index=False))
-        
-    except Exception as e:
-        logger.warning(f"Could not generate rankings: {e}")
-    
-    # IDENTIFY POTENTIAL DRIVERS
-    print("\n" + "="*80)
-    print("POTENTIAL DRIVER IDENTIFICATION")
-    print("="*80)
-    
-    feature_names = original.get('feature_name', [])
-    feature_criteria = {}
-    
-    if feature_names:
-        if 'ppin_hub' in feature_names:
-            feature_criteria['ppin_hub'] = (feature_names.index('ppin_hub'), 0.5)
-        if 'essentiality_percentage' in feature_names:
-            feature_criteria['essentiality_percentage'] = (
-                feature_names.index('essentiality_percentage'), 0.2
-            )
-    
-    potential_results = best_model.identify_potential_drivers(
-        original, labels, test_mask,
-        confidence_threshold=args.optimal_threshold,
-        curvature_threshold=0.0,
-        feature_criteria=feature_criteria if feature_criteria else None,
-        curvature_type='ollivier',
-        device=device
-    )
-    
-    print(f"\nTotal False Positives: {potential_results['total_false_positives']}")
-    print(f"Potential Drivers Identified: {potential_results['num_potential_drivers']}")
-    
-    if potential_results['num_potential_drivers'] > 0:
-        print("\nTop 10 Potential Drivers:")
-        sorted_indices = torch.argsort(potential_results['scores'], descending=True)
-        for rank, idx in enumerate(sorted_indices[:10], 1):
-            idx_val = idx.item()
-            gene_name = potential_results['node_names'][idx_val]
-            score = potential_results['scores'][idx_val].item()
-            print(f"  {rank}. {gene_name} (score: {score:.3f})")
-    
-    # Save complete results
-    output = {
-        'kfold_metrics': all_fold_metrics,
-        'mean_metrics': mean_metrics,
-        'std_metrics': std_metrics,
-        'ensemble_metrics': ensemble_metrics,
-        'threshold_info': all_threshold_info,
-        'potential_drivers': potential_results,
-        'best_fold_idx': best_fold_idx,
-        'dataset_file': dataset_file,
-        'model_prefix': args.model_out_prefix,
-        'loss_type': 'focal' if args.use_focal_loss else 'bce',
-        'focal_alpha': args.focal_alpha if args.use_focal_loss else None,
-        'focal_gamma': args.focal_gamma if args.use_focal_loss else None
-    }
-    
-    with open(results_dir / 'kfold_results.pkl', 'wb') as f:
-        pickle.dump(output, f)
-    print(f"\n✓ Saved complete results to '{results_dir / 'kfold_results.pkl'}'")
-    
-    # Plot fold comparison
-    try:
-        fig, axes = plt.subplots(2, 3, figsize=(18, 12))
-        
-        metrics_to_plot = ['auprc', 'auroc', 'f1', 'precision', 'recall', 'precision@50']
-        titles = ['AUPRC', 'AUROC', 'F1 Score', 'Precision', 'Recall', 'Precision@50']
-        
-        for idx, (metric, title) in enumerate(zip(metrics_to_plot, titles)):
-            ax = axes[idx // 3, idx % 3]
-            
-            values = [m.get(metric.replace('precision@', 'precision@').replace('auprc', 'auc_pr').replace('auroc', 'auc_roc'), 0) 
-                     for m in all_fold_metrics]
-            folds = list(range(1, len(all_fold_metrics) + 1))
-            
-            ax.bar(folds, values, alpha=0.7, color='steelblue')
-            ax.axhline(y=mean_metrics[metric], color='red', linestyle='--', 
-                      label=f'Mean: {mean_metrics[metric]:.4f}')
-            ax.set_xlabel('Fold')
-            ax.set_ylabel(title)
-            ax.set_title(f'{title} Across Folds')
-            ax.legend()
-            ax.grid(alpha=0.3)
-        
-        plt.tight_layout()
-        plt.savefig(results_dir / 'kfold_comparison.png', dpi=300, bbox_inches='tight')
-        print(f"✓ Saved fold comparison to '{results_dir / 'kfold_comparison.png'}'")
-        plt.close()
-        
-    except Exception as e:
-        logger.warning(f"Could not create comparison plots: {e}")
-    
-    # Final summary
-    print("\n" + "="*80)
-    print("TRAINING COMPLETE - SUMMARY")
-    print("="*80)
-    print(f"\n📊 Key Results:")
-    print(f"  Mean AUPRC:  {mean_metrics['auprc']:.4f} ± {std_metrics['auprc']:.4f}")
-    print(f"  Mean AUROC:  {mean_metrics['auroc']:.4f} ± {std_metrics['auroc']:.4f}")
-    print(f"  Mean F1:     {mean_metrics['f1']:.4f} ± {std_metrics['f1']:.4f}")
-    print(f"  Mean P@50:   {mean_metrics['precision@50']:.4f} ± {std_metrics['precision@50']:.4f}")
-    print(f"\n🎯 Ensemble Performance:")
-    print(f"  AUPRC:       {ensemble_metrics['auc_pr']:.4f}")
-    print(f"  AUROC:       {ensemble_metrics['auc_roc']:.4f}")
-    print(f"  F1:          {ensemble_metrics['f1']:.4f}")
-    print(f"\n🔧 Optimal Threshold: {mean_threshold:.3f} ± {std_threshold:.3f}")
-    print(f"  (Use this instead of 0.5 for binary predictions)")
-    print(f"\n📁 Output Files (in {results_dir}/):")
-    print("  - kfold_results.csv: Metrics for all folds")
-    print("  - kfold_results.pkl: Complete results with models")
-    print("  - kfold_comparison.png: Visual comparison")
-    print("  - fold_X_threshold_analysis.png: Threshold analysis per fold")
-    print("  - ensemble_curves.png: ROC and PR curves")
-    print("  - all_genes_ranked.csv: Full gene rankings")
-    print("  - top_100_driver_candidates.csv: Top predictions")
-    print("="*80 + "\n")
-
 
 if __name__ == '__main__':
     logger = get_logger(__name__)

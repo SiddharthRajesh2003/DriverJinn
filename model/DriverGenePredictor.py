@@ -7,12 +7,15 @@ import networkx as nx
 import pandas as pd
 import time
 from torch.utils.checkpoint import checkpoint as gradient_checkpoint
+from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve
+from statsmodels.stats.multitest import multipletests
+
 
 # Assuming these are available from your codebase
 from utils.logging_manager import get_logger
-from model.support_models import ProjectionHead, BinaryClassifier
+from model.support_models import ProjectionHead, BinaryClassifier, RankingLoss
 from model.curvature_aware_gnn import CurvatureAwareGNN
-from model.multi_layer_attention import MultiLayerAttention
+from model.multi_layer_attention import HybridAggregator
 
 logger = get_logger(__name__)
 
@@ -39,7 +42,13 @@ class ContrastiveDriverGenePredictor(nn.Module):
         projection_dim: int = 128,
         num_gnn_layers: int = 3,
         curvature_types: List[str] = ['positive', 'negative', 'both'],
+        hop_types: List[str] = ['one_hop', 'two_hop'],
         num_attention_heads: int = 4,
+        use_attention:bool = True,
+        attention_mode:str = 'hybrid',
+        concat:bool = True,
+        min_edge_ratio: float = 0.15,
+        negative_slope: float = 0.2,
         temperature: float = 0.4,
         dropout: float = 0.2,
         device: torch.device = None
@@ -49,6 +58,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         self.curvature_types = curvature_types
         self.hidden_channels = hidden_channels
         self.device = device
+        self.hop_types = hop_types
         self.training_step_counter = 0  # For gradient accumulation
         
         # Encoder: CurvatureAwareGNN
@@ -57,24 +67,23 @@ class ContrastiveDriverGenePredictor(nn.Module):
             hidden_channels=hidden_channels,
             num_layers=num_gnn_layers,
             curvature_types=curvature_types,
-            use_attention=True,
-            dropout=dropout
+            hop_types=hop_types,
+            use_attention=use_attention,
+            dropout=dropout,
+            min_edge_ratio=min_edge_ratio,
+            attention_mode=attention_mode,
+            concat=concat,
+            negative_slope=negative_slope,
+            heads = num_attention_heads
         )
         
-        # Multi-Layer Attention for each curvature type
-        self.layer_attentions = nn.ModuleDict({
-            curv_type: MultiLayerAttention(
-                hidden_dim=hidden_channels,
-                num_heads=num_attention_heads,
-                dropout=dropout
-            ) for curv_type in self.curvature_types
-        })
-        
-        # Cross-curvature attention to aggregate different curvature views
-        self.cross_curvature_attention = MultiLayerAttention(
-            hidden_dim=hidden_channels,
+        self.aggregator = HybridAggregator(
+            hidden_channels=hidden_channels,
+            num_curvature_types=len(curvature_types),
+            num_hop_types=len(hop_types),
             num_heads=num_attention_heads,
-            dropout=dropout
+            dropout=dropout,
+            pathway_aggregation='hierarchical'
         )
         
         # Projection head for contrastive learning
@@ -84,6 +93,14 @@ class ContrastiveDriverGenePredictor(nn.Module):
             out_dim=projection_dim
         )
         
+        self.ranking_head = nn.Sequential(
+            nn.Linear(hidden_channels, hidden_channels),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(hidden_channels, 1) # Single score per node
+        )
+        
+        # Deprecated 
         # Binary Classifier
         self.classifier = BinaryClassifier(
             input_dim=hidden_channels,
@@ -101,61 +118,34 @@ class ContrastiveDriverGenePredictor(nn.Module):
         """
         Encode graph into representation vector
         """
-        # Get layer outputs for each curvature type
-        curvature_outputs = gradient_checkpoint(self.encoder, x, edge_index, edge_curvature,
-                                                use_reentrant=False)
-        
-        attention_weights = {} if return_attention else None
-        
-        curvature_representations = []
-        for curv_type in self.curvature_types:
-            layer_outputs = curvature_outputs[curv_type]
-            aggregated, attn = self.layer_attentions[curv_type](
-                layer_outputs,
-                return_attention=return_attention
+        # Get representations from all curvature + hop pathways
+        # Returns: {curvature: {hop: [layer_outputs]}}
+        # Get pathway outputs with checkpointing
+        pathway_outputs, gnn_attention = gradient_checkpoint(
+                self._encoder_wrapper, x, edge_index, edge_curvature, 
+                return_all_layers=True,
+                return_attention=return_attention,
+                use_reentrant=False
             )
-            curvature_representations.append(aggregated)
-            
-            if return_attention:
-                attention_weights[f'{curv_type}_layer_attention'] = attn
         
-        # Aggregate across curvature types            
-        final_repr, cross_attn = self.cross_curvature_attention(
-            curvature_representations,
-            return_attention
+        # Aggregate pathways
+        final_repr, pathway_attention = self.aggregator(
+            pathway_outputs,
+            return_attention=return_attention
         )
-        
+
+        attention_info = None
         if return_attention:
-            attention_weights['cross_curvature_attention'] = cross_attn
-            # Store individual curvature representations for analysis
-            attention_weights['curvature_representations'] = {
-                curv_type: rep for curv_type, rep in 
-                zip(self.curvature_types, curvature_representations)
+            attention_info = {
+                'pathway_attention': pathway_attention,
+                'pathway_outputs': pathway_outputs
             }
-    
-        return final_repr, attention_weights
-    
-    def forward(
-        self,
-        x: torch.Tensor,
-        edge_index: torch.Tensor,
-        edge_curvature: torch.Tensor,
-        return_embeddings: bool = False
-    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
-        """
-        Forward pass for binary classification
         
-        Returns:
-            logits: [num_nodes] binary logits
-            embeddings: [num_nodes, hidden_channels] if return_embeddings=True
-        """
-        h, _ = self.encode(x, edge_index, edge_curvature)
-        logits = self.classifier(h)
-        
-        if return_embeddings:
-            return logits, h
-        
-        return logits, None
+        return final_repr, attention_info
+
+    def _encoder_wrapper(self, x, edge_index, edge_curvature, return_all_layers, return_attention):
+        """Wrapper for gradient checkpointing to handle tuple returns"""
+        return self.encoder(x, edge_index, edge_curvature, return_all_layers, return_attention)
     
     def get_contrastive_projection(
         self,
@@ -169,124 +159,6 @@ class ContrastiveDriverGenePredictor(nn.Module):
         h, _ = self.encode(x, edge_index, edge_curvature)
         z = self.projection(h)
         return F.normalize(z, dim=-1)
-    
-    def compute_contrastive_loss(
-        self,
-        z1: torch.Tensor,
-        z2: torch.Tensor,
-        node_mask: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """
-        Compute NT-Xent (InfoNCE) contrastive loss between two views
-        
-        FIXED: Correct positive pair selection
-        """
-        if node_mask is not None:
-            z1 = z1[node_mask]
-            z2 = z2[node_mask]
-        
-        batch_size = z1.shape[0]
-        z = torch.cat([z1, z2], dim=0)  # [2*batch_size, dim]
-        
-        # Compute similarity matrix
-        sim_matrix = torch.mm(z, z.T) / self.temperature  # [2*batch_size, 2*batch_size]
-        
-        # Clamp to prevent overflow in exp()
-        sim_matrix = torch.clamp(sim_matrix, min=-50, max=50)
-        
-        # Create mask to remove self-similarity
-        mask = torch.eye(2 * batch_size, device=z.device, dtype=torch.bool)
-        mask_value = torch.finfo(sim_matrix.dtype).min
-        sim_matrix = sim_matrix.masked_fill(mask, mask_value)
-        
-        # Labels: for each sample i, its positive pair is at i + batch_size (or i - batch_size)
-        labels = torch.cat([
-            torch.arange(batch_size, 2 * batch_size, device=z.device),
-            torch.arange(batch_size, device=z.device)
-        ])
-        
-        # Compute log softmax
-        log_prob = F.log_softmax(sim_matrix, dim=1)
-        
-        # Extract positive similarities using labels
-        pos_sim = log_prob[torch.arange(2 * batch_size, device=z.device), labels]
-        
-        # NT-Xent loss
-        loss = -pos_sim.mean()
-        
-        return loss
-    
-    def compute_classification_loss(
-        self,
-        logits: torch.Tensor,
-        labels: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-        pos_weight: Optional[torch.Tensor] = None
-    ) -> torch.Tensor:
-        """
-        Compute weighted binary cross-entropy loss
-        
-        Args:
-            logits: [num_nodes] binary logits
-            labels: [num_nodes] with values {0, 1}
-            mask: [num_nodes] boolean mask for labeled nodes
-            pos_weight: Weight for positive class (driver genes)
-        """
-        if mask is not None:
-            logits = logits[mask]
-            labels = labels[mask].float()
-            
-        if pos_weight is not None:
-            loss = F.binary_cross_entropy_with_logits(
-                logits, labels, pos_weight=pos_weight
-            )
-        else:
-            loss = F.binary_cross_entropy_with_logits(
-                logits, labels
-            )
-            
-        return loss
-    
-    def compute_focal_loss(
-        self,
-        logits: torch.Tensor,
-        labels: torch.Tensor,
-        mask: Optional[torch.Tensor] = None,
-        alpha: float = 0.25,
-        gamma: float = 2.0
-    ) -> torch.Tensor:
-        """
-        Compute focal loss to handle class imbalance better than BCE
-        
-        Args:
-            logits: Model predictions
-            labels: Ground truth labels
-            mask: Optional node mask
-            alpha: Balancing factor
-            gamma: Focusing parameter
-        """
-        if mask is not None:
-            logits = logits[mask]
-            labels = labels[mask].float()
-        
-        # Compute probabilities
-        probs = torch.sigmoid(logits)
-        
-        # Compute focal loss
-        ce_loss = F.binary_cross_entropy_with_logits(
-            logits, labels, reduction='none'
-        )
-        
-        p_t = probs * labels + (1 - probs) * (1 - labels)
-        focal_weight = (1 - p_t) ** gamma
-        
-        if alpha >= 0:
-            alpha_t = alpha * labels + (1 - alpha) * (1 - labels)
-            focal_weight = alpha_t * focal_weight
-        
-        loss = (focal_weight * ce_loss).mean()
-        
-        return loss
     
     def match_curvature_to_edges(
         self,
@@ -622,388 +494,51 @@ class ContrastiveDriverGenePredictor(nn.Module):
         
         return original_predictions
     
-    @torch.amp.autocast('cuda')
-    def train_step(
+    def compute_contrastive_loss(
         self,
-        view1: Dict,
-        view2: Dict,
-        original_data: Dict,
-        labels: torch.Tensor,
-        train_mask: torch.Tensor,
-        optimizer: torch.optim.Optimizer,
-        contrastive_weight: float = 0.3,
-        pos_weight: Optional[torch.Tensor] = None,
-        curvature_type: str = 'ollivier',
-        node_names: Optional[List] = None,
-        device: torch.device = None,
-        batch_size: int = 2048,
-        use_focal_loss: bool = False,
-        focal_alpha: float = 0.25,
-        focal_gamma: float = 2.0
-    ) -> Dict[str, float]:
+        z1: torch.Tensor,
+        z2: torch.Tensor,
+        node_mask: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
         """
-        Combined training step with contrastive and classification objectives
+        Compute NT-Xent (InfoNCE) contrastive loss between two views
         
-        FIXED: Robust mask and label mapping handling Schur complement augmentation
+        FIXED: Correct positive pair selection
         """
-        self.train()
+        if node_mask is not None:
+            z1 = z1[node_mask]
+            z2 = z2[node_mask]
         
-        # Clear GPU cache
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+        batch_size = z1.shape[0]
+        z = torch.cat([z1, z2], dim=0)  # [2*batch_size, dim]
         
-        # Ensure consistent device usage
-        device = device if device else self.device
-        if device is None:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        # Compute similarity matrix
+        sim_matrix = torch.mm(z, z.T) / self.temperature  # [2*batch_size, 2*batch_size]
         
-        # Move model to device if not already
-        self.to(device)
+        # Clamp to prevent overflow in exp()
+        sim_matrix = torch.clamp(sim_matrix, min=-50, max=50)
         
-        curvature_type = curvature_type.lower()
-        curv_key = f'{curvature_type}_curvature'
+        # Create mask to remove self-similarity
+        mask = torch.eye(2 * batch_size, device=z.device, dtype=torch.bool)
+        mask_value = torch.finfo(sim_matrix.dtype).min
+        sim_matrix = sim_matrix.masked_fill(mask, mask_value)
         
-        # Move all data to device BEFORE any operations
-        view1['x'] = view1['x'].to(device)
-        view1['edge_index'] = view1['edge_index'].to(device)
-        view2['x'] = view2['x'].to(device)
-        view2['edge_index'] = view2['edge_index'].to(device)
+        # Labels: for each sample i, its positive pair is at i + batch_size (or i - batch_size)
+        labels = torch.cat([
+            torch.arange(batch_size, 2 * batch_size, device=z.device),
+            torch.arange(batch_size, device=z.device)
+        ])
         
-        # Move labels and masks to device
-        labels = labels.to(device)
-        train_mask = train_mask.to(device)
-        if pos_weight is not None:
-            pos_weight = pos_weight.to(device)
+        # Compute log softmax
+        log_prob = F.log_softmax(sim_matrix, dim=1)
         
-        # Validate edge indices before processing
-        def validate_edge_index(edge_index, num_nodes, view_name):
-            if edge_index.numel() == 0:
-                logger.warning(f"{view_name}: Empty edge index")
-                return edge_index, None
-                
-            # Filter out invalid edges
-            valid_edges = (edge_index[0] < num_nodes) & (edge_index[1] < num_nodes)
-            if not torch.all(valid_edges):
-                invalid_count = (~valid_edges).sum().item()
-                logger.warning(f"{view_name}: Filtered {invalid_count} edges with invalid node indices")
-                edge_index = edge_index[:, valid_edges]
-                
-            return edge_index, valid_edges
+        # Extract positive similarities using labels
+        pos_sim = log_prob[torch.arange(2 * batch_size, device=z.device), labels]
         
-        view1['edge_index'], _ = validate_edge_index(
-            view1['edge_index'], view1['x'].shape[0], "View1"
-        )
-        view2['edge_index'], _ = validate_edge_index(
-            view2['edge_index'], view2['x'].shape[0], "View2"
-        )
+        # NT-Xent loss
+        loss = -pos_sim.mean()
         
-        # Get or compute curvatures
-        if curv_key in view1 and curv_key in view2:
-            curv1 = view1[curv_key].to(device)
-            curv2 = view2[curv_key].to(device)
-            
-            # Validate and fix curvature dimensions
-            curv1 = self.validate_and_fix_curvature_dimensions(
-                view1['edge_index'], curv1, "View1"
-            )
-            curv2 = self.validate_and_fix_curvature_dimensions(
-                view2['edge_index'], curv2, "View2"
-            )
-        else:
-            # Use hybrid method for speed
-            original_edge_index = original_data['edge_index'].to(device)
-            original_curvature = original_data[curv_key].to(device)
-            
-            curv1 = self.compute_augmented_curvature(
-                view1['edge_index'],
-                view1.get('edge_weight'),
-                view1['x'],
-                original_curvature=original_curvature,
-                original_edge_index=original_edge_index,
-                method='hybrid',
-                node_names=node_names,
-                curvature_type=curvature_type
-            )
-            
-            curv2 = self.compute_augmented_curvature(
-                view2['edge_index'],
-                view2.get('edge_weight'),
-                view2['x'],
-                original_curvature=original_curvature,
-                original_edge_index=original_edge_index,
-                method='hybrid',
-                node_names=node_names,
-                curvature_type=curvature_type
-            )
-        
-        # ROBUST FIX: Handle label and mask mapping for Schur complement augmentation
-        num_original_nodes = labels.shape[0]
-        aug_size_1 = view1['x'].shape[0]
-        aug_size_2 = view2['x'].shape[0]
-        
-        eliminated_ids_1 = set(view1['metadata']['eliminated_node_ids'])
-        eliminated_ids_2 = set(view2['metadata']['eliminated_node_ids'])
-        
-        # Create mapping from original indices to augmented indices
-        def create_index_mapping(num_orig, eliminated_set):
-            """Map original node indices to augmented node indices"""
-            orig_to_aug = {}
-            aug_idx = 0
-            for orig_idx in range(num_orig):
-                if orig_idx not in eliminated_set:
-                    orig_to_aug[orig_idx] = aug_idx
-                    aug_idx += 1
-            return orig_to_aug, aug_idx
-        
-        orig_to_aug1, mapped_count1 = create_index_mapping(num_original_nodes, eliminated_ids_1)
-        orig_to_aug2, mapped_count2 = create_index_mapping(num_original_nodes, eliminated_ids_2)
-        
-        # Initialize augmented labels and masks
-        # Use -100 (ignore index) for unmapped nodes
-        aug_labels1 = torch.full((aug_size_1,), -100, dtype=torch.long, device=device)
-        aug_labels2 = torch.full((aug_size_2,), -100, dtype=torch.long, device=device)
-        aug_train_mask1 = torch.zeros(aug_size_1, dtype=torch.bool, device=device)
-        aug_train_mask2 = torch.zeros(aug_size_2, dtype=torch.bool, device=device)
-        
-        # Map labels and masks using the mapping
-        for orig_idx in range(num_original_nodes):
-            if orig_idx in orig_to_aug1:
-                aug_idx = orig_to_aug1[orig_idx]
-                if aug_idx < aug_size_1:  # Safety check
-                    aug_labels1[aug_idx] = labels[orig_idx]
-                    aug_train_mask1[aug_idx] = train_mask[orig_idx]
-            
-            if orig_idx in orig_to_aug2:
-                aug_idx = orig_to_aug2[orig_idx]
-                if aug_idx < aug_size_2:  # Safety check
-                    aug_labels2[aug_idx] = labels[orig_idx]
-                    aug_train_mask2[aug_idx] = train_mask[orig_idx]
-        
-        # Handle case where augmented graph is larger than expected
-        # (Schur complement may create "virtual" nodes)
-        if mapped_count1 < aug_size_1:
-            logger.warning(f"View1: Mapped {mapped_count1} nodes but graph has {aug_size_1} nodes. "
-                        f"Extra {aug_size_1 - mapped_count1} nodes will be ignored in training.")
-            # Set extra nodes' labels to 0 (non-driver) and exclude from training
-            aug_labels1[mapped_count1:] = 0
-            aug_train_mask1[mapped_count1:] = False
-        
-        if mapped_count2 < aug_size_2:
-            logger.warning(f"View2: Mapped {mapped_count2} nodes but graph has {aug_size_2} nodes. "
-                        f"Extra {aug_size_2 - mapped_count2} nodes will be ignored in training.")
-            aug_labels2[mapped_count2:] = 0
-            aug_train_mask2[mapped_count2:] = False
-        
-        # Verify we have training samples
-        if aug_train_mask1.sum() == 0 or aug_train_mask2.sum() == 0:
-            raise ValueError("No training samples after mapping! Check eliminated_node_ids.")
-        
-        # Zero gradients
-        optimizer.zero_grad()
-        
-        # Contrastive learning
-        z1 = self.get_contrastive_projection(view1['x'], view1['edge_index'], curv1)
-        z2 = self.get_contrastive_projection(view2['x'], view2['edge_index'], curv2)
-        
-        contrastive_loss = self.compute_contrastive_loss(z1, z2)
-        
-        # Classification on both views
-        logits1, _ = self.forward(
-            x=view1['x'],
-            edge_index=view1['edge_index'],
-            edge_curvature=curv1
-        )
-        
-        logits2, _ = self.forward(
-            x=view2['x'],
-            edge_index=view2['edge_index'],
-            edge_curvature=curv2
-        )
-        
-        # Ensure logits are 1D
-        if logits1.dim() > 1:
-            logits1 = logits1.squeeze(-1)
-        if logits2.dim() > 1:
-            logits2 = logits2.squeeze(-1)
-        
-        # Choose loss function
-        if use_focal_loss:
-            classification_loss1 = self.compute_focal_loss(
-                logits1, aug_labels1, aug_train_mask1, focal_alpha, focal_gamma
-            )
-            classification_loss2 = self.compute_focal_loss(
-                logits2, aug_labels2, aug_train_mask2, focal_alpha, focal_gamma
-            )
-        else:
-            classification_loss1 = self.compute_classification_loss(
-                logits1, aug_labels1, aug_train_mask1, pos_weight
-            )
-            classification_loss2 = self.compute_classification_loss(
-                logits2, aug_labels2, aug_train_mask2, pos_weight
-            )
-        
-        classification_loss = (classification_loss1 + classification_loss2) / 2.0
-        
-        # Combined loss
-        total_loss = (contrastive_weight * contrastive_loss + 
-                    (1 - contrastive_weight) * classification_loss)
-        
-        # ===== ROBUST ERROR HANDLING =====
-        # Check for NaN/Inf in loss BEFORE backward
-        if torch.isnan(total_loss) or torch.isinf(total_loss):
-            logger.error(f"Invalid total loss: {total_loss.item()}")
-            logger.error(f"  Contrastive loss: {contrastive_loss.item()}")
-            logger.error(f"  Classification loss: {classification_loss.item()}")
-            return {
-                'total_loss': float('nan'),
-                'contrastive_loss': contrastive_loss.item() if not torch.isnan(contrastive_loss) else float('nan'),
-                'classification_loss': classification_loss.item() if not torch.isnan(classification_loss) else float('nan'),
-                'train_accuracy': 0.0
-            }
-        
-        # Backward pass
-        total_loss.backward()
-        
-        # Check for NaN gradients
-        has_nan_grad = False
-        max_grad = 0.0
-        for param in self.parameters():
-            if param.grad is not None:
-                if torch.isnan(param.grad).any():
-                    has_nan_grad = True
-                    break
-                max_grad = max(max_grad, param.grad.abs().max().item())
-        
-        if has_nan_grad:
-            logger.error("NaN gradient detected! Skipping update.")
-            logger.error(f"  Max grad before NaN: {max_grad}")
-            optimizer.zero_grad()
-            return {
-                'total_loss': float('nan'),
-                'contrastive_loss': contrastive_loss.item(),
-                'classification_loss': classification_loss.item(),
-                'train_accuracy': 0.0
-            }
-        
-        # Log if gradients are unusually large
-        if max_grad > 100:
-            logger.warning(f"Large gradient detected: {max_grad:.2f}")
-        
-        # Gradient clipping
-        torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
-        
-        # Optimizer step
-        optimizer.step()
-        
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-        
-        # ===== COMPUTE METRICS =====
-        with torch.no_grad():
-            # Compute training accuracy safely
-            try:
-                if aug_train_mask1.sum() > 0:
-                    probs1 = torch.sigmoid(logits1[aug_train_mask1])
-                    pred1 = (probs1 > 0.5).long()
-                    train_acc = (pred1 == aug_labels1[aug_train_mask1]).float().mean()
-                else:
-                    train_acc = torch.tensor(0.0, device=device)
-                
-                # Ensure train_acc is a valid number
-                if torch.isnan(train_acc) or torch.isinf(train_acc):
-                    train_acc = torch.tensor(0.0, device=device)
-                    
-            except Exception as e:
-                logger.error(f"Error computing training accuracy: {e}")
-                train_acc = torch.tensor(0.0, device=device)
-        
-        return {
-            'total_loss': total_loss.item(),
-            'contrastive_loss': contrastive_loss.item(),
-            'classification_loss': classification_loss.item(),
-            'train_accuracy': train_acc.item()
-        }
-        
-    @torch.no_grad()
-    def evaluate(
-        self,
-        data: Dict,
-        labels: torch.Tensor,
-        mask: torch.Tensor,
-        curvature_type: str = 'ollivier',
-        device: torch.device = None
-    ) -> Dict[str, float]:
-        """
-        Evaluate model on validation/test set
-        
-        Args:
-            data: Graph data (original or augmented view with curvature)
-            labels: Node labels
-            mask: Evaluation mask
-            curvature_type: 'ollivier' or 'forman'
-        """
-        self.eval()
-        
-        device = device if device else self.device
-        if device is None:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        curv_key = f'{curvature_type.lower()}_curvature'
-        if curv_key not in data:
-            raise ValueError(f"'{curv_key}' not found in data. Available keys: {data.keys()}")
-        
-        edge_curvature = data[curv_key].to(device)
-        
-        features = data.get('feature', data.get('x'))
-        if features is None:
-            raise ValueError("Neither 'feature' nor 'x' found in data")
-        
-        features = features.to(device)
-        edge_index = data['edge_index'].to(device)
-        labels = labels.to(device)
-        
-        
-        # Validate curvature dimensions
-        edge_curvature = self.validate_and_fix_curvature_dimensions(
-            edge_index, edge_curvature, "Evaluation"
-        )
-        
-        logits, _ = self.forward(features, edge_index, edge_curvature)
-        
-        # Ensure logits are 1D
-        if logits.dim() > 1:
-            logits = logits.squeeze(-1)
-        
-        logits = logits[mask]
-        labels = labels[mask]
-        
-        probs = torch.sigmoid(logits)
-        pred = (probs > 0.5).long()
-        
-        accuracy = (pred == labels).float().mean().item()
-        
-        tp = ((pred == 1) & (labels == 1)).sum().item()
-        fp = ((pred == 1) & (labels == 0)).sum().item()
-        tn = ((pred == 0) & (labels == 0)).sum().item()
-        fn = ((pred == 0) & (labels == 1)).sum().item()
-        
-        precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
-        recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-        f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
-        
-        loss = F.binary_cross_entropy_with_logits(logits, labels.float())
-        
-        return {
-            'loss': loss.item(),
-            'accuracy': accuracy,
-            'precision': precision,
-            'recall': recall,
-            'f1': f1,
-            'true_positives': tp,
-            'false_positives': fp,
-            'true_negatives': tn,
-            'false_negatives': fn
-        }
+        return loss
     
     @torch.no_grad()
     def predict_probability(
@@ -1118,230 +653,6 @@ class ContrastiveDriverGenePredictor(nn.Module):
                 num_nodes = mask.sum().item()
             logger.warning(f"Returning default probabilities (0.5) for {num_nodes} nodes")
             return torch.full((num_nodes,), 0.5, device=device)
-        
-    @torch.no_grad()
-    def identify_potential_drivers(
-        self,
-        data: Dict,
-        labels: torch.Tensor,
-        mask: torch.Tensor,
-        confidence_threshold: float = 0.2,
-        curvature_threshold: float = 0.0,
-        feature_criteria: Optional[Dict[str, Tuple[int, float]]] = None,
-        curvature_type: str = 'ollivier',
-        device: torch.device = None
-    ) -> Dict[str, any]:
-        """
-        Identify potential driver genes from false positives
-        
-        Args:
-            data: Graph data dictionary
-            labels: True labels (0: non-driver, 1: driver)
-            mask: Mask for nodes to analyze
-            confidence_threshold: Minimum prediction confidence for potential drivers
-            curvature_threshold: Minimum mean curvature for potential drivers
-            feature_criteria: Dict mapping feature name to (feature_idx, min_value)
-            curvature_type: 'ollivier' or 'forman'
-        """
-        self.eval()
-        
-        device = device if device else self.device
-        if device is None:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        # Get curvature
-        curv_key = f'{curvature_type}_curvature'
-        edge_curvature = data[curv_key].to(device)
-
-        # Handle both 'feature' and 'x' keys
-        features = data.get('feature', data.get('x')).to(device)
-        edge_index = data['edge_index'].to(device)
-        feature_names = data.get('feature_name', [])
-        
-        labels = labels.to(device)
-        
-        # Validate curvature dimensions
-        edge_curvature = self.validate_and_fix_curvature_dimensions(
-            edge_index, edge_curvature, "IdentifyDrivers"
-        )
-        
-        logits, embeddings = self.forward(
-            features, 
-            edge_index,
-            edge_curvature,
-            return_embeddings=True
-        )
-        
-        # Ensure logits are 1D
-        if logits.dim() > 1:
-            logits = logits.squeeze(-1)
-        
-        # Get attention weights and curvature-specific representations
-        _, attention_info = self.encode(
-            features,
-            edge_index,
-            edge_curvature,
-            return_attention=True
-        )
-        
-        probs = torch.sigmoid(logits)
-        pred = (probs > 0.5).long()
-        
-        # Identify false positives (predicted as driver but labeled as non-driver)
-        mask_tensor = torch.tensor(mask, dtype=torch.bool).to(device) if isinstance(mask, np.ndarray) else mask
-        pred_tensor = torch.tensor(pred).to(device) if isinstance(pred, np.ndarray) else pred
-        labels_tensor = torch.tensor(labels).to(device) if isinstance(labels, np.ndarray) else labels
-
-        fp_mask = mask_tensor & (pred_tensor == 1) & (labels_tensor == 0)       
-        
-        fp_indices = torch.where(fp_mask)[0]
-        
-        # Filter based on high confidence
-        high_conf_mask = probs > confidence_threshold
-        candidate_mask = fp_mask & high_conf_mask
-        
-        # Compute per-node curvature statistics
-        node_curvature_stats = self.compute_node_curvature_features(
-            edge_index, edge_curvature, features.shape[0]
-        )
-        
-        # Apply curvature threshold
-        curv_mask = node_curvature_stats['mean_curvature'] > curvature_threshold
-        candidate_mask = candidate_mask & curv_mask
-        
-        # Apply additional feature criteria if provided
-        if feature_criteria is not None and feature_names:
-            for feat_name, (feat_idx, min_val) in feature_criteria.items():
-                feat_mask = features[:, feat_idx] > min_val
-                candidate_mask = candidate_mask & feat_mask
-                
-        # Get final potential driver candidates
-        potential_indices = torch.where(candidate_mask)[0]
-        
-        # Compute scores and reasons for each candidate
-        scores = []
-        reasons = []
-        detailed_features = []
-        
-        for idx in potential_indices:
-            idx_item = idx.item()
-            
-            conf = probs[idx].item()
-            
-            # Curvature features
-            curv_features = {
-                'mean_curvature': node_curvature_stats['mean_curvature'][idx].item(),
-                'positive_ratio': node_curvature_stats['positive_ratio'][idx].item(),
-                'negative_ratio': node_curvature_stats['negative_ratio'][idx].item()
-            }
-            
-            # Extract important node features
-            node_features = {}
-            important_features = [
-                'ppin_hub', 'ppin_degree', 'ppin_betweenness',
-                'essentiality_percentage', 'complexes', 'mirna'
-            ]
-            
-            for feat_name in important_features:
-                if feat_name in feature_names:
-                    feat_idx = feature_names.index(feat_name)
-                    node_features[feat_name] = features[idx_item, feat_idx].item()
-            
-            # Attention weights (which curvature types are important)
-            cross_attn = attention_info['cross_curvature_attention'][idx]
-            curv_importance = {
-                curv_type: cross_attn[i].item()
-                for i, curv_type in enumerate(self.curvature_types)
-            }
-            
-            reason_parts = []
-            reason_parts.append(f"High confidence: {conf:.3f}")
-            
-            if curv_features['mean_curvature'] > 0:
-                reason_parts.append(f"Positive curvature: {curv_features['mean_curvature']:.3f}")
-            
-            if 'ppin_hub' in node_features and node_features['ppin_hub'] > 0.5:
-                reason_parts.append("Hub protein")
-            
-            if 'essentiality_percentage' in node_features and node_features['essentiality_percentage'] > 0.3:
-                reason_parts.append(f"Essential: {node_features['essentiality_percentage']:.3f}")
-            
-            # Dominant curvature pathway
-            dominant_curv = max(curv_importance.items(), key=lambda x: x[1])
-            reason_parts.append(f"Dominant: {dominant_curv[0]} curvature")
-            
-            scores.append(conf)
-            reasons.append("; ".join(reason_parts))
-            detailed_features.append({
-                'confidence': conf,
-                'curvature': curv_features,
-                'node_features': node_features,
-                'curvature_importance': curv_importance
-            })
-        
-        # Get node names
-        node_names = data.get('node_name', None)
-        if node_names is not None:
-            potential_names = [node_names[idx] for idx in potential_indices]
-        else:
-            potential_names = [f"Node_{idx.item()}" for idx in potential_indices]
-        
-        return {
-            'potential_driver_mask': candidate_mask,
-            'potential_driver_indices': potential_indices,
-            'scores': torch.tensor(scores),
-            'reasons': reasons,
-            'detailed_features': detailed_features,
-            'total_false_positives': fp_indices.shape[0],
-            'num_potential_drivers': potential_indices.shape[0],
-            'node_names': potential_names
-        }
-    
-    def compute_node_curvature_features(
-        self,
-        edge_index: torch.Tensor,
-        edge_curvature: torch.Tensor,
-        num_nodes: int
-    ) -> Dict[str, torch.Tensor]:
-        """
-        Compute curvature-based features for each node
-        """
-        # Initialize
-        mean_curvature = torch.zeros(num_nodes, device=edge_index.device)
-        positive_ratio = torch.zeros(num_nodes, device=edge_index.device)
-        negative_ratio = torch.zeros(num_nodes, device=edge_index.device)
-        degree = torch.zeros(num_nodes, device=edge_index.device)
-        
-        # Aggregate curvature for each node
-        for i in range(edge_index.shape[1]):
-            src, dst = edge_index[0, i], edge_index[1, i]
-            curv = edge_curvature[i]
-            
-            mean_curvature[src] += curv
-            mean_curvature[dst] += curv
-            
-            degree[src] += 1
-            degree[dst] += 1
-            
-            if curv > 0:
-                positive_ratio[src] += 1
-                positive_ratio[dst] += 1
-            elif curv < 0:
-                negative_ratio[src] += 1
-                negative_ratio[dst] += 1
-        
-        # Normalize
-        valid_mask = degree > 0
-        mean_curvature[valid_mask] /= degree[valid_mask]
-        positive_ratio[valid_mask] /= degree[valid_mask]
-        negative_ratio[valid_mask] /= degree[valid_mask]
-        
-        return {
-            'mean_curvature': mean_curvature,
-            'positive_ratio': positive_ratio,
-            'negative_ratio': negative_ratio,
-            'degree': degree
-        }
     
     def visualize_attention_weights(
         self,
@@ -1472,3 +783,1373 @@ class ContrastiveDriverGenePredictor(nn.Module):
             logger.info(f"  Metrics: {checkpoint['metrics']}")
         
         return checkpoint
+    
+    def forward(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_curvature: torch.Tensor,
+        return_embeddings:bool = False
+    ) -> torch.Tensor:
+        """
+        Compute driver likelihood scores for ranking (NOT binary classification).
+        
+        Returns:
+            scores: [num_nodes] unbounded scores (higher = more likely driver)
+        """
+        h, _ = self.encode(x, edge_index, edge_curvature, return_attention=False)
+        scores = self.ranking_head(h).squeeze(-1)
+        
+        if return_embeddings:
+            return scores, h
+        return scores, None
+    
+    def train_step(
+        self,
+        view1: Dict,
+        view2: Dict,
+        original_data: Dict,
+        labels: torch.Tensor,
+        train_mask: torch.Tensor,
+        optimizer: torch.optim.Optimizer,
+        contrastive_weight: float = 0.3,
+        ranking_loss_type: str = 'pairwise',
+        margin: float = 1.0,
+        curvature_type: str = 'ollivier',
+        node_names: Optional[List] = None,
+        device: torch.device = None,
+        backward: bool = True
+    ) -> Dict[str, float]:
+        """
+        Training step with ranking loss instead of classification loss.
+        """
+        self.train()
+            
+        device = device if device else self.device
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        self.to(device)
+        curv_key = f'{curvature_type.lower()}_curvature'
+        
+        # NEW: Check if data is already on device
+        if view1['x'].device != device:
+            view1['x'] = view1['x'].to(device)
+            view1['edge_index'] = view1['edge_index'].to(device)
+        if view2['x'].device != device:
+            view2['x'] = view2['x'].to(device)
+            view2['edge_index'] = view2['edge_index'].to(device)
+        # Ensure labels and mask are on device
+        if labels.device != device:
+            labels = labels.to(device)
+        if train_mask.device != device:
+            train_mask = train_mask.to(device)
+
+        # Validate edge indices before processing
+        def validate_edge_index(edge_index, num_nodes, view_name):
+            if edge_index.numel() == 0:
+                logger.warning(f"{view_name}: Empty edge index")
+                return edge_index, None
+                
+            # Filter out invalid edges
+            valid_edges = (edge_index[0] < num_nodes) & (edge_index[1] < num_nodes)
+            if not torch.all(valid_edges):
+                invalid_count = (~valid_edges).sum().item()
+                logger.warning(f"{view_name}: Filtered {invalid_count} edges with invalid node indices")
+                edge_index = edge_index[:, valid_edges]
+                
+            return edge_index, valid_edges
+        
+        view1['edge_index'], _ = validate_edge_index(
+            view1['edge_index'], view1['x'].shape[0], "View1"
+        )
+        view2['edge_index'], _ = validate_edge_index(
+            view2['edge_index'], view2['x'].shape[0], "View2"
+        )
+        
+        # Get or compute curvatures
+        if curv_key in view1 and curv_key in view2:
+            curv1 = view1[curv_key].to(device) if view1[curv_key].device != device else view1[curv_key]
+            curv2 = view2[curv_key].to(device) if view2[curv_key].device != device else view2[curv_key]
+            
+            curv1 = self.validate_and_fix_curvature_dimensions(view1['edge_index'], curv1, "View1")
+            curv2 = self.validate_and_fix_curvature_dimensions(view2['edge_index'], curv2, "View2")
+        else:
+            # Use hybrid method for speed
+            original_edge_index = original_data['edge_index'].to(device)
+            original_curvature = original_data[curv_key].to(device)
+            
+            curv1 = self.compute_augmented_curvature(
+                view1['edge_index'],
+                view1.get('edge_weight'),
+                view1['x'],
+                original_curvature=original_curvature,
+                original_edge_index=original_edge_index,
+                method='hybrid',
+                node_names=node_names,
+                curvature_type=curvature_type
+            )
+            
+            curv2 = self.compute_augmented_curvature(
+                view2['edge_index'],
+                view2.get('edge_weight'),
+                view2['x'],
+                original_curvature=original_curvature,
+                original_edge_index=original_edge_index,
+                method='hybrid',
+                node_names=node_names,
+                curvature_type=curvature_type
+            )
+        
+        # ROBUST FIX: Handle label and mask mapping for Schur complement augmentation
+        num_original_nodes = labels.shape[0]
+        aug_size_1 = view1['x'].shape[0]
+        aug_size_2 = view2['x'].shape[0]
+        
+        eliminated_ids_1 = set(view1['metadata']['eliminated_node_ids'])
+        eliminated_ids_2 = set(view2['metadata']['eliminated_node_ids'])
+        
+        # Create mapping from original indices to augmented indices
+        def create_index_mapping(num_orig, eliminated_set):
+            """Map original node indices to augmented node indices"""
+            orig_to_aug = {}
+            aug_idx = 0
+            for orig_idx in range(num_orig):
+                if orig_idx not in eliminated_set:
+                    orig_to_aug[orig_idx] = aug_idx
+                    aug_idx += 1
+            return orig_to_aug, aug_idx
+        
+        orig_to_aug1, mapped_count1 = create_index_mapping(num_original_nodes, eliminated_ids_1)
+        orig_to_aug2, mapped_count2 = create_index_mapping(num_original_nodes, eliminated_ids_2)
+        
+        # Initialize augmented labels and masks
+        # Use -100 (ignore index) for unmapped nodes
+        aug_labels1 = torch.full((aug_size_1,), -100, dtype=torch.long, device=device)
+        aug_labels2 = torch.full((aug_size_2,), -100, dtype=torch.long, device=device)
+        aug_train_mask1 = torch.zeros(aug_size_1, dtype=torch.bool, device=device)
+        aug_train_mask2 = torch.zeros(aug_size_2, dtype=torch.bool, device=device)
+        
+        # Map labels and masks using the mapping
+        for orig_idx in range(num_original_nodes):
+            if orig_idx in orig_to_aug1:
+                aug_idx = orig_to_aug1[orig_idx]
+                if aug_idx < aug_size_1:  # Safety check
+                    aug_labels1[aug_idx] = labels[orig_idx]
+                    aug_train_mask1[aug_idx] = train_mask[orig_idx]
+            
+            if orig_idx in orig_to_aug2:
+                aug_idx = orig_to_aug2[orig_idx]
+                if aug_idx < aug_size_2:  # Safety check
+                    aug_labels2[aug_idx] = labels[orig_idx]
+                    aug_train_mask2[aug_idx] = train_mask[orig_idx]
+        
+        # Handle case where augmented graph is larger than expected
+        # (Schur complement may create "virtual" nodes)
+        if mapped_count1 < aug_size_1:
+            logger.warning(f"View1: Mapped {mapped_count1} nodes but graph has {aug_size_1} nodes. "
+                        f"Extra {aug_size_1 - mapped_count1} nodes will be ignored in training.")
+            # Set extra nodes' labels to 0 (non-driver) and exclude from training
+            aug_labels1[mapped_count1:] = 0
+            aug_train_mask1[mapped_count1:] = False
+        
+        if mapped_count2 < aug_size_2:
+            logger.warning(f"View2: Mapped {mapped_count2} nodes but graph has {aug_size_2} nodes. "
+                        f"Extra {aug_size_2 - mapped_count2} nodes will be ignored in training.")
+            aug_labels2[mapped_count2:] = 0
+            aug_train_mask2[mapped_count2:] = False
+        
+        # Verify we have training samples
+        if aug_train_mask1.sum() == 0 or aug_train_mask2.sum() == 0:
+            raise ValueError("No training samples after mapping! Check eliminated_node_ids.")
+        
+        # Zero gradients
+        optimizer.zero_grad()
+        
+        # NEW: Use no_grad for contrastive learning part to save memory
+        with torch.amp.autocast('cuda') if torch.cuda.is_available() else torch.no_grad():
+            z1 = self.get_contrastive_projection(view1['x'], view1['edge_index'], curv1)
+            z2 = self.get_contrastive_projection(view2['x'], view2['edge_index'], curv2)
+        contrastive_loss = self.compute_contrastive_loss(z1, z2)
+        
+        # Detach contrastive loss to save memory
+        contrastive_loss_value = contrastive_loss.item()
+        del z1, z2
+        
+        # Ranking loss
+        ranking_criterion = RankingLoss(margin=margin, loss_type=ranking_loss_type)
+        
+        scores1, _ = self.forward(view1['x'], view1['edge_index'], curv1)
+        scores2, _ = self.forward(view2['x'], view2['edge_index'], curv2)
+        
+        ranking_loss1 = ranking_criterion(scores1, aug_labels1, aug_train_mask1)
+        ranking_loss2 = ranking_criterion(scores2, aug_labels2, aug_train_mask2)
+        ranking_loss = (ranking_loss1 + ranking_loss2) / 2.0
+        
+        # NEW: Clean up intermediate tensors
+        del scores1, scores2, ranking_loss1, ranking_loss2
+        
+        # Combined loss
+        total_loss = (contrastive_weight * contrastive_loss
+                        + (1-contrastive_weight) * ranking_loss)
+        
+        if torch.isnan(total_loss) or torch.isinf(total_loss):
+            logger.error(f"Invalid total loss: {total_loss.item()}")
+            logger.error(f"  Contrastive loss: {contrastive_loss.item()}")
+            logger.error(f"  Classification loss: {ranking_loss}")
+            return {
+                'total_loss': float('nan'),
+                'contrastive_loss': contrastive_loss.item() if not torch.isnan(contrastive_loss) else float('nan'),
+                'ranking_loss': ranking_loss if not torch.isnan(ranking_loss) else float('nan'),
+                'train_ndcg': 0.0
+            }
+        
+        # NEW: Only do backward if requested (for gradient accumulation)
+        if backward:
+            total_loss.backward()
+            
+            # Check for NaN gradients
+            has_nan_grad = False
+            for param in self.parameters():
+                if param.grad is not None and torch.isnan(param.grad).any():
+                    has_nan_grad = True
+                    break
+            
+            if has_nan_grad:
+                logger.error("NaN gradient detected! Skipping update.")
+                if hasattr(optimizer, 'zero_grad'):
+                    optimizer.zero_grad()
+                return {
+                    'total_loss': float('nan'),
+                    'contrastive_loss': contrastive_loss_value,
+                    'ranking_loss': ranking_loss.item(),
+                    'train_ndcg': 0.0
+                }
+        
+            # Gradient clipping
+            torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
+            # Optimizer step
+            optimizer.step()
+        
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            
+        with torch.no_grad():
+            train_ndcg = compute_ndcg(
+                scores1[aug_train_mask1].cpu().numpy(),
+                aug_labels1[aug_train_mask1].cpu().numpy()
+            )
+            
+        return {
+        'total_loss': total_loss.item(),
+        'contrastive_loss': contrastive_loss.item(),
+        'ranking_loss': ranking_loss,
+        'train_ndcg': train_ndcg
+        }
+        
+    def evaluate(
+        self,
+        data: Dict,
+        labels: torch.Tensor,
+        mask: torch.Tensor,
+        curvature_type: str = 'ollivier',
+        device: torch.device = None,
+        k_values: List[int] = [10, 20, 50, 100]
+    ) -> Dict[str, float]:
+        """
+        Evaluate model using ranking metrics.
+        """
+
+        self.eval()
+        device = device if device else self.device
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        curv_key = f'{curvature_type.lower()}_curvature'
+        edge_curvature = data[curv_key].to(device)
+        features = data.get('feature', data.get('x')).to(device)
+        edge_index = data['edge_index'].to(device)
+        labels = labels.to(device)
+        
+        edge_curvature = self.validate_and_fix_curvature_dimensions(
+            edge_index, edge_curvature, "Evaluation"
+        )
+        
+        scores, _ = self.forward(features, edge_index, edge_curvature)
+        scores = scores[mask]
+        labels = labels[mask]
+        
+        scores_np = scores.cpu().numpy()
+        labels_np = labels.cpu().numpy()
+        
+        metrics = {}
+        
+        # AUROC and AUPRC
+        metrics['auroc'] = roc_auc_score(labels_np, scores_np)
+        metrics['auprc'] = average_precision_score(labels_np, scores_np)
+        
+        # F1 Score (using optimal threshold from precision-recall curve)
+        precision, recall, thresholds = precision_recall_curve(labels_np, scores_np)
+        # Calculate F1 for each threshold
+        f1_scores = 2 * (precision * recall) / (precision + recall + 1e-10)
+        best_f1_idx = np.argmax(f1_scores)
+        metrics['f1'] = f1_scores[best_f1_idx]
+        metrics['best_threshold'] = thresholds[best_f1_idx] if best_f1_idx < len(thresholds) else 0.5
+        
+        # Also add F1 at default threshold of 0.5
+        predictions_05 = (scores_np >= 0.5).astype(int)
+        tp = ((predictions_05 == 1) & (labels_np == 1)).sum()
+        fp = ((predictions_05 == 1) & (labels_np == 0)).sum()
+        fn = ((predictions_05 == 0) & (labels_np == 1)).sum()
+        
+        precision_05 = tp / (tp + fp) if (tp + fp) > 0 else 0
+        recall_05 = tp / (tp + fn) if (tp + fn) > 0 else 0
+        metrics['f1@0.5'] = 2 * (precision_05 * recall_05) / (precision_05 + recall_05 + 1e-10)
+        
+        # Precision@K and Recall@K
+        n_positives = labels_np.sum()
+        sorted_indices = np.argsort(-scores_np)
+        
+        for k in k_values:
+            if k > len(scores_np):
+                continue
+            
+            top_k_indices = sorted_indices[:k]
+            top_k_labels = labels_np[top_k_indices]
+            
+            precision_at_k = top_k_labels.sum() / k
+            recall_at_k = top_k_labels.sum() / n_positives if n_positives > 0 else 0
+            
+            metrics[f'precision@{k}'] = precision_at_k
+            metrics[f'recall@{k}'] = recall_at_k
+        
+        # NDCG@K
+        for k in k_values:
+            if k > len(scores_np):
+                continue
+            ndcg_k = compute_ndcg(scores_np, labels_np, k=k)
+            metrics[f'ndcg@{k}'] = ndcg_k
+        
+        # Mean Reciprocal Rank
+        mrr = compute_mrr(scores_np, labels_np)
+        metrics['mrr'] = mrr
+        
+        # Median rank of known drivers
+        driver_indices = np.where(labels_np == 1)[0]
+        if len(driver_indices) > 0:
+            driver_ranks = [np.where(sorted_indices == idx)[0][0] + 1 
+                        for idx in driver_indices]
+            metrics['median_driver_rank'] = np.median(driver_ranks)
+            metrics['mean_driver_rank'] = np.mean(driver_ranks)
+        
+        return metrics
+    
+    @torch.no_grad()
+    def score_all_genes(
+        self,
+        data: Dict,
+        curvature_type: str = 'ollivier',
+        device: torch.device = None,
+        save_path: Optional[str] = None,
+        save_prefix: str = ''
+    ) -> pd.DataFrame:
+        """
+        Score ALL genes and return ranked DataFrame.
+        
+        Args:
+            data: Graph data dictionary
+            curvature_type: Type of curvature to use
+            device: Device to use for computation
+            save_path: Optional directory path to save CSV (if None, no file saved)
+            save_prefix: Optional prefix for output filename
+        
+        Returns:
+            DataFrame with all genes scored and ranked
+        
+        Example:
+            >>> df = model.score_all_genes(
+            ...     data,
+            ...     save_path='results/',
+            ...     save_prefix='experiment1'
+            ... )
+            # Saves to: results/experiment1_gene_rankings.csv
+        """
+        self.eval()
+        
+        device = device if device else self.device
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        curv_key = f'{curvature_type.lower()}_curvature'
+        edge_curvature = data[curv_key].to(device)
+        features = data.get('feature', data.get('x')).to(device)
+        edge_index = data['edge_index'].to(device)
+        
+        edge_curvature = self.validate_and_fix_curvature_dimensions(
+            edge_index, edge_curvature, "ScoreAllGenes"
+        )
+        
+        scores, _ = self.forward(features, edge_index, edge_curvature)
+        scores_normalized = torch.sigmoid(scores)
+        
+        node_names = data.get('node_name', [f"Gene_{i}" for i in range(len(scores))])
+        true_labels = data.get('label', torch.zeros(len(scores)))
+        
+        df = pd.DataFrame({
+            'gene_name': node_names,
+            'driver_score': scores.cpu().numpy(),
+            'driver_probability': scores_normalized.cpu().numpy(),
+            'true_label': true_labels.cpu().numpy(),
+            'rank': 0
+        })
+        
+        df = df.sort_values('driver_score', ascending=False).reset_index(drop=True)
+        df['rank'] = df.index + 1
+        df['percentile'] = df['rank'] / len(df) * 100
+        
+        # Save to CSV if path provided
+        if save_path is not None:
+            from pathlib import Path
+            save_dir = Path(save_path)
+            save_dir.mkdir(exist_ok=True, parents=True)
+            
+            prefix = f"{save_prefix}_" if save_prefix else ""
+            output_file = save_dir / f"{prefix}gene_rankings.csv"
+            df.to_csv(output_file, index=False)
+            
+            print(f"✓ Saved gene rankings to: {output_file}")
+        
+        return df
+
+    
+    @torch.no_grad()
+    def score_genes_with_statistics(
+        self,
+        data: Dict,
+        labels: torch.Tensor,
+        curvature_type: str = 'ollivier',
+        num_permutations: int = 1000,
+        device: torch.device = None,
+        save_path: Optional[str] = None,
+        save_prefix: str = ''
+    ) -> pd.DataFrame:
+        """
+        Score all genes and compute statistical significance via permutation testing.
+        
+        Args:
+            data: Graph data dictionary
+            labels: True labels
+            curvature_type: Type of curvature to use
+            num_permutations: Number of permutations for p-value calculation
+            device: Device to use for computation
+            save_path: Directory path to save CSV files (if None, no files saved)
+            save_prefix: Prefix for output filenames (e.g., 'fold1', 'experiment_A')
+        
+        Returns:
+            DataFrame with all genes scored and ranked with statistical significance
+        
+        Example:
+            >>> df = model.score_genes_with_statistics(
+            ...     data, labels,
+            ...     save_path='results/',
+            ...     save_prefix='fold_1'
+            ... )
+            # Saves to: results/fold_1_all_genes_scored.csv
+            #           results/fold_1_significant_genes.csv
+            #           results/fold_1_known_drivers.csv
+        """
+        print("\n" + "="*80)
+        print("SCORING ALL GENES WITH STATISTICAL SIGNIFICANCE")
+        print("="*80)
+        
+        df_scores = self.score_all_genes(data, curvature_type, device)
+        
+        device = device if device else self.device
+        if device is None:
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        
+        labels = labels.to(device)
+        
+        known_drivers = labels == 1
+        known_driver_indices = torch.where(known_drivers)[0].cpu().numpy()
+        unknown_indices = torch.where(~known_drivers)[0].cpu().numpy()
+        
+        print(f"\nKnown drivers: {len(known_driver_indices)}")
+        print(f"Unknown genes: {len(unknown_indices)}")
+        
+        driver_scores = df_scores.loc[known_driver_indices, 'driver_score'].values
+        driver_mean = driver_scores.mean()
+        driver_std = driver_scores.std()
+        
+        print(f"\nKnown Driver Score Statistics:")
+        print(f"  Mean: {driver_mean:.4f}")
+        print(f"  Std: {driver_std:.4f}")
+        print(f"  Median: {np.median(driver_scores):.4f}")
+        
+        # Compute p-values
+        print(f"\nComputing p-values using {num_permutations} permutations...")
+        
+        pvalues = np.ones(len(df_scores))
+        
+        for idx in unknown_indices:
+            if idx % 500 == 0:
+                print(f"  Processing gene {idx}/{len(unknown_indices)}...", end='\r')
+            
+            observed_score = df_scores.loc[idx, 'driver_score']
+            pvalue = (driver_scores >= observed_score).sum() / len(driver_scores)
+            pvalues[idx] = pvalue
+        
+        print(f"  Processing gene {len(unknown_indices)}/{len(unknown_indices)}... Done!")
+        
+        pvalues[known_driver_indices] = 0.0
+        
+        # Multiple testing correction
+        unknown_pvalues = pvalues[unknown_indices]
+        _, adjusted_pvalues_unknown, _, _ = multipletests(unknown_pvalues, method='fdr_bh')
+        
+        adjusted_pvalues = np.ones(len(df_scores))
+        adjusted_pvalues[known_driver_indices] = 0.0
+        adjusted_pvalues[unknown_indices] = adjusted_pvalues_unknown
+        
+        df_scores['pvalue'] = pvalues
+        df_scores['adjusted_pvalue'] = adjusted_pvalues
+        df_scores['is_known_driver'] = df_scores['true_label'] == 1
+        df_scores['is_significant'] = (adjusted_pvalues < 0.05) & (~df_scores['is_known_driver'])
+        df_scores['z_score'] = (df_scores['driver_score'] - driver_mean) / driver_std
+        
+        print(f"\n" + "="*80)
+        print("RESULTS")
+        print("="*80)
+        
+        significant_unknowns = df_scores[df_scores['is_significant']]
+        print(f"\nSignificant unknown genes (FDR < 0.05): {len(significant_unknowns)}")
+        
+        if len(significant_unknowns) > 0:
+            print(f"\nTop 20 Significant Unknown Genes:")
+            print("-" * 80)
+            display_cols = ['rank', 'gene_name', 'driver_score', 'z_score', 
+                        'adjusted_pvalue', 'percentile']
+            print(significant_unknowns[display_cols].head(20).to_string(index=False))
+        
+        # Save to CSV if path provided
+        if save_path is not None:
+            from pathlib import Path
+            save_dir = Path(save_path)
+            save_dir.mkdir(exist_ok=True, parents=True)
+            
+            # Add prefix if provided
+            prefix = f"{save_prefix}_" if save_prefix else ""
+            
+            # Save all genes
+            all_genes_file = save_dir / f"{prefix}all_genes_scored.csv"
+            df_scores.to_csv(all_genes_file, index=False)
+            print(f"\n✓ Saved all genes to: {all_genes_file}")
+            
+            # Save significant genes only
+            if len(significant_unknowns) > 0:
+                sig_file = save_dir / f"{prefix}significant_genes.csv"
+                significant_unknowns.to_csv(sig_file, index=False)
+                print(f"✓ Saved {len(significant_unknowns)} significant genes to: {sig_file}")
+            
+            # Save known drivers for reference
+            known_drivers_df = df_scores[df_scores['is_known_driver']]
+            known_file = save_dir / f"{prefix}known_drivers_scores.csv"
+            known_drivers_df.to_csv(known_file, index=False)
+            print(f"✓ Saved {len(known_drivers_df)} known drivers to: {known_file}")
+            
+            # Save summary statistics
+            summary_file = save_dir / f"{prefix}scoring_summary.txt"
+            with open(summary_file, 'w') as f:
+                f.write("="*80 + "\n")
+                f.write("GENE SCORING SUMMARY\n")
+                f.write("="*80 + "\n\n")
+                
+                f.write(f"Total genes analyzed: {len(df_scores)}\n")
+                f.write(f"Known driver genes: {len(known_driver_indices)}\n")
+                f.write(f"Unknown genes: {len(unknown_indices)}\n")
+                f.write(f"Significant unknown genes (FDR < 0.05): {len(significant_unknowns)}\n\n")
+                
+                f.write("Known Driver Score Statistics:\n")
+                f.write(f"  Mean: {driver_mean:.4f}\n")
+                f.write(f"  Std: {driver_std:.4f}\n")
+                f.write(f"  Median: {np.median(driver_scores):.4f}\n")
+                f.write(f"  Min: {driver_scores.min():.4f}\n")
+                f.write(f"  Max: {driver_scores.max():.4f}\n\n")
+                
+                if len(significant_unknowns) > 0:
+                    f.write("Significant Gene Score Statistics:\n")
+                    f.write(f"  Mean: {significant_unknowns['driver_score'].mean():.4f}\n")
+                    f.write(f"  Median: {significant_unknowns['driver_score'].median():.4f}\n")
+                    f.write(f"  Min rank: {significant_unknowns['rank'].min()}\n")
+                    f.write(f"  Max rank: {significant_unknowns['rank'].max()}\n\n")
+                    
+                    f.write("Top 10 Significant Genes:\n")
+                    f.write("-"*80 + "\n")
+                    top_10 = significant_unknowns.head(10)[
+                        ['rank', 'gene_name', 'driver_score', 'adjusted_pvalue']
+                    ]
+                    f.write(top_10.to_string(index=False))
+            
+            print(f"✓ Saved summary to: {summary_file}")
+            print(f"\n{'='*80}\n")
+        
+        return df_scores
+    
+
+def compute_ndcg(
+    scores: np.ndarray, 
+    labels: np.ndarray,
+    k: Optional[int] = None
+) -> float:
+    """Compute Normalized Discounted Cumulative Gain."""
+    if k is None:
+        k = len(scores)
+
+    sorted_indices = np.argsort(-scores)[:k]
+    sorted_labels = labels[sorted_indices]
+
+    gains = sorted_labels
+    discounts = 1.0 / np.log2(np.arange(2, len(gains) + 2))
+    dcg = np.sum(gains * discounts)
+
+    ideal_sorted = np.sort(labels)[::-1][:k]
+    idcg = np.sum(ideal_sorted * discounts[:len(ideal_sorted)])
+
+    if idcg == 0:
+        return 0.0
+
+    return dcg / idcg
+
+def compute_mrr(
+    scores: np.ndarray, 
+    labels: np.ndarray
+) -> float:
+    
+    """Compute Mean Reciprocal Rank."""
+    sorted_indices = np.argsort(-scores)
+    driver_indices = np.where(labels == 1)[0]
+    
+    if len(driver_indices) == 0:
+        return 0.0
+    
+    reciprocal_ranks = []
+    for driver_idx in driver_indices:
+        rank = np.where(sorted_indices == driver_idx)[0][0] + 1
+        reciprocal_ranks.append(1.0 / rank)
+    
+    return np.mean(reciprocal_ranks)
+'''
+def forward(
+    self,
+    x: torch.Tensor,
+    edge_index: torch.Tensor,
+    edge_curvature: torch.Tensor,
+    return_embeddings: bool = False
+) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
+    """
+    Forward pass for binary classification
+    
+    Returns:
+        logits: [num_nodes] binary logits
+        embeddings: [num_nodes, hidden_channels] if return_embeddings=True
+    """
+    h, _ = self.encode(x, edge_index, edge_curvature)
+    logits = self.classifier(h)
+    
+    if return_embeddings:
+        return logits, h
+    
+    return logits, None
+
+# Deprecated train step as it uses classification which did not really give meaningful
+# results due to the class imbalance and did not identify any significant potential
+# drivers
+
+@torch.amp.autocast('cuda')
+def train_step(
+    self,
+    view1: Dict,
+    view2: Dict,
+    original_data: Dict,
+    labels: torch.Tensor,
+    train_mask: torch.Tensor,
+    optimizer: torch.optim.Optimizer,
+    contrastive_weight: float = 0.3,
+    pos_weight: Optional[torch.Tensor] = None,
+    curvature_type: str = 'ollivier',
+    node_names: Optional[List] = None,
+    device: torch.device = None,
+    batch_size: int = 2048,
+    use_focal_loss: bool = False,
+    focal_alpha: float = 0.25,
+    focal_gamma: float = 2.0
+) -> Dict[str, float]:
+    """
+    Combined training step with contrastive and classification objectives
+    
+    FIXED: Robust mask and label mapping handling Schur complement augmentation
+    """
+    self.train()
+    
+    # Clear GPU cache
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    # Ensure consistent device usage
+    device = device if device else self.device
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Move model to device if not already
+    self.to(device)
+    
+    curvature_type = curvature_type.lower()
+    curv_key = f'{curvature_type}_curvature'
+    
+    # Move all data to device BEFORE any operations
+    view1['x'] = view1['x'].to(device)
+    view1['edge_index'] = view1['edge_index'].to(device)
+    view2['x'] = view2['x'].to(device)
+    view2['edge_index'] = view2['edge_index'].to(device)
+    
+    # Move labels and masks to device
+    labels = labels.to(device)
+    train_mask = train_mask.to(device)
+    if pos_weight is not None:
+        pos_weight = pos_weight.to(device)
+    
+    # Validate edge indices before processing
+    def validate_edge_index(edge_index, num_nodes, view_name):
+        if edge_index.numel() == 0:
+            logger.warning(f"{view_name}: Empty edge index")
+            return edge_index, None
+            
+        # Filter out invalid edges
+        valid_edges = (edge_index[0] < num_nodes) & (edge_index[1] < num_nodes)
+        if not torch.all(valid_edges):
+            invalid_count = (~valid_edges).sum().item()
+            logger.warning(f"{view_name}: Filtered {invalid_count} edges with invalid node indices")
+            edge_index = edge_index[:, valid_edges]
+            
+        return edge_index, valid_edges
+    
+    view1['edge_index'], _ = validate_edge_index(
+        view1['edge_index'], view1['x'].shape[0], "View1"
+    )
+    view2['edge_index'], _ = validate_edge_index(
+        view2['edge_index'], view2['x'].shape[0], "View2"
+    )
+    
+    # Get or compute curvatures
+    if curv_key in view1 and curv_key in view2:
+        curv1 = view1[curv_key].to(device)
+        curv2 = view2[curv_key].to(device)
+        
+        # Validate and fix curvature dimensions
+        curv1 = self.validate_and_fix_curvature_dimensions(
+            view1['edge_index'], curv1, "View1"
+        )
+        curv2 = self.validate_and_fix_curvature_dimensions(
+            view2['edge_index'], curv2, "View2"
+        )
+    else:
+        # Use hybrid method for speed
+        original_edge_index = original_data['edge_index'].to(device)
+        original_curvature = original_data[curv_key].to(device)
+        
+        curv1 = self.compute_augmented_curvature(
+            view1['edge_index'],
+            view1.get('edge_weight'),
+            view1['x'],
+            original_curvature=original_curvature,
+            original_edge_index=original_edge_index,
+            method='hybrid',
+            node_names=node_names,
+            curvature_type=curvature_type
+        )
+        
+        curv2 = self.compute_augmented_curvature(
+            view2['edge_index'],
+            view2.get('edge_weight'),
+            view2['x'],
+            original_curvature=original_curvature,
+            original_edge_index=original_edge_index,
+            method='hybrid',
+            node_names=node_names,
+            curvature_type=curvature_type
+        )
+    
+    # ROBUST FIX: Handle label and mask mapping for Schur complement augmentation
+    num_original_nodes = labels.shape[0]
+    aug_size_1 = view1['x'].shape[0]
+    aug_size_2 = view2['x'].shape[0]
+    
+    eliminated_ids_1 = set(view1['metadata']['eliminated_node_ids'])
+    eliminated_ids_2 = set(view2['metadata']['eliminated_node_ids'])
+    
+    # Create mapping from original indices to augmented indices
+    def create_index_mapping(num_orig, eliminated_set):
+        """Map original node indices to augmented node indices"""
+        orig_to_aug = {}
+        aug_idx = 0
+        for orig_idx in range(num_orig):
+            if orig_idx not in eliminated_set:
+                orig_to_aug[orig_idx] = aug_idx
+                aug_idx += 1
+        return orig_to_aug, aug_idx
+    
+    orig_to_aug1, mapped_count1 = create_index_mapping(num_original_nodes, eliminated_ids_1)
+    orig_to_aug2, mapped_count2 = create_index_mapping(num_original_nodes, eliminated_ids_2)
+    
+    # Initialize augmented labels and masks
+    # Use -100 (ignore index) for unmapped nodes
+    aug_labels1 = torch.full((aug_size_1,), -100, dtype=torch.long, device=device)
+    aug_labels2 = torch.full((aug_size_2,), -100, dtype=torch.long, device=device)
+    aug_train_mask1 = torch.zeros(aug_size_1, dtype=torch.bool, device=device)
+    aug_train_mask2 = torch.zeros(aug_size_2, dtype=torch.bool, device=device)
+    
+    # Map labels and masks using the mapping
+    for orig_idx in range(num_original_nodes):
+        if orig_idx in orig_to_aug1:
+            aug_idx = orig_to_aug1[orig_idx]
+            if aug_idx < aug_size_1:  # Safety check
+                aug_labels1[aug_idx] = labels[orig_idx]
+                aug_train_mask1[aug_idx] = train_mask[orig_idx]
+        
+        if orig_idx in orig_to_aug2:
+            aug_idx = orig_to_aug2[orig_idx]
+            if aug_idx < aug_size_2:  # Safety check
+                aug_labels2[aug_idx] = labels[orig_idx]
+                aug_train_mask2[aug_idx] = train_mask[orig_idx]
+    
+    # Handle case where augmented graph is larger than expected
+    # (Schur complement may create "virtual" nodes)
+    if mapped_count1 < aug_size_1:
+        logger.warning(f"View1: Mapped {mapped_count1} nodes but graph has {aug_size_1} nodes. "
+                    f"Extra {aug_size_1 - mapped_count1} nodes will be ignored in training.")
+        # Set extra nodes' labels to 0 (non-driver) and exclude from training
+        aug_labels1[mapped_count1:] = 0
+        aug_train_mask1[mapped_count1:] = False
+    
+    if mapped_count2 < aug_size_2:
+        logger.warning(f"View2: Mapped {mapped_count2} nodes but graph has {aug_size_2} nodes. "
+                    f"Extra {aug_size_2 - mapped_count2} nodes will be ignored in training.")
+        aug_labels2[mapped_count2:] = 0
+        aug_train_mask2[mapped_count2:] = False
+    
+    # Verify we have training samples
+    if aug_train_mask1.sum() == 0 or aug_train_mask2.sum() == 0:
+        raise ValueError("No training samples after mapping! Check eliminated_node_ids.")
+    
+    # Zero gradients
+    optimizer.zero_grad()
+    
+    # Contrastive learning
+    z1 = self.get_contrastive_projection(view1['x'], view1['edge_index'], curv1)
+    z2 = self.get_contrastive_projection(view2['x'], view2['edge_index'], curv2)
+    
+    contrastive_loss = self.compute_contrastive_loss(z1, z2)
+    
+    # Classification on both views
+    logits1, _ = self.forward(
+        x=view1['x'],
+        edge_index=view1['edge_index'],
+        edge_curvature=curv1
+    )
+    
+    logits2, _ = self.forward(
+        x=view2['x'],
+        edge_index=view2['edge_index'],
+        edge_curvature=curv2
+    )
+    
+    # Ensure logits are 1D
+    if logits1.dim() > 1:
+        logits1 = logits1.squeeze(-1)
+    if logits2.dim() > 1:
+        logits2 = logits2.squeeze(-1)
+    
+    # Choose loss function
+    if use_focal_loss:
+        classification_loss1 = self.compute_focal_loss(
+            logits1, aug_labels1, aug_train_mask1, focal_alpha, focal_gamma
+        )
+        classification_loss2 = self.compute_focal_loss(
+            logits2, aug_labels2, aug_train_mask2, focal_alpha, focal_gamma
+        )
+    else:
+        classification_loss1 = self.compute_classification_loss(
+            logits1, aug_labels1, aug_train_mask1, pos_weight
+        )
+        classification_loss2 = self.compute_classification_loss(
+            logits2, aug_labels2, aug_train_mask2, pos_weight
+        )
+    
+    classification_loss = (classification_loss1 + classification_loss2) / 2.0
+    
+    # Combined loss
+    total_loss = (contrastive_weight * contrastive_loss + 
+                (1 - contrastive_weight) * classification_loss)
+    
+    # ===== ROBUST ERROR HANDLING =====
+    # Check for NaN/Inf in loss BEFORE backward
+    if torch.isnan(total_loss) or torch.isinf(total_loss):
+        logger.error(f"Invalid total loss: {total_loss.item()}")
+        logger.error(f"  Contrastive loss: {contrastive_loss.item()}")
+        logger.error(f"  Classification loss: {classification_loss.item()}")
+        return {
+            'total_loss': float('nan'),
+            'contrastive_loss': contrastive_loss.item() if not torch.isnan(contrastive_loss) else float('nan'),
+            'classification_loss': classification_loss.item() if not torch.isnan(classification_loss) else float('nan'),
+            'train_accuracy': 0.0
+        }
+    
+    # Backward pass
+    total_loss.backward()
+    
+    # Check for NaN gradients
+    has_nan_grad = False
+    max_grad = 0.0
+    for param in self.parameters():
+        if param.grad is not None:
+            if torch.isnan(param.grad).any():
+                has_nan_grad = True
+                break
+            max_grad = max(max_grad, param.grad.abs().max().item())
+    
+    if has_nan_grad:
+        logger.error("NaN gradient detected! Skipping update.")
+        logger.error(f"  Max grad before NaN: {max_grad}")
+        optimizer.zero_grad()
+        return {
+            'total_loss': float('nan'),
+            'contrastive_loss': contrastive_loss.item(),
+            'classification_loss': classification_loss.item(),
+            'train_accuracy': 0.0
+        }
+    
+    # Log if gradients are unusually large
+    if max_grad > 100:
+        logger.warning(f"Large gradient detected: {max_grad:.2f}")
+    
+    # Gradient clipping
+    torch.nn.utils.clip_grad_norm_(self.parameters(), max_norm=1.0)
+    
+    # Optimizer step
+    optimizer.step()
+    
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+    
+    # ===== COMPUTE METRICS =====
+    with torch.no_grad():
+        # Compute training accuracy safely
+        try:
+            if aug_train_mask1.sum() > 0:
+                probs1 = torch.sigmoid(logits1[aug_train_mask1])
+                pred1 = (probs1 > 0.5).long()
+                train_acc = (pred1 == aug_labels1[aug_train_mask1]).float().mean()
+            else:
+                train_acc = torch.tensor(0.0, device=device)
+            
+            # Ensure train_acc is a valid number
+            if torch.isnan(train_acc) or torch.isinf(train_acc):
+                train_acc = torch.tensor(0.0, device=device)
+                
+        except Exception as e:
+            logger.error(f"Error computing training accuracy: {e}")
+            train_acc = torch.tensor(0.0, device=device)
+    
+    return {
+        'total_loss': total_loss.item(),
+        'contrastive_loss': contrastive_loss.item(),
+        'classification_loss': classification_loss.item(),
+        'train_accuracy': train_acc.item()
+    }
+
+# Deprecated Evaluation method that tests the model classification
+
+@torch.no_grad()
+def evaluate(
+    self,
+    data: Dict,
+    labels: torch.Tensor,
+    mask: torch.Tensor,
+    curvature_type: str = 'ollivier',
+    device: torch.device = None
+) -> Dict[str, float]:
+    """
+    Evaluate model on validation/test set
+    
+    Args:
+        data: Graph data (original or augmented view with curvature)
+        labels: Node labels
+        mask: Evaluation mask
+        curvature_type: 'ollivier' or 'forman'
+    """
+    self.eval()
+    
+    device = device if device else self.device
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    curv_key = f'{curvature_type.lower()}_curvature'
+    if curv_key not in data:
+        raise ValueError(f"'{curv_key}' not found in data. Available keys: {data.keys()}")
+    
+    edge_curvature = data[curv_key].to(device)
+    
+    features = data.get('feature', data.get('x'))
+    if features is None:
+        raise ValueError("Neither 'feature' nor 'x' found in data")
+    
+    features = features.to(device)
+    edge_index = data['edge_index'].to(device)
+    labels = labels.to(device)
+    
+    
+    # Validate curvature dimensions
+    edge_curvature = self.validate_and_fix_curvature_dimensions(
+        edge_index, edge_curvature, "Evaluation"
+    )
+    
+    logits, _ = self.forward(features, edge_index, edge_curvature)
+    
+    # Ensure logits are 1D
+    if logits.dim() > 1:
+        logits = logits.squeeze(-1)
+    
+    logits = logits[mask]
+    labels = labels[mask]
+    
+    probs = torch.sigmoid(logits)
+    pred = (probs > 0.5).long()
+    
+    accuracy = (pred == labels).float().mean().item()
+    
+    tp = ((pred == 1) & (labels == 1)).sum().item()
+    fp = ((pred == 1) & (labels == 0)).sum().item()
+    tn = ((pred == 0) & (labels == 0)).sum().item()
+    fn = ((pred == 0) & (labels == 1)).sum().item()
+    
+    precision = tp / (tp + fp) if (tp + fp) > 0 else 0.0
+    recall = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    f1 = 2 * precision * recall / (precision + recall) if (precision + recall) > 0 else 0.0
+    
+    loss = F.binary_cross_entropy_with_logits(logits, labels.float())
+    
+    return {
+        'loss': loss.item(),
+        'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
+        'true_positives': tp,
+        'false_positives': fp,
+        'true_negatives': tn,
+        'false_negatives': fn
+    }
+
+# Deprecated method as it did not identify any significant potential 
+# drivers from the false positives
+
+@torch.no_grad()
+def identify_potential_drivers(
+    self,
+    data: Dict,
+    labels: torch.Tensor,
+    mask: torch.Tensor,
+    confidence_threshold: float = 0.2,
+    curvature_threshold: float = 0.0,
+    feature_criteria: Optional[Dict[str, Tuple[int, float]]] = None,
+    curvature_type: str = 'ollivier',
+    device: torch.device = None
+) -> Dict[str, any]:
+    """
+    Identify potential driver genes from false positives
+    
+    Args:
+        data: Graph data dictionary
+        labels: True labels (0: non-driver, 1: driver)
+        mask: Mask for nodes to analyze
+        confidence_threshold: Minimum prediction confidence for potential drivers
+        curvature_threshold: Minimum mean curvature for potential drivers
+        feature_criteria: Dict mapping feature name to (feature_idx, min_value)
+        curvature_type: 'ollivier' or 'forman'
+    """
+    self.eval()
+    
+    device = device if device else self.device
+    if device is None:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Get curvature
+    curv_key = f'{curvature_type}_curvature'
+    edge_curvature = data[curv_key].to(device)
+
+    # Handle both 'feature' and 'x' keys
+    features = data.get('feature', data.get('x')).to(device)
+    edge_index = data['edge_index'].to(device)
+    feature_names = data.get('feature_name', [])
+    
+    labels = labels.to(device)
+    
+    # Validate curvature dimensions
+    edge_curvature = self.validate_and_fix_curvature_dimensions(
+        edge_index, edge_curvature, "IdentifyDrivers"
+    )
+    
+    logits, embeddings = self.forward(
+        features, 
+        edge_index,
+        edge_curvature,
+        return_embeddings=True
+    )
+    
+    # Ensure logits are 1D
+    if logits.dim() > 1:
+        logits = logits.squeeze(-1)
+    
+    # Get attention weights and curvature-specific representations
+    _, attention_info = self.encode(
+        features,
+        edge_index,
+        edge_curvature,
+        return_attention=True
+    )
+    
+    probs = torch.sigmoid(logits)
+    pred = (probs > 0.5).long()
+    
+    # Identify false positives (predicted as driver but labeled as non-driver)
+    mask_tensor = torch.tensor(mask, dtype=torch.bool).to(device) if isinstance(mask, np.ndarray) else mask
+    pred_tensor = torch.tensor(pred).to(device) if isinstance(pred, np.ndarray) else pred
+    labels_tensor = torch.tensor(labels).to(device) if isinstance(labels, np.ndarray) else labels
+
+    fp_mask = mask_tensor & (pred_tensor == 1) & (labels_tensor == 0)       
+    
+    fp_indices = torch.where(fp_mask)[0]
+    
+    # Filter based on high confidence
+    high_conf_mask = probs > confidence_threshold
+    candidate_mask = fp_mask & high_conf_mask
+    
+    # Compute per-node curvature statistics
+    node_curvature_stats = self.compute_node_curvature_features(
+        edge_index, edge_curvature, features.shape[0]
+    )
+    
+    # Apply curvature threshold
+    curv_mask = node_curvature_stats['mean_curvature'] > curvature_threshold
+    candidate_mask = candidate_mask & curv_mask
+    
+    # Apply additional feature criteria if provided
+    if feature_criteria is not None and feature_names:
+        for feat_name, (feat_idx, min_val) in feature_criteria.items():
+            feat_mask = features[:, feat_idx] > min_val
+            candidate_mask = candidate_mask & feat_mask
+            
+    # Get final potential driver candidates
+    potential_indices = torch.where(candidate_mask)[0]
+    
+    # Compute scores and reasons for each candidate
+    scores = []
+    reasons = []
+    detailed_features = []
+    
+    for idx in potential_indices:
+        idx_item = idx.item()
+        
+        conf = probs[idx].item()
+        
+        # Curvature features
+        curv_features = {
+            'mean_curvature': node_curvature_stats['mean_curvature'][idx].item(),
+            'positive_ratio': node_curvature_stats['positive_ratio'][idx].item(),
+            'negative_ratio': node_curvature_stats['negative_ratio'][idx].item()
+        }
+        
+        # Extract important node features
+        node_features = {}
+        important_features = [
+            'ppin_hub', 'ppin_degree', 'ppin_betweenness',
+            'essentiality_percentage', 'complexes', 'mirna'
+        ]
+        
+        for feat_name in important_features:
+            if feat_name in feature_names:
+                feat_idx = feature_names.index(feat_name)
+                node_features[feat_name] = features[idx_item, feat_idx].item()
+        
+        # Attention weights (which curvature types are important)
+        cross_attn = attention_info['cross_curvature_attention'][idx]
+        curv_importance = {
+            curv_type: cross_attn[i].item()
+            for i, curv_type in enumerate(self.curvature_types)
+        }
+        
+        reason_parts = []
+        reason_parts.append(f"High confidence: {conf:.3f}")
+        
+        if curv_features['mean_curvature'] > 0:
+            reason_parts.append(f"Positive curvature: {curv_features['mean_curvature']:.3f}")
+        
+        if 'ppin_hub' in node_features and node_features['ppin_hub'] > 0.5:
+            reason_parts.append("Hub protein")
+        
+        if 'essentiality_percentage' in node_features and node_features['essentiality_percentage'] > 0.3:
+            reason_parts.append(f"Essential: {node_features['essentiality_percentage']:.3f}")
+        
+        # Dominant curvature pathway
+        dominant_curv = max(curv_importance.items(), key=lambda x: x[1])
+        reason_parts.append(f"Dominant: {dominant_curv[0]} curvature")
+        
+        scores.append(conf)
+        reasons.append("; ".join(reason_parts))
+        detailed_features.append({
+            'confidence': conf,
+            'curvature': curv_features,
+            'node_features': node_features,
+            'curvature_importance': curv_importance
+        })
+    
+    # Get node names
+    node_names = data.get('node_name', None)
+    if node_names is not None:
+        potential_names = [node_names[idx] for idx in potential_indices]
+    else:
+        potential_names = [f"Node_{idx.item()}" for idx in potential_indices]
+    
+    return {
+        'potential_driver_mask': candidate_mask,
+        'potential_driver_indices': potential_indices,
+        'scores': torch.tensor(scores),
+        'reasons': reasons,
+        'detailed_features': detailed_features,
+        'total_false_positives': fp_indices.shape[0],
+        'num_potential_drivers': potential_indices.shape[0],
+        'node_names': potential_names
+    }
+
+# Deprecated Helper function for the previous classification method
+
+def compute_node_curvature_features(
+    self,
+    edge_index: torch.Tensor,
+    edge_curvature: torch.Tensor,
+    num_nodes: int
+) -> Dict[str, torch.Tensor]:
+    """
+    Compute curvature-based features for each node
+    """
+    # Initialize
+    mean_curvature = torch.zeros(num_nodes, device=edge_index.device)
+    positive_ratio = torch.zeros(num_nodes, device=edge_index.device)
+    negative_ratio = torch.zeros(num_nodes, device=edge_index.device)
+    degree = torch.zeros(num_nodes, device=edge_index.device)
+    
+    # Aggregate curvature for each node
+    for i in range(edge_index.shape[1]):
+        src, dst = edge_index[0, i], edge_index[1, i]
+        curv = edge_curvature[i]
+        
+        mean_curvature[src] += curv
+        mean_curvature[dst] += curv
+        
+        degree[src] += 1
+        degree[dst] += 1
+        
+        if curv > 0:
+            positive_ratio[src] += 1
+            positive_ratio[dst] += 1
+        elif curv < 0:
+            negative_ratio[src] += 1
+            negative_ratio[dst] += 1
+    
+    # Normalize
+    valid_mask = degree > 0
+    mean_curvature[valid_mask] /= degree[valid_mask]
+    positive_ratio[valid_mask] /= degree[valid_mask]
+    negative_ratio[valid_mask] /= degree[valid_mask]
+    
+    return {
+        'mean_curvature': mean_curvature,
+        'positive_ratio': positive_ratio,
+        'negative_ratio': negative_ratio,
+        'degree': degree
+    }
+
+# Deprecated loss functions for classification
+
+def compute_classification_loss(
+    self,
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    mask: Optional[torch.Tensor] = None,
+    pos_weight: Optional[torch.Tensor] = None
+) -> torch.Tensor:
+    """
+    Compute weighted binary cross-entropy loss
+    
+    Args:
+        logits: [num_nodes] binary logits
+        labels: [num_nodes] with values {0, 1}
+        mask: [num_nodes] boolean mask for labeled nodes
+        pos_weight: Weight for positive class (driver genes)
+    """
+    if mask is not None:
+        logits = logits[mask]
+        labels = labels[mask].float()
+        
+    if pos_weight is not None:
+        loss = F.binary_cross_entropy_with_logits(
+            logits, labels, pos_weight=pos_weight
+        )
+    else:
+        loss = F.binary_cross_entropy_with_logits(
+            logits, labels
+        )
+        
+    return loss
+
+def compute_focal_loss(
+    self,
+    logits: torch.Tensor,
+    labels: torch.Tensor,
+    mask: Optional[torch.Tensor] = None,
+    alpha: float = 0.25,
+    gamma: float = 2.0
+) -> torch.Tensor:
+    """
+    Compute focal loss to handle class imbalance better than BCE
+    
+    Args:
+        logits: Model predictions
+        labels: Ground truth labels
+        mask: Optional node mask
+        alpha: Balancing factor
+        gamma: Focusing parameter
+    """
+    if mask is not None:
+        logits = logits[mask]
+        labels = labels[mask].float()
+    
+    # Compute probabilities
+    probs = torch.sigmoid(logits)
+    
+    # Compute focal loss
+    ce_loss = F.binary_cross_entropy_with_logits(
+        logits, labels, reduction='none'
+    )
+    
+    p_t = probs * labels + (1 - probs) * (1 - labels)
+    focal_weight = (1 - p_t) ** gamma
+    
+    if alpha >= 0:
+        alpha_t = alpha * labels + (1 - alpha) * (1 - labels)
+        focal_weight = alpha_t * focal_weight
+    
+    loss = (focal_weight * ce_loss).mean()
+    
+    return loss
+'''
