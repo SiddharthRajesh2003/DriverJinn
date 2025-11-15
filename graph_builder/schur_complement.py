@@ -46,7 +46,9 @@ class SchurComplementAugmentation:
     def augment(self, 
                 G: nx.Graph, 
                 node_features: Optional[torch.Tensor] = None, 
-                edge_weights: Optional[Dict] = None
+                edge_weights: Optional[Dict] = None,
+                node_names: Optional[List] = None,
+                labels: Optional[torch.Tensor] = None
             ):
         """
     Generate augmented view of the graph using Schur complement method
@@ -68,7 +70,7 @@ class SchurComplementAugmentation:
     """
     
         if self.elimination_strategy == 'priority':
-            return self.augment_priority(G, node_features, edge_weights)
+            return self.augment_priority(G, node_features, edge_weights, node_names, labels)
         
         elif self.elimination_strategy == 'random':
             return self.augment_random(G, node_features, edge_weights)
@@ -82,8 +84,10 @@ class SchurComplementAugmentation:
         self,
         G: nx.Graph,
         node_features: Optional[torch.Tensor] = None,
-        edge_weights: Optional[Dict] = None
-    ) -> Tuple[nx.Graph, Optional[torch.Tensor], Dict]:
+        edge_weights: Optional[Dict] = None,
+        node_names: Optional[List] = None,  
+        labels: Optional[torch.Tensor] = None 
+    ) -> Tuple[nx.Graph, Optional[torch.Tensor], Optional[torch.Tensor], Dict]:
         """
         Priority-based elimination (PriorityPreconditioner from C++)
         Eliminates nodes in order of degree (lowest first)
@@ -92,9 +96,18 @@ class SchurComplementAugmentation:
         G_aug = G.copy()
         num_nodes = G.number_of_nodes()
         elimination_count = int(self.elimination_ratio * num_nodes)
-        node_features = node_features.numpy()
+        
+        # Convert to numpy if needed
+        if node_features is not None:
+            node_features = node_features.numpy() if isinstance(node_features, torch.Tensor) else node_features
+        if labels is not None:
+            labels = labels.numpy() if isinstance(labels, torch.Tensor) else labels
+        if node_names is not None:
+            node_names = node_names if isinstance(node_names, np.ndarray) else np.array(node_names)
         
         logger.info(f"Priority augmentation: {num_nodes} nodes, eliminating {elimination_count} nodes")
+        
+        node_id_to_name_original = self.create_node_name_mapping(G, node_names, 'priority')
         
         if edge_weights is None:
             edge_weights = {(u, v): G_aug[u][v].get('weight', 1.0) for u, v in G_aug.edges()}
@@ -161,6 +174,11 @@ class SchurComplementAugmentation:
         if cleaned_count > 0:
             logger.warning(f"Priority: Force cleaned {cleaned_count} nodes that weren't properly eliminated")
         
+        # Verify Node Name mapping after augmentation
+        node_id_to_name_aug = self.verify_node_name_mapping(
+            node_id_to_name_original, G_aug, eliminated_nodes, 'priority'
+        )
+        
         # Get final node mapping (use graph as source of truth)
         nodes = list(G.nodes())
         final_node_list, node_mapping = self.get_final_node_mapping(
@@ -173,12 +191,20 @@ class SchurComplementAugmentation:
         )
         
         augmented_features = None
-        if node_features is not None:
-            # Align features with actual graph nodes
-            augmented_features = self.align_features_with_graph(
-                node_features, nodes, final_node_list, 'priority'
+        augmented_labels = None
+        augmented_node_names = None
+        
+        if node_features is not None and node_names is not None:
+            if labels is None:
+                logger.warning("Labels not provided - features will be aligned but labels won't match")
+                labels = np.zeros(len(node_names), dtype = np.int64)
+                
+            augmented_features, augmented_labels, augmented_node_names = self.align_feature_labels_with_names(
+                node_features, labels, node_names, final_node_list, 'priority'
             )
-            augmented_features = torch.from_numpy(augmented_features)
+            
+            augmented_features = torch.from_numpy(augmented_features, dtype = torch.float)
+            augmented_labels = torch.from_numpy(augmented_labels, dtype = torch.float)
             
         metadata = {
             'original_nodes': num_nodes,
@@ -187,11 +213,14 @@ class SchurComplementAugmentation:
             'final_node_list': final_node_list,
             'node_mapping': node_mapping,
             'eliminated_nodes': len(eliminated_nodes),
-            'original_edges': G_aug.number_of_edges(),
+            'original_edges': G.number_of_edges(),
             'added_edges': len(added_edges),
             'avg_clique_size': np.mean(clique_sizes) if clique_sizes else 0,
             'eliminated_node_ids': eliminated_nodes,
-            'strategy': 'priority'
+            'strategy': 'priority',
+            'node_id_to_name': node_id_to_name_aug,
+            'augmented_node_names': augmented_node_names,
+            'augmented_labels': augmented_labels
         }
         
         self.verify_no_synthetic_nodes(G, G_aug, eliminated_nodes, 'priority')
@@ -199,14 +228,16 @@ class SchurComplementAugmentation:
         logger.info(f"Priority augmentation complete: {metadata['original_nodes']} → "
                     f"{metadata['augmented_nodes']} nodes")
         
-        return G_aug, augmented_features, metadata
+        return G_aug, augmented_features, augmented_labels, metadata
     
     def augment_random(
         self, 
         G: nx.Graph,
         node_features: Optional[torch.Tensor],
-        edge_weights: Optional[Dict]
-    ) -> Tuple[nx.Graph, Optional[torch.Tensor], Dict]:
+        edge_weights: Optional[Dict],
+        node_names: Optional[List] = None,  # ← ADD
+        labels: Optional[torch.Tensor] = None  # ← ADD
+    ) -> Tuple[nx.Graph, Optional[torch.Tensor], Optional[torch.Tensor], Dict]:
         """
         Random elimination (RandomPreconditioner from C++)
         Eliminates nodes in random order
@@ -215,9 +246,17 @@ class SchurComplementAugmentation:
         G_aug = G.copy()
         num_nodes = G_aug.number_of_nodes()
         elimination_count = int(self.elimination_ratio * num_nodes)
-        node_features = node_features.numpy()
+        # Convert to numpy if needed
+        if node_features is not None:
+            node_features = node_features.numpy() if isinstance(node_features, torch.Tensor) else node_features
+        if labels is not None:
+            labels = labels.numpy() if isinstance(labels, torch.Tensor) else labels
+        if node_names is not None:
+            node_names = node_names if isinstance(node_names, np.ndarray) else np.array(node_names)
         
         logger.info(f"Random augmentation: {num_nodes} nodes, eliminating {elimination_count} nodes")
+        
+        node_id_to_name_original = self.create_node_name_mapping(G, node_names, 'random')
         
         if edge_weights is None:
             edge_weights = {(u, v): G_aug[u][v].get('weight', 1.0) for u, v in G_aug.edges()}
@@ -272,6 +311,11 @@ class SchurComplementAugmentation:
         if cleaned_count > 0:
             logger.warning(f"Random: Force cleaned {cleaned_count} nodes that weren't properly eliminated")
         
+        # Verify Node Name mapping after augmentation
+        node_id_to_name_aug = self.verify_node_name_mapping(
+            node_id_to_name_original, G_aug, eliminated_nodes, 'random'
+        )
+        
         # Get final node mapping (use graph as source of truth)
         nodes = list(G.nodes())
         final_node_list, node_mapping = self.get_final_node_mapping(
@@ -284,12 +328,20 @@ class SchurComplementAugmentation:
         )
         
         augmented_features = None
-        if node_features is not None:
-            # Align features with actual graph nodes
-            augmented_features = self.align_features_with_graph(
-                node_features, nodes, final_node_list, 'random'
+        augmented_labels = None
+        augmented_node_names = None
+        
+        if node_features is not None and node_names is not None:
+            if labels is None:
+                logger.warning("Labels not provided - features will be aligned but labels won't match")
+                labels = np.zeros(len(node_names), dtype = np.int64)
+                
+            augmented_features, augmented_labels, augmented_node_names = self.align_feature_labels_with_names(
+                node_features, labels, node_names, final_node_list, 'priority'
             )
-            augmented_features = torch.from_numpy(augmented_features)
+            
+            augmented_features = torch.from_numpy(augmented_features, dtype = torch.float)
+            augmented_labels = torch.from_numpy(augmented_labels, dtype = torch.float)
         
         metadata = {
             'original_nodes': num_nodes,
@@ -298,23 +350,28 @@ class SchurComplementAugmentation:
             'final_node_list': final_node_list,
             'node_mapping': node_mapping,
             'eliminated_nodes': len(eliminated_nodes),
-            'original_edges': G_aug.number_of_edges(),
+            'original_edges': G.number_of_edges(),
             'added_edges': len(added_edges),
             'avg_clique_size': np.mean(clique_sizes) if clique_sizes else 0,
             'eliminated_node_ids': eliminated_nodes,
-            'strategy': 'random'
+            'strategy': 'priority',
+            'node_id_to_name': node_id_to_name_aug,
+            'augmented_node_names': augmented_node_names,
+            'augmented_labels': augmented_labels
         }
         
         self.verify_no_synthetic_nodes(G, G_aug, eliminated_nodes, 'random')
         
         logger.info(f'Random Augmentation Complete')
-        return G_aug, augmented_features, metadata
+        return G_aug, augmented_features, augmented_labels, metadata
     
     def augment_coarsening(
         self,
         G: nx.Graph,
         node_features: Optional[torch.Tensor] = None,
-        edge_weights: Optional[Dict] = None
+        edge_weights: Optional[Dict] = None,
+        node_names: Optional[List] = None,  # ← ADD
+        labels: Optional[torch.Tensor] = None  # ← ADD
     ) -> Tuple[nx.Graph, Optional[torch.Tensor], Dict]:
         """
         Coarsening-based elimination (CoarseningPreconditioner from C++)
@@ -326,7 +383,18 @@ class SchurComplementAugmentation:
         elimination_count = int(self.elimination_ratio * num_nodes)
         node_features = node_features.numpy()
         
+        # Convert to numpy if needed
+        if node_features is not None:
+            node_features = node_features.numpy() if isinstance(node_features, torch.Tensor) else node_features
+        if labels is not None:
+            labels = labels.numpy() if isinstance(labels, torch.Tensor) else labels
+        if node_names is not None:
+            node_names = node_names if isinstance(node_names, np.ndarray) else np.array(node_names)
+        
         logger.info(f"Coarsening augmentation: {num_nodes} nodes, eliminating {elimination_count} nodes")
+        
+        node_id_to_name_original = self.create_node_name_mapping(G, node_names, 'random')
+        
         if edge_weights is None:
             edge_weights = {(u, v): G_aug[u][v].get('weight', 1.0) for u, v in G_aug.edges()}
             
@@ -399,6 +467,11 @@ class SchurComplementAugmentation:
         if cleaned_count > 0:
             logger.warning(f"Coarsening: Force cleaned {cleaned_count} nodes that weren't properly eliminated")
         
+        # Verify Node Name mapping after augmentation
+        node_id_to_name_aug = self.verify_node_name_mapping(
+            node_id_to_name_original, G_aug, eliminated_nodes, 'coarsening'
+        )
+        
         # Get final node mapping (use graph as source of truth)
         nodes = list(G.nodes())
         final_node_list, node_mapping = self.get_final_node_mapping(
@@ -411,12 +484,20 @@ class SchurComplementAugmentation:
         )
         
         augmented_features = None
-        if node_features is not None:
-            # Align features with actual graph nodes
-            augmented_features = self.align_features_with_graph(
-                node_features, nodes, final_node_list, 'coarsening'
+        augmented_labels = None
+        augmented_node_names = None
+        
+        if node_features is not None and node_names is not None:
+            if labels is None:
+                logger.warning("Labels not provided - features will be aligned but labels won't match")
+                labels = np.zeros(len(node_names), dtype = np.int64)
+                
+            augmented_features, augmented_labels, augmented_node_names = self.align_feature_labels_with_names(
+                node_features, labels, node_names, final_node_list, 'priority'
             )
-            augmented_features = torch.from_numpy(augmented_features)
+            
+            augmented_features = torch.from_numpy(augmented_features, dtype = torch.float)
+            augmented_labels = torch.from_numpy(augmented_labels, dtype = torch.float)
         
         metadata = {
             'original_nodes': num_nodes,
@@ -429,7 +510,10 @@ class SchurComplementAugmentation:
             'original_edges': G.number_of_edges(),
             'augmented_edges': G_aug.number_of_edges(),
             'collapsed_mapping': collapsed_mapping,
-            'strategy': 'coarsening'
+            'strategy': 'coarsening',
+            'node_id_to_name': node_id_to_name_aug,
+            'augmented_node_names': augmented_node_names,
+            'augmented_labels': augmented_labels
         }
         
         self.verify_no_synthetic_nodes(G, G_aug, eliminated_nodes, 'coarsening')
@@ -597,68 +681,6 @@ class SchurComplementAugmentation:
         
         return clique_edges, clique_weights
     
-    def update_node_features_coarsened(
-        self,
-        features: np.ndarray,
-        original_nodes: List[int],
-        eliminated_nodes: List[int],
-        collapsed_mapping: Dict,
-        G_aug: nx.Graph
-    ) -> np.ndarray:
-        """
-        Update features for coarsening strategy
-        Features of collapsed nodes are aggregated into their targets
-        """
-        # CRITICAL: Use actual nodes from augmented graph
-        aug_nodes = sorted(G_aug.nodes())
-        num_aug_nodes = len(aug_nodes)
-        feature_dim = features.shape[1]
-        
-        logger.info(f"Updating coarsened features: {len(original_nodes)} original -> {num_aug_nodes} augmented")
-        
-        # Create mapping from original node IDs to feature indices
-        node_to_idx = {node: idx for idx, node in enumerate(original_nodes)}
-        
-        # Check for new nodes
-        original_node_set = set(original_nodes)
-        new_nodes = [n for n in aug_nodes if n not in original_node_set]
-        
-        if new_nodes:
-            logger.warning(f"Found {len(new_nodes)} NEW nodes in augmented graph!")
-        
-        # Initialize feature matrix for augmented graph
-        augmented_features = np.zeros((num_aug_nodes, feature_dim))
-        aug_node_to_idx = {node: idx for idx, node in enumerate(aug_nodes)}
-        
-        # Copy base features for nodes that existed originally
-        for node in aug_nodes:
-            if node in node_to_idx:
-                new_idx = aug_node_to_idx[node]
-                old_idx = node_to_idx[node]
-                augmented_features[new_idx] = features[old_idx].copy()
-        
-        # Aggregate collapsed node features into their targets
-        for v_i, target in collapsed_mapping.items():
-            if v_i not in node_to_idx:
-                continue
-            
-            # Check if target still exists in augmented graph
-            if target not in aug_node_to_idx:
-                logger.warning(f"Collapse target {target} not in augmented graph")
-                continue
-            
-            idx_i = node_to_idx[v_i]
-            idx_target = aug_node_to_idx[target]
-            
-            augmented_features[idx_target] += features[idx_i]
-        
-        # Final verification
-        if augmented_features.shape[0] != num_aug_nodes:
-            logger.error(f"Feature shape mismatch in coarsening: {augmented_features.shape[0]} != {num_aug_nodes}")
-            raise ValueError("Feature-graph node count mismatch in coarsening!")
-        
-        return augmented_features
-    
     def sort_neighbours(
         self,
         G: nx.Graph,
@@ -692,212 +714,12 @@ class SchurComplementAugmentation:
             logger.warning(f"Unknown sort method '{self.neighbor_sort_method}', using degree")
             return sorted(neighbours, key=lambda n: G.degree(n))
     
-    def build_approximate_clique(
-        self,
-        G: nx.Graph,
-        v_i: int,
-        sorted_neighbours: List[int],
-        edge_weights: Dict
-    ) -> Tuple[List[Tuple[int, int]], List[float]]:
-        """
-        Build approximate clique among neighbors of v_i
-        
-        For each pair of neighbors (v_a, v_b), compute conditional probability
-        and add weighted edge to form clique approximation.
-        
-        Returns:
-            clique_edges: List of edge tuples
-            clique_weights: List of corresponding weights
-        """
-        
-        clique_edges = []
-        clique_weights = []
-        
-        n_neighbours = len(sorted_neighbours)
-        if n_neighbours < 2:
-            return clique_edges, clique_weights
-        
-        for a in range(n_neighbours - 1):
-            v_a = sorted_neighbours[a]
-            
-            edge_ia = (v_i, v_a) if (v_i, v_a) in edge_weights else (v_a, v_i)
-            w_ia = edge_weights.get(edge_ia, 1.0)
-            
-            best_b = a + 1
-            best_prob = -float('inf')
-            
-            for b in range(a+1, n_neighbours):
-                v_b = sorted_neighbours[b]
-                
-                edge_ib = (v_i, v_b) if (v_i, v_b) in edge_weights else (v_b, v_i)
-                w_ib = edge_weights.get(edge_ib, 1.0)
-                
-                # Compute conditional probability P(v_b | v_a)
-                # Using weight-based probability: higher weights = higher probability
-                conditional_prob = self.calculate_conditional_probability(
-                    G, v_a, v_b, w_ia, w_ib, edge_weights
-                )
-                
-                if conditional_prob > best_prob:
-                    best_prob = conditional_prob
-                    best_b = b
-            
-            v_b = sorted_neighbours[best_b]
-            
-            edge_ib = (v_i, v_b) if (v_i, v_b) in edge_weights else (v_b, v_i)
-            w_ib = edge_weights.get(edge_ib, 1.0)
-            
-            # Compute new edge weight: w_ab = w_ia * w_ib / degree(v_i)
-            # This approximates the Schur complement contribution
-            degree_i = G.degree(v_i)
-            w_ab = (w_ia * w_ib) / max(degree_i, 1.0)
-            
-            edge_ab = (v_a, v_b) if v_a < v_b else (v_b, v_a)
-            clique_edges.append(edge_ab)
-            clique_weights.append(w_ab)
-            
-        return clique_edges, clique_weights
-    
-    def calculate_conditional_probability(
-        self,
-        G: nx.Graph,
-        v_a: int,
-        v_b: int,
-        w_ia: float,
-        w_ib: float,
-        edge_weights: Dict
-    ) -> float:
-        """
-        Compute conditional probability P(v_b | v_a) for clique approximation
-        
-        Uses combination of:
-        - Weight similarity
-        - Degree similarity
-        - Existing connection strength
-        """
-        # Weight based component
-        weight_component = w_ia * w_ib
-        
-        # Degree based component
-        deg_a = G.degree(v_a)
-        deg_b = G.degree(v_b)
-        degree_similarity = 1.0 / (1.0 + abs(deg_a - deg_b))
-        
-        edge_ab = (v_a, v_b) if (v_a, v_b) in edge_weights else (v_b, v_a)
-        existing_weight = edge_weights.get(edge_ab, 1.0)
-        
-        conditional_prob = (
-            0.5 * weight_component +
-            0.3 * degree_similarity +
-            0.2 * existing_weight
-        )
-        
-        return conditional_prob
-    
-    def update_node_features(
-        self,
-        features: np.ndarray,
-        original_nodes: List[int],
-        eliminated_nodes: List[int],
-        G_aug: nx.Graph
-    ) -> np.ndarray:
-        """
-        Update node features after augmentation
-        
-        CRITICAL FIX: Ensures feature matrix dimensions match augmented graph nodes
-        
-        Args:
-            features: Original feature matrix [num_original_nodes, feature_dim]
-            original_nodes: List of original node IDs (from G.nodes())
-            eliminated_nodes: List of eliminated node IDs
-            G_aug: Augmented graph after elimination
-            
-        Returns:
-            augmented_features: Feature matrix [num_remaining_nodes, feature_dim]
-        """
-        
-        # CRITICAL: Use actual nodes from augmented graph as source of truth
-        aug_nodes = sorted(G_aug.nodes())
-        num_aug_nodes = len(aug_nodes)
-        feature_dim = features.shape[1]
-        
-        logger.info(f"Updating features: {len(original_nodes)} original -> {num_aug_nodes} augmented")
-        
-        # Create mapping from original node IDs to feature indices
-        node_to_feat_idx = {node: idx for idx, node in enumerate(original_nodes)}
-        
-        # Initialize feature matrix for augmented graph
-        augmented_features = np.zeros((num_aug_nodes, feature_dim))
-        
-        # Map augmented nodes to new indices
-        aug_node_to_idx = {node: idx for idx, node in enumerate(aug_nodes)}
-        
-        # Identify which augmented nodes were in the original graph
-        original_node_set = set(original_nodes)
-        new_nodes = [n for n in aug_nodes if n not in original_node_set]
-        
-        if new_nodes:
-            logger.warning(f"Found {len(new_nodes)} NEW nodes in augmented graph that weren't in original!")
-            logger.warning(f"Sample new nodes: {new_nodes[:10]}")
-        
-        if not self.preserve_features:
-            # Simple approach: copy features for nodes that existed originally
-            for node in aug_nodes:
-                if node in node_to_feat_idx:
-                    new_idx = aug_node_to_idx[node]
-                    old_idx = node_to_feat_idx[node]
-                    augmented_features[new_idx] = features[old_idx]
-                else:
-                    # New node created during augmentation - use zero features
-                    new_idx = aug_node_to_idx[node]
-                    augmented_features[new_idx] = np.zeros(feature_dim)
-                    
-        else:
-            # Sophisticated approach: aggregate eliminated features into neighbors
-            # Step 1: Copy base features for nodes that existed originally
-            for node in aug_nodes:
-                if node in node_to_feat_idx:
-                    new_idx = aug_node_to_idx[node]
-                    old_idx = node_to_feat_idx[node]
-                    augmented_features[new_idx] = features[old_idx].copy()
-                else:
-                    # New node - initialize with zeros
-                    new_idx = aug_node_to_idx[node]
-                    augmented_features[new_idx] = np.zeros(feature_dim)
-            
-            # Step 2: Distribute eliminated node features to their neighbors in G_aug
-            for v_i in eliminated_nodes:
-                if v_i not in node_to_feat_idx:
-                    continue
-                
-                old_idx = node_to_feat_idx[v_i]
-                feature_i = features[old_idx]
-                
-                # Find neighbors of v_i in the ORIGINAL graph that still exist in G_aug
-                # These are the nodes that should receive the eliminated features
-                target_nodes = [n for n in aug_nodes if n in original_node_set and n != v_i]
-                
-                # Distribute eliminated features proportionally
-                if len(target_nodes) > 0:
-                    contribution = feature_i / len(target_nodes)
-                    for target in target_nodes:
-                        if target in aug_node_to_idx:
-                            target_idx = aug_node_to_idx[target]
-                            augmented_features[target_idx] += contribution
-        
-        # Final verification
-        if augmented_features.shape[0] != num_aug_nodes:
-            logger.error(f"Feature shape mismatch: {augmented_features.shape[0]} != {num_aug_nodes}")
-            raise ValueError("Feature-graph node count mismatch after update!")
-        
-        logger.info(f"Feature update complete: {augmented_features.shape}")
-        return augmented_features
-        
     def verify_feature_graph_consistency(
         self,
         G_aug: nx.Graph,
         features: np.ndarray,
-        node_list: List[int]
+        node_list: List[int],
+        node_names: Optional[List[str]]
     ) -> bool:
         """
         Verify that feature dimensions match graph structure
@@ -915,6 +737,11 @@ class SchurComplementAugmentation:
         n_node_list = len(node_list)
         
         consistent = (n_graph_nodes == n_feature_rows == n_node_list)
+        
+        if node_names is not None:
+            if len(node_names) != n_feature_rows:
+                logger.error(f"Node names length ({len(node_names)}) != feature rows ({n_feature_rows})")
+                consistent = False
         
         if not consistent:
             logger.error(f"Inconsistency detected:")
@@ -1078,21 +905,7 @@ class SchurComplementAugmentation:
         
         logger.info(f"Force cleanup complete: removed {cleaned_count} nodes")
         return G_aug, cleaned_count
-    
-    def remove_isolated_nodes(
-        self,
-        G_aug: nx.Graph,
-        strategy: str
-    ) -> Tuple[nx.Graph, List[int]]:
-        """
-        DEPRECATED: Do not use - removes nodes beyond intended elimination ratio.
-        This can cause information loss and interfere with k-fold CV.
-        
-        Use get_final_node_mapping() instead to align features with graph nodes.
-        """
-        logger.warning(f"[{strategy}] remove_isolated_nodes is deprecated - use get_final_node_mapping instead")
-        return G_aug, []
-    
+
     def get_final_node_mapping(
         self,
         G_original: nx.Graph,
@@ -1390,3 +1203,476 @@ class SchurComplementAugmentation:
         if node_features is not None:
             x = torch.tensor(node_features, dtype=torch.float)
         return edge_index, edge_weights, x
+
+    def create_node_name_mapping(
+        self,
+        G:nx.Graph,
+        node_names: List[str],
+        strategy: str
+    ) -> Dict[int, str]:
+        """
+        Create explicit node_id -> node_name mapping before augmentation.
+        This ensures we can track which names correspond to which indices.
+        
+        Args:
+            G: Original graph
+            node_names: List of node names (must match G.nodes() order)
+            strategy: Augmentation strategy name
+            
+        Returns:
+            node_id_to_name: Dict mapping node IDs to names
+        """
+        
+        nodes = list(G.nodes())
+        
+        if node_names is None:
+            logger.warning(f"[{strategy}] No node names provided - using node IDs as names")
+            return {node: f"Node_{node}" for node in nodes}
+        
+        if len(node_names) != len(nodes):
+            logger.error(
+            f"[{strategy}] Node names length ({len(node_names)}) != "
+            f"graph nodes ({len(nodes)})"
+            )
+            raise ValueError("Node names and graph nodes count mismatch!")
+        
+        # node_names should already be List[str], but verify
+        if not isinstance(node_names, list):
+            logger.warning(f"[{strategy}] node_names is {type(node_names)}, expected list")
+            if isinstance(node_names, (np.ndarray, torch.Tensor)):
+                node_names = list(node_names) if isinstance(node_names, np.ndarray) else node_names.tolist()
+            else:
+                node_names = list(node_names)
+        
+        # Create Mapping
+        node_id_to_name = {node_id: name for node_id, name  in zip(nodes, node_names)}
+        
+        known_genes = ['TP53', 'KRAS', 'PIK3CA']
+        for gene in known_genes:
+            if gene in node_names:
+                idx = node_names.index(gene)
+                node_id = nodes[idx]
+                mapped_name = node_id_to_name[node_id]
+                if mapped_name != gene:
+                    logger.error(
+                        f"[{strategy}] Mapping error: {gene} at index {idx} "
+                        f"(node_id={node_id}) maps to '{mapped_name}'"
+                    )
+                    raise ValueError(f"Node name mapping validation failed for {gene}")
+        
+        logger.info(f"[{strategy}] Created node name mapping for {len(nodes)} nodes")
+        return node_id_to_name
+    
+    def verify_node_name_mapping(
+        self,
+        node_id_to_name_original: Dict[int, str],
+        G_aug: nx.Graph,
+        eliminated_nodes: List[int],
+        strategy: str
+    ) -> Dict[int, str]:
+        """
+        Verify node names are still correctly mapped after augmentation.
+        
+        Args:
+            node_id_to_name_original: Original node ID -> name mapping
+            G_aug: Augmented graph
+            eliminated_nodes: List of eliminated node IDs
+            strategy: Augmentation strategy name
+            
+        Returns:
+            node_id_to_name_aug: Validated mapping for augmented graph
+        """
+        
+        aug_nodes = set(G_aug.nodes())
+        eliminated_set = set(eliminated_nodes)
+        
+        #  Create augmented mapping (exclude eliminated nodes)
+        
+        node_id_to_name_aug = {
+            node_id: name
+                for node_id, name in node_id_to_name_original.items()
+                if node_id in aug_nodes and node_id not in eliminated_set
+        }
+        
+        # Verify no eliminated nodes are in augmented graph
+        for node_id in eliminated_set:
+            if node_id in aug_nodes:
+                logger.error(
+                    f"[{strategy}] Eliminated node {node_id} "
+                    f"('{node_id_to_name_original.get(node_id, 'UNKNOWN')}') still in graph!"
+                )
+                raise ValueError(f"Eliminated node {node_id} still present after augmentation")
+        
+        # Verify all augmented nodes have names
+        for node_id in aug_nodes:
+            if node_id not in node_id_to_name_aug:
+                logger.error(
+                    f"[{strategy}] Augmented graph has node {node_id} with no name mapping!"
+                )
+                raise ValueError(f"Node {node_id} in augmented graph has no name")
+        
+        logger.info(f"[{strategy}] Verified node name mapping for {len(node_id_to_name_aug)} augmented nodes")
+        return node_id_to_name_aug
+    
+    def align_feature_labels_with_names(
+        self,
+        features: np.ndarray,
+        labels: np.ndarray,
+        node_names: List[str],
+        node_id_to_name_aug: Dict[int, str],
+        final_node_list: List[int],
+        strategy: str
+    ) -> Tuple[np.ndarray, np.ndarray, List[str]]:
+        """
+        Align features and labels using node names as the source of truth.
+        This ensures labels match features correctly after augmentation.
+        
+        Args:
+            features: Original feature matrix [num_original, feature_dim]
+            labels: Original labels [num_original]
+            node_names: Original node names [num_original]
+            node_id_to_name_aug: Mapping from augmented node IDs to names
+            final_node_list: Ordered list of node IDs in augmented graph
+            strategy: Augmentation strategy name
+            
+        Returns:
+            aligned_features: [num_augmented, feature_dim]
+            aligned_labels: [num_augmented]
+            aligned_names: [num_augmented]
+        """
+        
+        # Handle both list and array formats for node_names
+        if isinstance(node_names, np.ndarray):
+            node_names_list = node_names.tolist()
+        elif isinstance(node_names, list):
+            node_names_list = node_names
+        else:
+            # Try to convert any iterable
+            node_names_list = list(node_names)
+            
+        name_to_data = {}
+        for i, name in enumerate(node_names_list):
+            name_to_data[name] = {
+                'feature': features[i],
+                'label': labels[i],
+                'original_index': i
+            }
+        
+        #  Align data for augmented graph using names
+        num_aug = len(final_node_list)
+        feature_dim = features.shape[1]
+        
+        aligned_features = np.zeros((num_aug, feature_dim))
+        aligned_labels = np.zeros((num_aug), dtype=labels.dtype)
+        aligned_names = []
+        
+        missing_names = []
+        
+        for i, node_id in enumerate(final_node_list):
+            # Get Node name for this node id
+            name = node_id_to_name_aug.get(node_id)
+            
+            if name is None:
+                logger.error(f"[{strategy}] Node ID {node_id} has no name mapping!")
+                raise ValueError(f"Node {node_id} has no name")
+            
+            if name not in name_to_data:
+                logger.warning(f"[{strategy}] Name '{name}' (node {node_id}) not in original data")
+                missing_names.append(name)
+
+                # Use zeros for features and -100 for label
+                
+                aligned_features[i] = np.zeros(feature_dim)
+                aligned_labels[i] = -100
+                aligned_names.append(name)
+            else:
+                data = name_to_data[name]
+                aligned_features = data['feature']
+                aligned_labels = data['label']
+                aligned_names.append(name)
+        
+        if missing_names:
+            logger.warning(f"[{strategy}] {len(missing_names)} names not found in original data: {missing_names[:10]}")
+        
+        # CRITICAL VALIDATION: Check known driver genes
+        known_drivers = ['TP53', 'KRAS', 'PIK3CA']
+        for gene in known_drivers:
+            if gene in aligned_names:
+                idx = aligned_names.index(gene)
+                label = aligned_labels[idx]
+                if label != 1 and label != -100:  # -100 is OK (missing), 0 is NOT
+                    logger.error(
+                        f"[{strategy}] CRITICAL: {gene} has incorrect label {label} after alignment!"
+                    )
+                    raise ValueError(f"{gene} has wrong label after alignment: {label}")
+                elif label == 1:
+                    logger.info(f"[{strategy}] ✓ {gene} correctly labeled as driver (label=1)")
+        
+        logger.info(f"[{strategy}] Aligned features, labels, and names for {num_aug} nodes")
+        
+        return aligned_features, aligned_labels, aligned_names  # Return list, not array
+
+
+    '''def update_node_features_coarsened(
+        self,
+        features: np.ndarray,
+        original_nodes: List[int],
+        eliminated_nodes: List[int],
+        collapsed_mapping: Dict,
+        G_aug: nx.Graph
+    ) -> np.ndarray:
+        """
+        Update features for coarsening strategy
+        Features of collapsed nodes are aggregated into their targets
+        """
+        # CRITICAL: Use actual nodes from augmented graph
+        aug_nodes = sorted(G_aug.nodes())
+        num_aug_nodes = len(aug_nodes)
+        feature_dim = features.shape[1]
+        
+        logger.info(f"Updating coarsened features: {len(original_nodes)} original -> {num_aug_nodes} augmented")
+        
+        # Create mapping from original node IDs to feature indices
+        node_to_idx = {node: idx for idx, node in enumerate(original_nodes)}
+        
+        # Check for new nodes
+        original_node_set = set(original_nodes)
+        new_nodes = [n for n in aug_nodes if n not in original_node_set]
+        
+        if new_nodes:
+            logger.warning(f"Found {len(new_nodes)} NEW nodes in augmented graph!")
+        
+        # Initialize feature matrix for augmented graph
+        augmented_features = np.zeros((num_aug_nodes, feature_dim))
+        aug_node_to_idx = {node: idx for idx, node in enumerate(aug_nodes)}
+        
+        # Copy base features for nodes that existed originally
+        for node in aug_nodes:
+            if node in node_to_idx:
+                new_idx = aug_node_to_idx[node]
+                old_idx = node_to_idx[node]
+                augmented_features[new_idx] = features[old_idx].copy()
+        
+        # Aggregate collapsed node features into their targets
+        for v_i, target in collapsed_mapping.items():
+            if v_i not in node_to_idx:
+                continue
+            
+            # Check if target still exists in augmented graph
+            if target not in aug_node_to_idx:
+                logger.warning(f"Collapse target {target} not in augmented graph")
+                continue
+            
+            idx_i = node_to_idx[v_i]
+            idx_target = aug_node_to_idx[target]
+            
+            augmented_features[idx_target] += features[idx_i]
+        
+        # Final verification
+        if augmented_features.shape[0] != num_aug_nodes:
+            logger.error(f"Feature shape mismatch in coarsening: {augmented_features.shape[0]} != {num_aug_nodes}")
+            raise ValueError("Feature-graph node count mismatch in coarsening!")
+        
+        return augmented_features
+        
+        def update_node_features(
+        self,
+        features: np.ndarray,
+        original_nodes: List[int],
+        eliminated_nodes: List[int],
+        G_aug: nx.Graph
+    ) -> np.ndarray:
+        """
+        Update node features after augmentation
+        
+        CRITICAL FIX: Ensures feature matrix dimensions match augmented graph nodes
+        
+        Args:
+            features: Original feature matrix [num_original_nodes, feature_dim]
+            original_nodes: List of original node IDs (from G.nodes())
+            eliminated_nodes: List of eliminated node IDs
+            G_aug: Augmented graph after elimination
+            
+        Returns:
+            augmented_features: Feature matrix [num_remaining_nodes, feature_dim]
+        """
+        
+        # CRITICAL: Use actual nodes from augmented graph as source of truth
+        aug_nodes = sorted(G_aug.nodes())
+        num_aug_nodes = len(aug_nodes)
+        feature_dim = features.shape[1]
+        
+        logger.info(f"Updating features: {len(original_nodes)} original -> {num_aug_nodes} augmented")
+        
+        # Create mapping from original node IDs to feature indices
+        node_to_feat_idx = {node: idx for idx, node in enumerate(original_nodes)}
+        
+        # Initialize feature matrix for augmented graph
+        augmented_features = np.zeros((num_aug_nodes, feature_dim))
+        
+        # Map augmented nodes to new indices
+        aug_node_to_idx = {node: idx for idx, node in enumerate(aug_nodes)}
+        
+        # Identify which augmented nodes were in the original graph
+        original_node_set = set(original_nodes)
+        new_nodes = [n for n in aug_nodes if n not in original_node_set]
+        
+        if new_nodes:
+            logger.warning(f"Found {len(new_nodes)} NEW nodes in augmented graph that weren't in original!")
+            logger.warning(f"Sample new nodes: {new_nodes[:10]}")
+        
+        if not self.preserve_features:
+            # Simple approach: copy features for nodes that existed originally
+            for node in aug_nodes:
+                if node in node_to_feat_idx:
+                    new_idx = aug_node_to_idx[node]
+                    old_idx = node_to_feat_idx[node]
+                    augmented_features[new_idx] = features[old_idx]
+                else:
+                    # New node created during augmentation - use zero features
+                    new_idx = aug_node_to_idx[node]
+                    augmented_features[new_idx] = np.zeros(feature_dim)
+                    
+        else:
+            # Sophisticated approach: aggregate eliminated features into neighbors
+            # Step 1: Copy base features for nodes that existed originally
+            for node in aug_nodes:
+                if node in node_to_feat_idx:
+                    new_idx = aug_node_to_idx[node]
+                    old_idx = node_to_feat_idx[node]
+                    augmented_features[new_idx] = features[old_idx].copy()
+                else:
+                    # New node - initialize with zeros
+                    new_idx = aug_node_to_idx[node]
+                    augmented_features[new_idx] = np.zeros(feature_dim)
+            
+            # Step 2: Distribute eliminated node features to their neighbors in G_aug
+            for v_i in eliminated_nodes:
+                if v_i not in node_to_feat_idx:
+                    continue
+                
+                old_idx = node_to_feat_idx[v_i]
+                feature_i = features[old_idx]
+                
+                # Find neighbors of v_i in the ORIGINAL graph that still exist in G_aug
+                # These are the nodes that should receive the eliminated features
+                target_nodes = [n for n in aug_nodes if n in original_node_set and n != v_i]
+                
+                # Distribute eliminated features proportionally
+                if len(target_nodes) > 0:
+                    contribution = feature_i / len(target_nodes)
+                    for target in target_nodes:
+                        if target in aug_node_to_idx:
+                            target_idx = aug_node_to_idx[target]
+                            augmented_features[target_idx] += contribution
+        
+        # Final verification
+        if augmented_features.shape[0] != num_aug_nodes:
+            logger.error(f"Feature shape mismatch: {augmented_features.shape[0]} != {num_aug_nodes}")
+            raise ValueError("Feature-graph node count mismatch after update!")
+        
+        logger.info(f"Feature update complete: {augmented_features.shape}")
+        return augmented_features
+        
+        def build_approximate_clique(
+        self,
+        G: nx.Graph,
+        v_i: int,
+        sorted_neighbours: List[int],
+        edge_weights: Dict
+    ) -> Tuple[List[Tuple[int, int]], List[float]]:
+        """
+        Build approximate clique among neighbors of v_i
+        
+        For each pair of neighbors (v_a, v_b), compute conditional probability
+        and add weighted edge to form clique approximation.
+        
+        Returns:
+            clique_edges: List of edge tuples
+            clique_weights: List of corresponding weights
+        """
+        
+        clique_edges = []
+        clique_weights = []
+        
+        n_neighbours = len(sorted_neighbours)
+        if n_neighbours < 2:
+            return clique_edges, clique_weights
+        
+        for a in range(n_neighbours - 1):
+            v_a = sorted_neighbours[a]
+            
+            edge_ia = (v_i, v_a) if (v_i, v_a) in edge_weights else (v_a, v_i)
+            w_ia = edge_weights.get(edge_ia, 1.0)
+            
+            best_b = a + 1
+            best_prob = -float('inf')
+            
+            for b in range(a+1, n_neighbours):
+                v_b = sorted_neighbours[b]
+                
+                edge_ib = (v_i, v_b) if (v_i, v_b) in edge_weights else (v_b, v_i)
+                w_ib = edge_weights.get(edge_ib, 1.0)
+                
+                # Compute conditional probability P(v_b | v_a)
+                # Using weight-based probability: higher weights = higher probability
+                conditional_prob = self.calculate_conditional_probability(
+                    G, v_a, v_b, w_ia, w_ib, edge_weights
+                )
+                
+                if conditional_prob > best_prob:
+                    best_prob = conditional_prob
+                    best_b = b
+            
+            v_b = sorted_neighbours[best_b]
+            
+            edge_ib = (v_i, v_b) if (v_i, v_b) in edge_weights else (v_b, v_i)
+            w_ib = edge_weights.get(edge_ib, 1.0)
+            
+            # Compute new edge weight: w_ab = w_ia * w_ib / degree(v_i)
+            # This approximates the Schur complement contribution
+            degree_i = G.degree(v_i)
+            w_ab = (w_ia * w_ib) / max(degree_i, 1.0)
+            
+            edge_ab = (v_a, v_b) if v_a < v_b else (v_b, v_a)
+            clique_edges.append(edge_ab)
+            clique_weights.append(w_ab)
+            
+        return clique_edges, clique_weights
+        
+        def calculate_conditional_probability(
+        self,
+        G: nx.Graph,
+        v_a: int,
+        v_b: int,
+        w_ia: float,
+        w_ib: float,
+        edge_weights: Dict
+    ) -> float:
+        """
+        Compute conditional probability P(v_b | v_a) for clique approximation
+        
+        Uses combination of:
+        - Weight similarity
+        - Degree similarity
+        - Existing connection strength
+        """
+        # Weight based component
+        weight_component = w_ia * w_ib
+        
+        # Degree based component
+        deg_a = G.degree(v_a)
+        deg_b = G.degree(v_b)
+        degree_similarity = 1.0 / (1.0 + abs(deg_a - deg_b))
+        
+        edge_ab = (v_a, v_b) if (v_a, v_b) in edge_weights else (v_b, v_a)
+        existing_weight = edge_weights.get(edge_ab, 1.0)
+        
+        conditional_prob = (
+            0.5 * weight_component +
+            0.3 * degree_similarity +
+            0.2 * existing_weight
+        )
+        
+        return conditional_prob
+        '''

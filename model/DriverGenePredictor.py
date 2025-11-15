@@ -1036,8 +1036,8 @@ class ContrastiveDriverGenePredictor(nn.Module):
             
         with torch.no_grad():
             train_ndcg = compute_ndcg(
-                scores1[aug_train_mask1].cpu().numpy(),
-                aug_labels1[aug_train_mask1].cpu().numpy()
+                scores1[aug_train_mask1].detach().cpu().numpy(),
+                aug_labels1[aug_train_mask1].detach().cpu().numpy()
             )
             
         return {
@@ -1079,8 +1079,8 @@ class ContrastiveDriverGenePredictor(nn.Module):
         scores = scores[mask]
         labels = labels[mask]
         
-        scores_np = scores.cpu().numpy()
-        labels_np = labels.cpu().numpy()
+        scores_np = scores.detach().cpu().numpy()
+        labels_np = labels.detach().cpu().numpy()
         
         metrics = {}
         
@@ -1228,6 +1228,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         data: Dict,
         labels: torch.Tensor,
         curvature_type: str = 'ollivier',
+        node_names: List = None,
         num_permutations: int = 1000,
         device: torch.device = None,
         save_path: Optional[str] = None,
@@ -1240,6 +1241,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
             data: Graph data dictionary
             labels: True labels
             curvature_type: Type of curvature to use
+            node_names: List of gene names corresponding to nodes
             num_permutations: Number of permutations for p-value calculation
             device: Device to use for computation
             save_path: Directory path to save CSV files (if None, no files saved)
@@ -1251,6 +1253,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         Example:
             >>> df = model.score_genes_with_statistics(
             ...     data, labels,
+            ...     node_names=gene_list,
             ...     save_path='results/',
             ...     save_prefix='fold_1'
             ... )
@@ -1262,7 +1265,32 @@ class ContrastiveDriverGenePredictor(nn.Module):
         print("SCORING ALL GENES WITH STATISTICAL SIGNIFICANCE")
         print("="*80)
         
+        print(f"Scoring {labels.shape[0]} genes with {num_permutations} permutations...")
+    
+        # Get node names (stored as a list)
+        num_genes = labels.shape[0]
+        if node_names is None:
+            logger.warning("No node names provided. Using gene indices.")
+            node_names = np.array([f"Gene_{i}" for i in range(num_genes)])
+        elif isinstance(node_names, list):
+            # Convert list to numpy array
+            node_names = np.array(node_names)
+        elif isinstance(node_names, torch.Tensor):
+            node_names = node_names.cpu().numpy()
+        elif not isinstance(node_names, np.ndarray):
+            # Handle any other iterable
+            node_names = np.array(list(node_names))
+        
+        # Validate length
+        if len(node_names) != num_genes:
+            logger.error(f"Node names length ({len(node_names)}) doesn't match labels ({num_genes})")
+            node_names = np.array([f"Gene_{i}" for i in range(num_genes)])
+        
         df_scores = self.score_all_genes(data, curvature_type, device)
+        
+        # Add gene IDs and gene names to the dataframe
+        df_scores['gene_id'] = np.arange(len(df_scores))
+        df_scores['gene_name'] = node_names
         
         device = device if device else self.device
         if device is None:
@@ -1286,22 +1314,39 @@ class ContrastiveDriverGenePredictor(nn.Module):
         print(f"  Std: {driver_std:.4f}")
         print(f"  Median: {np.median(driver_scores):.4f}")
         
-        # Compute p-values
-        print(f"\nComputing p-values using {num_permutations} permutations...")
+        # Compute p-values via empirical comparison
+        print(f"\nComputing empirical p-values...")
         
+        # Initialize p-values array
         pvalues = np.ones(len(df_scores))
         
+        # For unknown genes, compute empirical p-value
+        # P-value = proportion of known drivers with score >= this gene's score
         for idx in unknown_indices:
             if idx % 500 == 0:
                 print(f"  Processing gene {idx}/{len(unknown_indices)}...", end='\r')
             
             observed_score = df_scores.loc[idx, 'driver_score']
-            pvalue = (driver_scores >= observed_score).sum() / len(driver_scores)
+            
+            # Empirical p-value: what fraction of known drivers score as high or higher?
+            count_higher = (driver_scores >= observed_score).sum()
+            pvalue = (count_higher + 1) / (len(driver_scores) + 1)  # Add 1 to avoid p=0
             pvalues[idx] = pvalue
         
         print(f"  Processing gene {len(unknown_indices)}/{len(unknown_indices)}... Done!")
         
+        # Known drivers get p-value of 0 (they are the reference)
         pvalues[known_driver_indices] = 0.0
+        
+        # Print p-value distribution
+        unknown_pvalues_for_stats = pvalues[unknown_indices]
+        print(f"\nP-value distribution for unknown genes:")
+        print(f"  Min: {unknown_pvalues_for_stats.min():.6f}")
+        print(f"  Max: {unknown_pvalues_for_stats.max():.6f}")
+        print(f"  Mean: {unknown_pvalues_for_stats.mean():.6f}")
+        print(f"  Median: {np.median(unknown_pvalues_for_stats):.6f}")
+        print(f"  P < 0.01: {(unknown_pvalues_for_stats < 0.01).sum()}")
+        print(f"  P < 0.05: {(unknown_pvalues_for_stats < 0.05).sum()}")
         
         # Multiple testing correction
         unknown_pvalues = pvalues[unknown_indices]
@@ -1394,7 +1439,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
             print(f"\n{'='*80}\n")
         
         return df_scores
-    
+
 
 def compute_ndcg(
     scores: np.ndarray, 
@@ -1405,6 +1450,11 @@ def compute_ndcg(
     if k is None:
         k = len(scores)
 
+    if isinstance(scores, torch.Tensor):
+        scores = scores.detach().cpu().numpy()
+    if isinstance(labels, torch.Tensor):
+        labels = labels.detach().cpu().numpy()
+    
     sorted_indices = np.argsort(-scores)[:k]
     sorted_labels = labels[sorted_indices]
 

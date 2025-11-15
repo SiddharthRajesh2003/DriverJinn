@@ -18,7 +18,7 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 
 from utils.logging_manager import get_logger
-from model.DriverGenePredictor import ContrastiveDriverGenePredictor
+from model.DriverGenePredictor import ContrastiveDriverGenePredictor, compute_ndcg
 from model.support_models import WarmupScheduler, EarlyStopping, RankingLoss
 
 # Memory optimization
@@ -323,6 +323,19 @@ def train_single_fold(
     if features is None:
         raise ValueError("No 'feature' or 'x' key found in original data")
     
+    # Extract node names (stored as a list)
+    node_names = original.get('node_name', None)
+    if node_names is None:
+        logger.warning("No 'node_name' found in original data. Using indices as names.")
+        node_names = np.array([f"Gene_{i}" for i in range(features.shape[0])])
+    elif isinstance(node_names, list):
+        node_names = np.array(node_names)
+    elif isinstance(node_names, torch.Tensor):
+        node_names = node_names.cpu().numpy()
+    else:
+        # Convert any other iterable to numpy array
+        node_names = np.array(list(node_names))
+    
     num_original_nodes = features.shape[0]
     if len(train_mask_original) != num_original_nodes:
         raise ValueError(
@@ -431,13 +444,14 @@ def train_single_fold(
     best_val_ndcg = 0.0
     best_metrics = None
     
-    # Construct model filename
+    # Construct model checkpoint path in a subfolder named after model_prefix
     if model_prefix:
-        model_filename = f'{model_prefix}_fold_{fold_idx}_best_model.pt'
-    else:
+        checkpoint_dir = model_save_dir / model_prefix
+        checkpoint_dir.mkdir(exist_ok=True, parents=True)
         model_filename = f'fold_{fold_idx}_best_model.pt'
-    
-    model_path = model_save_dir / model_filename
+        model_path = checkpoint_dir / model_filename
+    else:
+        model_path = model_save_dir / f'fold_{fold_idx}_best_model.pt'
     
     print(f"\n{'='*80}")
     print("TRAINING WITH RANKING OBJECTIVE")
@@ -542,6 +556,22 @@ def train_single_fold(
                 
                 accumulated_loss += loss.item() * gradient_accumulation_steps
                 successful_steps += 1
+                
+                if successful_steps > 0:
+                    # Compute training NDCG periodically
+                    if epoch % 5 == 0:  # Don't compute every epoch to save time
+                        with torch.no_grad():
+                            train_scores, _ = model.forward(
+                                original_device['x'], 
+                                original_device['edge_index'], 
+                                original_device['ollivier_curvature']
+                            )
+                            train_ndcg = compute_ndcg(train_scores[train_mask_original], 
+                                                    labels[train_mask_original], k=50)
+                        accumulated_metrics['train_ndcg'] = train_ndcg
+                    else:
+                        # Reuse previous value
+                        accumulated_metrics['train_ndcg'] = history['train_ndcg'][-1] if history['train_ndcg'] else 0.0
                 
                 # Clean up immediately
                 del view_x, view_edge_index, view_curvature
@@ -676,6 +706,7 @@ def train_single_fold(
     scored_genes_df = model.score_genes_with_statistics(
         data=original_device,
         labels=labels,
+        node_names=node_names,  # <-- Pass node names here
         curvature_type='ollivier',
         num_permutations=1000,
         device=device,
@@ -940,6 +971,8 @@ def main():
     parser.add_argument('--attention_mode', type=str, default='hybrid',
                         choices=['standard', 'edge_feature', 'bias', 'gated', 'hybrid'],
                         help='Attention mode for message passing')
+    parser.add_argument('--learning_rate', type=float, default=1e-3,
+                        help='Set the learning rate')
     parser.add_argument('--num_heads', type=int, default=4,
                         help='Number of attention heads')
     parser.add_argument('--concat_heads', action='store_true', default=True,

@@ -7,6 +7,5 @@ curvature_output/
 .env
 model/__pycache__
 model/model_tester.py
-model_results/
+all_model_results/
 results.tar.gz
-model_results_nan_loss/
