@@ -73,10 +73,10 @@ class SchurComplementAugmentation:
             return self.augment_priority(G, node_features, edge_weights, node_names, labels)
         
         elif self.elimination_strategy == 'random':
-            return self.augment_random(G, node_features, edge_weights)
+            return self.augment_random(G, node_features, edge_weights, node_names, labels)
         
         elif self.elimination_strategy == 'coarsening':
-            return self.augment_coarsening(G, node_features, edge_weights)
+            return self.augment_coarsening(G, node_features, edge_weights, node_names, labels)
         else:
             raise ValueError(f'Unknown elimination strategy: {self.elimination_strategy}')
         
@@ -107,7 +107,7 @@ class SchurComplementAugmentation:
         
         logger.info(f"Priority augmentation: {num_nodes} nodes, eliminating {elimination_count} nodes")
         
-        node_id_to_name_original = self.create_node_name_mapping(G, node_names, 'priority')
+        node_id_to_name_original = self.create_node_name_mapping(G, node_names, self.elimination_strategy)
         
         if edge_weights is None:
             edge_weights = {(u, v): G_aug[u][v].get('weight', 1.0) for u, v in G_aug.edges()}
@@ -176,18 +176,18 @@ class SchurComplementAugmentation:
         
         # Verify Node Name mapping after augmentation
         node_id_to_name_aug = self.verify_node_name_mapping(
-            node_id_to_name_original, G_aug, eliminated_nodes, 'priority'
+            node_id_to_name_original, G_aug, eliminated_nodes, self.elimination_strategy
         )
         
         # Get final node mapping (use graph as source of truth)
         nodes = list(G.nodes())
         final_node_list, node_mapping = self.get_final_node_mapping(
-            G, G_aug, nodes, eliminated_nodes, 'priority'
+            G, G_aug, nodes, eliminated_nodes, self.elimination_strategy
         )
         
         # CRITICAL: Restore edges for isolated nodes from original graph
         G_aug, edges_restored = self.restore_edges_for_isolated_nodes(
-            G, G_aug, final_node_list, 'priority'
+            G, G_aug, final_node_list, self.elimination_strategy
         )
         
         augmented_features = None
@@ -199,12 +199,14 @@ class SchurComplementAugmentation:
                 logger.warning("Labels not provided - features will be aligned but labels won't match")
                 labels = np.zeros(len(node_names), dtype = np.int64)
                 
-            augmented_features, augmented_labels, augmented_node_names = self.align_feature_labels_with_names(
-                node_features, labels, node_names, final_node_list, 'priority'
+            augmented_features, augmented_labels, augmented_node_names = self.align_features_labels_with_names(
+                features=node_features, labels=labels, 
+                node_names = node_names, node_id_to_name_aug=node_id_to_name_aug, final_node_list=final_node_list, 
+                strategy=self.elimination_strategy
             )
             
-            augmented_features = torch.from_numpy(augmented_features, dtype = torch.float)
-            augmented_labels = torch.from_numpy(augmented_labels, dtype = torch.float)
+            augmented_features = torch.from_numpy(augmented_features)
+            augmented_labels = torch.from_numpy(augmented_labels)
             
         metadata = {
             'original_nodes': num_nodes,
@@ -223,7 +225,7 @@ class SchurComplementAugmentation:
             'augmented_labels': augmented_labels
         }
         
-        self.verify_no_synthetic_nodes(G, G_aug, eliminated_nodes, 'priority')
+        self.verify_no_synthetic_nodes(G, G_aug, eliminated_nodes,self.elimination_strategy)
         
         logger.info(f"Priority augmentation complete: {metadata['original_nodes']} → "
                     f"{metadata['augmented_nodes']} nodes")
@@ -256,7 +258,7 @@ class SchurComplementAugmentation:
         
         logger.info(f"Random augmentation: {num_nodes} nodes, eliminating {elimination_count} nodes")
         
-        node_id_to_name_original = self.create_node_name_mapping(G, node_names, 'random')
+        node_id_to_name_original = self.create_node_name_mapping(G, node_names, self.elimination_strategy)
         
         if edge_weights is None:
             edge_weights = {(u, v): G_aug[u][v].get('weight', 1.0) for u, v in G_aug.edges()}
@@ -313,18 +315,18 @@ class SchurComplementAugmentation:
         
         # Verify Node Name mapping after augmentation
         node_id_to_name_aug = self.verify_node_name_mapping(
-            node_id_to_name_original, G_aug, eliminated_nodes, 'random'
+            node_id_to_name_original, G_aug, eliminated_nodes, self.elimination_strategy
         )
         
         # Get final node mapping (use graph as source of truth)
         nodes = list(G.nodes())
         final_node_list, node_mapping = self.get_final_node_mapping(
-            G, G_aug, nodes, eliminated_nodes, 'random'
+            G, G_aug, nodes, eliminated_nodes, self.elimination_strategy
         )
         
         # CRITICAL: Restore edges for isolated nodes from original graph
         G_aug, edges_restored = self.restore_edges_for_isolated_nodes(
-            G, G_aug, final_node_list, 'random'
+            G, G_aug, final_node_list, self.elimination_strategy
         )
         
         augmented_features = None
@@ -336,12 +338,14 @@ class SchurComplementAugmentation:
                 logger.warning("Labels not provided - features will be aligned but labels won't match")
                 labels = np.zeros(len(node_names), dtype = np.int64)
                 
-            augmented_features, augmented_labels, augmented_node_names = self.align_feature_labels_with_names(
-                node_features, labels, node_names, final_node_list, 'priority'
+            augmented_features, augmented_labels, augmented_node_names = self.align_features_labels_with_names(
+                features=node_features, labels=labels, 
+                node_names = node_names, node_id_to_name_aug=node_id_to_name_aug, final_node_list=final_node_list, 
+                strategy=self.elimination_strategy
             )
             
-            augmented_features = torch.from_numpy(augmented_features, dtype = torch.float)
-            augmented_labels = torch.from_numpy(augmented_labels, dtype = torch.float)
+            augmented_features = torch.from_numpy(augmented_features)
+            augmented_labels = torch.from_numpy(augmented_labels)
         
         metadata = {
             'original_nodes': num_nodes,
@@ -380,9 +384,7 @@ class SchurComplementAugmentation:
         
         G_aug = G.copy()
         num_nodes = G_aug.number_of_nodes()
-        elimination_count = int(self.elimination_ratio * num_nodes)
-        node_features = node_features.numpy()
-        
+        elimination_count = int(self.elimination_ratio * num_nodes)        
         # Convert to numpy if needed
         if node_features is not None:
             node_features = node_features.numpy() if isinstance(node_features, torch.Tensor) else node_features
@@ -393,7 +395,7 @@ class SchurComplementAugmentation:
         
         logger.info(f"Coarsening augmentation: {num_nodes} nodes, eliminating {elimination_count} nodes")
         
-        node_id_to_name_original = self.create_node_name_mapping(G, node_names, 'random')
+        node_id_to_name_original = self.create_node_name_mapping(G, node_names, self.elimination_strategy)
         
         if edge_weights is None:
             edge_weights = {(u, v): G_aug[u][v].get('weight', 1.0) for u, v in G_aug.edges()}
@@ -469,18 +471,18 @@ class SchurComplementAugmentation:
         
         # Verify Node Name mapping after augmentation
         node_id_to_name_aug = self.verify_node_name_mapping(
-            node_id_to_name_original, G_aug, eliminated_nodes, 'coarsening'
+            node_id_to_name_original, G_aug, eliminated_nodes, self.elimination_strategy
         )
         
         # Get final node mapping (use graph as source of truth)
         nodes = list(G.nodes())
         final_node_list, node_mapping = self.get_final_node_mapping(
-            G, G_aug, nodes, eliminated_nodes, 'coarsening'
+            G, G_aug, nodes, eliminated_nodes, self.elimination_strategy
         )
         
         # CRITICAL: Restore edges for isolated nodes from original graph
         G_aug, edges_restored = self.restore_edges_for_isolated_nodes(
-            G, G_aug, final_node_list, 'coarsening'
+            G, G_aug, final_node_list, self.elimination_strategy
         )
         
         augmented_features = None
@@ -492,12 +494,14 @@ class SchurComplementAugmentation:
                 logger.warning("Labels not provided - features will be aligned but labels won't match")
                 labels = np.zeros(len(node_names), dtype = np.int64)
                 
-            augmented_features, augmented_labels, augmented_node_names = self.align_feature_labels_with_names(
-                node_features, labels, node_names, final_node_list, 'priority'
+            augmented_features, augmented_labels, augmented_node_names = self.align_features_labels_with_names(
+                features=node_features, labels=labels, 
+                node_names = node_names, node_id_to_name_aug=node_id_to_name_aug, final_node_list=final_node_list, 
+                strategy=self.elimination_strategy
             )
             
-            augmented_features = torch.from_numpy(augmented_features, dtype = torch.float)
-            augmented_labels = torch.from_numpy(augmented_labels, dtype = torch.float)
+            augmented_features = torch.from_numpy(augmented_features)
+            augmented_labels = torch.from_numpy(augmented_labels)
         
         metadata = {
             'original_nodes': num_nodes,
@@ -516,10 +520,10 @@ class SchurComplementAugmentation:
             'augmented_labels': augmented_labels
         }
         
-        self.verify_no_synthetic_nodes(G, G_aug, eliminated_nodes, 'coarsening')
+        self.verify_no_synthetic_nodes(G, G_aug, eliminated_nodes, self.elimination_strategy)
         
         logger.info(f'Coarsening augmentation complete!')
-        return G_aug, augmented_features, metadata
+        return G_aug, augmented_features, augmented_labels, metadata
     
     def create_degree_priority_queue(self, G: nx.Graph) -> Dict:
         """
@@ -1314,7 +1318,7 @@ class SchurComplementAugmentation:
         logger.info(f"[{strategy}] Verified node name mapping for {len(node_id_to_name_aug)} augmented nodes")
         return node_id_to_name_aug
     
-    def align_feature_labels_with_names(
+    def align_features_labels_with_names(
         self,
         features: np.ndarray,
         labels: np.ndarray,
@@ -1329,88 +1333,121 @@ class SchurComplementAugmentation:
         
         Args:
             features: Original feature matrix [num_original, feature_dim]
-            labels: Original labels [num_original]
-            node_names: Original node names [num_original]
+            labels: Original labels [num_original] - np.ndarray
+            node_names: Original node names [num_original] - List[str]
             node_id_to_name_aug: Mapping from augmented node IDs to names
             final_node_list: Ordered list of node IDs in augmented graph
             strategy: Augmentation strategy name
             
         Returns:
-            aligned_features: [num_augmented, feature_dim]
-            aligned_labels: [num_augmented]
-            aligned_names: [num_augmented]
+            aligned_features: [num_augmented, feature_dim] np.ndarray
+            aligned_labels: [num_augmented] np.ndarray
+            aligned_names: [num_augmented] List[str]
         """
         
-        # Handle both list and array formats for node_names
-        if isinstance(node_names, np.ndarray):
-            node_names_list = node_names.tolist()
-        elif isinstance(node_names, list):
-            node_names_list = node_names
-        else:
-            # Try to convert any iterable
-            node_names_list = list(node_names)
-            
+        # Validate inputs
+        if not isinstance(features, np.ndarray):
+            logger.error(f"[{strategy}] features must be np.ndarray, got {type(features)}")
+            raise TypeError(f"features must be np.ndarray")
+        
+        if not isinstance(labels, np.ndarray):
+            logger.error(f"[{strategy}] labels must be np.ndarray, got {type(labels)}")
+            raise TypeError(f"labels must be np.ndarray")
+        
+        if len(features) != len(labels) or len(features) != len(node_names):
+            logger.error(
+                f"[{strategy}] Input length mismatch: "
+                f"features={len(features)}, labels={len(labels)}, names={len(node_names)}"
+            )
+            raise ValueError("Input arrays must have same length")
+        
+        logger.info(f"[{strategy}] Aligning {len(final_node_list)} nodes using name mapping...")
+        
+        # Create name -> (feature, label) mapping from original data
         name_to_data = {}
-        for i, name in enumerate(node_names_list):
+        for i, name in enumerate(node_names):
             name_to_data[name] = {
                 'feature': features[i],
                 'label': labels[i],
                 'original_index': i
             }
         
-        #  Align data for augmented graph using names
+        logger.info(f"[{strategy}] Created mapping for {len(name_to_data)} unique names")
+        
+        # Initialize output arrays
         num_aug = len(final_node_list)
         feature_dim = features.shape[1]
         
-        aligned_features = np.zeros((num_aug, feature_dim))
-        aligned_labels = np.zeros((num_aug), dtype=labels.dtype)
+        aligned_features = np.zeros((num_aug, feature_dim), dtype=features.dtype)
+        aligned_labels = np.zeros(num_aug, dtype=labels.dtype)
         aligned_names = []
         
         missing_names = []
         
+        # Align data using node IDs -> names mapping
         for i, node_id in enumerate(final_node_list):
-            # Get Node name for this node id
+            # Get name for this node ID
             name = node_id_to_name_aug.get(node_id)
             
             if name is None:
                 logger.error(f"[{strategy}] Node ID {node_id} has no name mapping!")
-                raise ValueError(f"Node {node_id} has no name")
+                raise ValueError(f"Node {node_id} at position {i} has no name")
             
+            # Get data for this name
             if name not in name_to_data:
                 logger.warning(f"[{strategy}] Name '{name}' (node {node_id}) not in original data")
                 missing_names.append(name)
-
-                # Use zeros for features and -100 for label
-                
-                aligned_features[i] = np.zeros(feature_dim)
+                # Use zeros for features and -100 for label (ignore index)
+                aligned_features[i] = np.zeros(feature_dim, dtype=features.dtype)
                 aligned_labels[i] = -100
                 aligned_names.append(name)
             else:
                 data = name_to_data[name]
-                aligned_features = data['feature']
-                aligned_labels = data['label']
+                aligned_features[i] = data['feature']
+                aligned_labels[i] = data['label']
                 aligned_names.append(name)
         
+        # Log statistics
         if missing_names:
-            logger.warning(f"[{strategy}] {len(missing_names)} names not found in original data: {missing_names[:10]}")
+            logger.warning(
+                f"[{strategy}] {len(missing_names)} names not found in original data: "
+                f"{missing_names[:10]}"
+            )
+        
+        # Verify output shapes
+        assert aligned_features.shape[0] == num_aug, "Features shape mismatch"
+        assert aligned_labels.shape[0] == num_aug, "Labels shape mismatch"
+        assert len(aligned_names) == num_aug, "Names length mismatch"
+        
+        logger.info(
+            f"[{strategy}] Alignment complete: "
+            f"features={aligned_features.shape}, "
+            f"labels={aligned_labels.shape}, "
+            f"names={len(aligned_names)}"
+        )
         
         # CRITICAL VALIDATION: Check known driver genes
         known_drivers = ['TP53', 'KRAS', 'PIK3CA']
         for gene in known_drivers:
             if gene in aligned_names:
-                idx = aligned_names.index(gene)
-                label = aligned_labels[idx]
-                if label != 1 and label != -100:  # -100 is OK (missing), 0 is NOT
+                # Find position in aligned_names list
+                gene_position = aligned_names.index(gene)
+                # Get corresponding label from aligned_labels array
+                gene_label = aligned_labels[gene_position]
+                
+                logger.info(f"[{strategy}] {gene}: position={gene_position}, label={gene_label}")
+                
+                if gene_label != 1 and gene_label != -100:
                     logger.error(
-                        f"[{strategy}] CRITICAL: {gene} has incorrect label {label} after alignment!"
+                        f"[{strategy}] CRITICAL: {gene} has incorrect label {gene_label} after alignment!"
                     )
-                    raise ValueError(f"{gene} has wrong label after alignment: {label}")
-                elif label == 1:
+                    raise ValueError(f"{gene} has wrong label after alignment: {gene_label}")
+                elif gene_label == 1:
                     logger.info(f"[{strategy}] ✓ {gene} correctly labeled as driver (label=1)")
         
-        logger.info(f"[{strategy}] Aligned features, labels, and names for {num_aug} nodes")
+        logger.info(f"[{strategy}] ✓ Alignment validation passed")
         
-        return aligned_features, aligned_labels, aligned_names  # Return list, not array
+        return aligned_features, aligned_labels, aligned_names
 
 
     '''def update_node_features_coarsened(
