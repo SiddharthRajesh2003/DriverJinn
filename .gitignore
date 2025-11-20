@@ -9,4 +9,4 @@ model/__pycache__
 model/model_tester.py
 all_model_results/
 results.tar.gz
-explore_enhanced_curvature_dataset.ipynb
+misc/
