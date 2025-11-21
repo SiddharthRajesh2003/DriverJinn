@@ -1,18 +1,42 @@
 import multiprocessing as mp
+import os
 original_get_context = mp.get_context
+def hpc_compatible_get_context(method=None):
+    """Patch for HPC/cluster environments where multiprocessing can be problematic"""
 
-def windows_compatible_get_context(method=None):
-    """Patch to make GraphRicciCurvature work on Windows"""
-    if method == 'fork':
-        # Replace 'fork' with 'spawn' on Windows
-        try:
+    # Check if we're in a problematic environment
+    is_hpc = any([
+        os.environ.get('SLURM_JOB_ID'),  # SLURM scheduler
+        os.environ.get('PBS_JOBID'),     # PBS scheduler
+        os.environ.get('LSB_JOBID'),     # LSF scheduler
+        'conda' in os.environ.get('PATH', '').lower(),  # Conda environment
+    ])
+
+    if method is None:
+        if is_hpc:
+            # In HPC environments, spawn is often more reliable
+            try:
+                return original_get_context('spawn')
+            except (ValueError, RuntimeError):
+                return original_get_context('fork')
+        else:
+            # Regular Linux systems prefer fork
+            try:
+                return original_get_context('fork')
+            except (ValueError, RuntimeError):
+                return original_get_context('spawn')
+
+    # Handle specific method requests with fallbacks
+    try:
+        return original_get_context(method)
+    except (ValueError, RuntimeError) as e:
+        print(f"Warning: Method '{method}' failed ({e}), using fallback")
+        if method == 'fork':
             return original_get_context('spawn')
-        except ValueError:
-            return original_get_context()
-    return original_get_context(method)
-
-# Apply the monkey patch
-mp.get_context = windows_compatible_get_context
+        else:
+            return original_get_context('fork')
+# Apply the patch
+mp.get_context = hpc_compatible_get_context
 
 from graph_builder.build_network import Network
 from graph_builder.curvature_calculator import EdgeCurvature
@@ -28,6 +52,7 @@ import os
 import argparse
 from sklearn.model_selection import train_test_split, StratifiedKFold
 import numpy as np
+
 
 class CurvaturePipeline:
     """
@@ -584,273 +609,281 @@ class CurvaturePipeline:
     
     
     def generate_augmented_views(
-            self, 
-            num_views: int = 2,  
-            use_curvature_weights: bool = True,
-            curvature_type: str = 'ollivier', 
-            compute_aug_curvature: bool = True,
-            curvature_method: str = 'both'
-        ):
-            """
-            Generate augmented graph views using Schur complement with curvature calculation
-            
-            Parameters:
-            num_views: int, number of augmented views to generate
-            use_curvature_weights: bool, whether to use curvature as edge weights
-            curvature_type: str, 'ollivier' or 'forman' or 'both' (average)
-            compute_aug_curvature: bool, whether to compute curvature for augmented graphs
-            curvature_method: str, 'ollivier', 'forman', or 'both' for augmented graphs
-            
-            Returns:
-            list: List of (augmented_graph, augmented_features, metadata, aug_curvature_dict) tuples
-            """
-            
-            if self.schur_augmenter is None:
-                logger.info("Schur augmenter not initialized, initializing with defaults...")
-                self.initialize_schur_augmentation()
+        self, 
+        num_views: int = 2,  
+        use_curvature_weights: bool = True,
+        curvature_type: str = 'ollivier', 
+        compute_aug_curvature: bool = True,
+        curvature_method: str = 'both'
+    ):
+        """
+        Generate augmented graph views using Schur complement with curvature calculation
+        
+        Uses the SINGLE strategy set in self.schur_augmenter.elimination_strategy
+        to generate multiple diverse views (diversity comes from random sampling).
+        
+        Parameters:
+        num_views: int, number of augmented views to generate
+        use_curvature_weights: bool, whether to use curvature as edge weights
+        curvature_type: str, 'ollivier' or 'forman' or 'both' (average)
+        compute_aug_curvature: bool, whether to compute curvature for augmented graphs
+        curvature_method: str, 'ollivier', 'forman', or 'both' for augmented graphs
+        
+        Returns:
+        list: List of view_data dictionaries with graph, features, labels, names, metadata
+        """
+        
+        if self.schur_augmenter is None:
+            logger.info("Schur augmenter not initialized, initializing with defaults...")
+            self.initialize_schur_augmentation()
 
-            if self.network is None:
-                raise ValueError("Must build network first using build_network()")
+        if self.network is None:
+            raise ValueError("Must build network first using build_network()")
+        
+        if not hasattr(self, 'raw_enhanced_features'):
+            raise ValueError("Raw features not found! Must call integrate_features() first")
+        
+        # ========================================================================
+        # CRITICAL: Extract node_names and labels from enhanced_data_dict
+        # ========================================================================
+        if self.enhanced_data_dict is None:
+            raise ValueError("enhanced_data_dict not found! Must call integrate_features() first")
+        
+        # Get node names (always List[str])
+        node_names = self.enhanced_data_dict.get('node_name', None)
+        if node_names is None:
+            logger.error("CRITICAL: No 'node_name' found in enhanced_data_dict!")
+            # Create fallback names
+            node_names = [f"Gene_{i}" for i in range(len(self.network.G.nodes()))]
+            logger.warning(f"Using fallback node names for {len(node_names)} nodes")
+        
+        # Ensure it's a list (should already be)
+        if not isinstance(node_names, list):
+            logger.warning(f"node_names is {type(node_names)}, converting to list")
+            if isinstance(node_names, (np.ndarray, torch.Tensor)):
+                node_names = list(node_names) if isinstance(node_names, np.ndarray) else node_names.tolist()
+            else:
+                node_names = list(node_names)
+        
+        # Get labels (convert to numpy array)
+        labels = self.enhanced_data_dict.get('label', None)
+        if labels is None:
+            logger.error("CRITICAL: No 'label' found in enhanced_data_dict!")
+            raise ValueError("Labels are required for augmentation with alignment!")
+        
+        # Convert labels to numpy if needed
+        if isinstance(labels, torch.Tensor):
+            labels = labels.cpu().numpy()
+        elif isinstance(labels, list):
+            labels = np.array(labels)
+        elif not isinstance(labels, np.ndarray):
+            labels = np.array(labels)
+        
+        # Validate alignment BEFORE augmentation
+        logger.info("\n" + "="*80)
+        logger.info("PRE-AUGMENTATION VALIDATION")
+        logger.info("="*80)
+        
+        num_nodes = len(self.network.G.nodes())
+        if len(node_names) != num_nodes:
+            raise ValueError(
+                f"Node names length ({len(node_names)}) != graph nodes ({num_nodes})"
+            )
+        if len(labels) != num_nodes:
+            raise ValueError(
+                f"Labels length ({len(labels)}) != graph nodes ({num_nodes})"
+            )
+        
+        # Verify known genes in ORIGINAL data
+        known_genes = ['TP53', 'KRAS', 'PIK3CA', 'BRAF', 'EGFR']
+        for gene in known_genes:
+            if gene in node_names:
+                idx = node_names.index(gene)
+                label = labels[idx]
+                logger.info(f"  {gene}: index={idx}, label={label}")
+                if gene in ['TP53', 'KRAS', 'PIK3CA'] and label != 1:
+                    raise ValueError(
+                        f"CRITICAL: {gene} has wrong label {label} in ORIGINAL data! "
+                        f"Check your data pipeline before augmentation."
+                    )
+        
+        logger.info("✓ Original data validated")
+        logger.info("="*80 + "\n")
+        
+        # ========================================================================
+        
+        # Prepare edge weights from curvature
+        edge_weights = None
+        if use_curvature_weights and self.enhanced_data_dict is not None:
+            logger.info(f"Using {curvature_type} curvature as edge weights for augmentation")
+            edge_weights = self.extract_weights_from_curvature(curvature_type)
+        
+        # Use RAW features for augmentation
+        node_features = self.raw_enhanced_features
+        logger.info(f"Using raw features for augmentation: {node_features.shape}")
+        
+        # Convert features to numpy if needed
+        if isinstance(node_features, torch.Tensor):
+            node_features_np = node_features.numpy()
+        else:
+            node_features_np = node_features
+        
+        # ========================================================================
+        # Get the SINGLE strategy to use for ALL views
+        # ========================================================================
+        strategy = self.schur_augmenter.elimination_strategy
+        
+        logger.info(f"\n{'='*80}")
+        logger.info(f"GENERATING {num_views} VIEWS WITH STRATEGY: {strategy.upper()}")
+        logger.info(f"{'='*80}\n")
+        
+        augmented_views = []
+        
+        for i in range(num_views):
+            logger.info(f"\n{'='*80}")
+            logger.info(f"Generating view {i+1}/{num_views} (strategy: {strategy})")
+            logger.info(f"\n{'='*80}")
             
-            if not hasattr(self, 'raw_enhanced_features'):
-                raise ValueError("Raw features not found! Must call integrate_features() first")
+            # ====================================================================
+            # Call augment wrapper with node_names and labels
+            # The wrapper returns: (graph, features, labels, metadata)
+            # ====================================================================
+            aug_graph, aug_features_raw, aug_labels, metadata = self.schur_augmenter.augment(
+                G=self.network.G,
+                node_features=node_features_np,
+                edge_weights=edge_weights,
+                node_names=node_names,
+                labels=labels,
+                strategy = strategy
+            )
             
-            logger.info(f"Generating {num_views} augmented views...")
+            # Extract aligned node names from metadata
+            aug_node_names = metadata.get('augmented_node_names', None)
             
-            # ========================================================================
-            # CRITICAL FIX: Extract node_names and labels from enhanced_data_dict
-            # ========================================================================
-            if self.enhanced_data_dict is None:
-                raise ValueError("enhanced_data_dict not found! Must call integrate_features() first")
-            
-            # Get node names (always List[str])
-            node_names = self.enhanced_data_dict.get('node_name', None)
-            if node_names is None:
-                logger.error("CRITICAL: No 'node_name' found in enhanced_data_dict!")
-                # Create fallback names
-                node_names = [f"Gene_{i}" for i in range(len(self.network.G.nodes()))]
-                logger.warning(f"Using fallback node names for {len(node_names)} nodes")
-            
-            # Ensure it's a list (should already be)
-            if not isinstance(node_names, list):
-                logger.warning(f"node_names is {type(node_names)}, converting to list")
-                if isinstance(node_names, (np.ndarray, torch.Tensor)):
-                    node_names = list(node_names) if isinstance(node_names, np.ndarray) else node_names.tolist()
-                else:
-                    node_names = list(node_names)
-            
-            # Get labels (convert to numpy array)
-            labels = self.enhanced_data_dict.get('label', None)
-            if labels is None:
-                logger.error("CRITICAL: No 'label' found in enhanced_data_dict!")
-                raise ValueError("Labels are required for augmentation with alignment!")
-            
-            # Convert labels to numpy if needed
-            if isinstance(labels, torch.Tensor):
-                labels = labels.cpu().numpy()
-            elif isinstance(labels, list):
-                labels = np.array(labels)
-            elif not isinstance(labels, np.ndarray):
-                labels = np.array(labels)
-            
-            # Validate alignment BEFORE augmentation
-            logger.info("\n" + "="*80)
-            logger.info("PRE-AUGMENTATION VALIDATION")
-            logger.info("="*80)
-            
-            num_nodes = len(self.network.G.nodes())
-            if len(node_names) != num_nodes:
+            if aug_node_names is None or aug_labels is None:
                 raise ValueError(
-                    f"Node names length ({len(node_names)}) != graph nodes ({num_nodes})"
-                )
-            if len(labels) != num_nodes:
-                raise ValueError(
-                    f"Labels length ({len(labels)}) != graph nodes ({num_nodes})"
+                    f"View {i+1}: Augmentation did not return aligned node_names or labels! "
+                    f"Check that augmentation methods are using align_features_labels_with_names()"
                 )
             
-            # Verify known genes in ORIGINAL data
-            known_genes = ['TP53', 'KRAS', 'PIK3CA', 'BRAF', 'EGFR']
-            for gene in known_genes:
-                if gene in node_names:  # node_names is List[str], so 'in' works directly
-                    idx = node_names.index(gene)  # Use .index() for lists
-                    label = labels[idx]
+            # Verify alignment in augmented view
+            logger.info(f"\nVerifying view {i+1} alignment:")
+            for gene in ['TP53', 'KRAS', 'PIK3CA']:
+                if gene in aug_node_names:
+                    idx = aug_node_names.index(gene)
+                    label = aug_labels[idx]
                     logger.info(f"  {gene}: index={idx}, label={label}")
-                    if gene in ['TP53', 'KRAS', 'PIK3CA'] and label != 1:
+                    if gene in ['TP53', 'KRAS'] and label != 1 and label != -100:
                         raise ValueError(
-                            f"CRITICAL: {gene} has wrong label {label} in ORIGINAL data! "
-                            f"Check your data pipeline before augmentation."
+                            f"View {i+1}: {gene} has wrong label {label}! "
+                            f"Alignment failed during augmentation."
                         )
             
-            logger.info("✓ Original data validated")
-            logger.info("="*80 + "\n")
-            
-            # ========================================================================
-            
-            # Prepare edge weights from curvature
-            edge_weights = None
-            if use_curvature_weights and self.enhanced_data_dict is not None:
-                logger.info(f"Using {curvature_type} curvature as edge weights for augmentation")
-                edge_weights = self.extract_weights_from_curvature(curvature_type)
-            
-            # CRITICAL: Use RAW features for augmentation
-            node_features = self.raw_enhanced_features
-            logger.info(f"Using raw features for augmentation: {node_features.shape}")
+            logger.info(f"✓ View {i+1} alignment verified")
+            # ====================================================================
             
             # Convert features to numpy if needed
-            if isinstance(node_features, torch.Tensor):
-                node_features_np = node_features.numpy()
+            if aug_features_raw is not None:
+                if isinstance(aug_features_raw, torch.Tensor):
+                    aug_features_raw_np = aug_features_raw.numpy()
+                else:
+                    aug_features_raw_np = aug_features_raw
+            
+            # Verify feature-graph consistency
+            num_graph_nodes = aug_graph.number_of_nodes()
+            num_feature_rows = aug_features_raw_np.shape[0]
+            
+            if num_feature_rows != num_graph_nodes:
+                raise ValueError(
+                    f"View {i+1}: Feature-graph mismatch after alignment! "
+                    f"{num_feature_rows} features vs {num_graph_nodes} graph nodes. "
+                    f"This should not happen with the new alignment method."
+                )
+            
+            # ====================================================================
+            # Normalize the augmented RAW features using fitted scalers
+            # ====================================================================
+            if hasattr(self.integrator, 'original_scaler') and self.integrator.original_scaler is not None:
+                logger.info(f"Normalizing augmented view {i+1} using fitted scalers...")
+                
+                # Split into original and curvature features
+                num_original = len(self.integrator.feature_names)
+                aug_original_raw = aug_features_raw_np[:, :num_original]
+                aug_curvature_raw = aug_features_raw_np[:, num_original:]
+                
+                # Transform using SAME scalers fitted on training data
+                aug_original_norm = self.integrator.original_scaler.transform(aug_original_raw)
+                aug_curvature_norm = self.integrator.curvature_scaler.transform(aug_curvature_raw)
+                
+                # Combine normalized features
+                aug_features_normalized = np.hstack([aug_original_norm, aug_curvature_norm])
+                aug_features = torch.tensor(aug_features_normalized, dtype=torch.float32)
+                
+                # Verification
+                curv_mean = aug_curvature_norm.mean()
+                curv_std = aug_curvature_norm.std()
+                logger.info(f"View {i+1} normalized curvature: mean={curv_mean:.6f}, std={curv_std:.6f}")
+                
+                if abs(curv_mean) > 0.5:
+                    logger.error(f"⚠️ WARNING: View {i+1} normalization failed! Mean={curv_mean:.4f}")
+                else:
+                    logger.info(f"✓ View {i+1} properly normalized")
             else:
-                node_features_np = node_features
+                logger.warning("No scalers available - using unnormalized features")
+                aug_features = torch.tensor(aug_features_raw_np, dtype=torch.float32)
             
-            augmented_views = []
-            
-            # Cycle through augmentation strategies
-            strategies = ['priority', 'random', 'coarsening']
-            
-            for i in range(num_views):
-                strategy = strategies[i % len(strategies)]
-                
-                logger.info(f"\n{'='*80}")
-                logger.info(f"Generating view {i+1}/{num_views} (strategy: {strategy})")
-                logger.info(f"{'='*80}")
-                
-                # ====================================================================
-                # CRITICAL FIX: Pass node_names and labels to augmentation
-                # ====================================================================
-                # Set the strategy for this view
-                self.schur_augmenter.elimination_strategy = strategy
-                
-                # ====================================================================
-                # CRITICAL FIX: Update schur_augmenter strategy and call augment
-                # ====================================================================
-                self.schur_augmenter.elimination_strategy = strategy
-                
-                # Call augment wrapper with node_names and labels
-                aug_graph, aug_features_raw, aug_labels, metadata = self.schur_augmenter.augment(
-                    G=self.network.G,
-                    node_features=node_features_np,
-                    edge_weights=edge_weights,
-                    node_names=node_names,  
-                    labels=labels  
+            # ====================================================================
+            # Compute curvature for augmented graph
+            # ====================================================================
+            aug_curvature_dict = None
+            if compute_aug_curvature:
+                logger.info(f"Computing curvature for augmented view {i+1}...")
+                aug_curvature_dict = self.compute_augmented_curvature(
+                    aug_graph,
+                    aug_features,  # Use normalized features
+                    method=curvature_method
                 )
                 
-                # Extract aligned data from metadata
-                aug_node_names = metadata.get('augmented_node_names', None)
-                
-                if aug_node_names is None or aug_labels is None:
-                    raise ValueError(
-                        f"View {i+1}: Augmentation did not return aligned node_names or labels! "
-                        f"Check that augmentation methods are using align_features_labels_with_names()"
-                    )
-                
-                # Verify alignment in augmented view
-                logger.info(f"\nVerifying view {i+1} alignment:")
-                for gene in ['TP53', 'KRAS', 'PIK3CA']:
-                    if gene in aug_node_names:  # aug_node_names is List[str]
-                        idx = aug_node_names.index(gene)  # Use .index() for lists
-                        label = aug_labels[idx]  # aug_labels is np.ndarray
-                        logger.info(f"  {gene}: index={idx}, label={label}")
-                        if gene in ['TP53', 'KRAS'] and label != 1 and label != -100:
-                            raise ValueError(
-                                f"View {i+1}: {gene} has wrong label {label}! "
-                                f"Alignment failed during augmentation."
-                            )
-                
-                logger.info(f"✓ View {i+1} alignment verified")
-                # ====================================================================
-                
-                # Convert features to numpy if needed
-                if aug_features_raw is not None:
-                    if isinstance(aug_features_raw, torch.Tensor):
-                        aug_features_raw_np = aug_features_raw.numpy()
-                    else:
-                        aug_features_raw_np = aug_features_raw
-                
-                # Verify feature-graph consistency
-                num_graph_nodes = aug_graph.number_of_nodes()
-                num_feature_rows = aug_features_raw_np.shape[0]
-                
-                if num_feature_rows != num_graph_nodes:
-                    raise ValueError(
-                        f"View {i+1}: Feature-graph mismatch after alignment! "
-                        f"{num_feature_rows} features vs {num_graph_nodes} graph nodes. "
-                        f"This should not happen with the new alignment method."
-                    )
-                
-                # CRITICAL: Now normalize the augmented RAW features using fitted scalers
-                if hasattr(self.integrator, 'original_scaler') and self.integrator.original_scaler is not None:
-                    logger.info(f"Normalizing augmented view {i+1} using fitted scalers...")
-                    
-                    # Split into original and curvature features
-                    num_original = len(self.integrator.feature_names)
-                    aug_original_raw = aug_features_raw_np[:, :num_original]
-                    aug_curvature_raw = aug_features_raw_np[:, num_original:]
-                    
-                    # Transform using SAME scalers fitted on training data
-                    aug_original_norm = self.integrator.original_scaler.transform(aug_original_raw)
-                    aug_curvature_norm = self.integrator.curvature_scaler.transform(aug_curvature_raw)
-                    
-                    # Combine normalized features
-                    aug_features_normalized = np.hstack([aug_original_norm, aug_curvature_norm])
-                    aug_features = torch.tensor(aug_features_normalized, dtype=torch.float32)
-                    
-                    # Verification
-                    curv_mean = aug_curvature_norm.mean()
-                    curv_std = aug_curvature_norm.std()
-                    logger.info(f"View {i+1} normalized curvature: mean={curv_mean:.6f}, std={curv_std:.6f}")
-                    
-                    if abs(curv_mean) > 0.5:
-                        logger.error(f"⚠️ WARNING: View {i+1} normalization failed! Mean={curv_mean:.4f}")
-                    else:
-                        logger.info(f"✓ View {i+1} properly normalized")
-                else:
-                    logger.warning("No scalers available - using unnormalized features")
-                    aug_features = torch.tensor(aug_features_raw_np, dtype=torch.float32)
-                
-                # Compute curvature for augmented graph
-                aug_curvature_dict = None
-                if compute_aug_curvature:
-                    logger.info(f"Computing curvature for augmented view {i+1}...")
-                    aug_curvature_dict = self.compute_augmented_curvature(
-                        aug_graph,
-                        aug_features,  # Use normalized features
-                        method=curvature_method
-                    )
-                    
-                    if aug_curvature_dict:
-                        metadata['curvature_stats'] = {
-                            curv_type: {
-                                'mean': float(curvatures.mean()),
-                                'std': float(curvatures.std()),
-                                'min': float(curvatures.min()),
-                                'max': float(curvatures.max())
-                            }
-                            for curv_type, curvatures in aug_curvature_dict.items()
+                if aug_curvature_dict:
+                    metadata['curvature_stats'] = {
+                        curv_type: {
+                            'mean': float(curvatures.mean()),
+                            'std': float(curvatures.std()),
+                            'min': float(curvatures.min()),
+                            'max': float(curvatures.max())
                         }
-                
-                # Store view with aligned labels and names
-                # CRITICAL: Add labels and names directly to the tuple for easy access
-                view_data = {
-                    'graph': aug_graph,
-                    'features': aug_features,
-                    'node_names': aug_node_names,  # ← CRITICAL: Add here
-                    'labels': aug_labels,  # ← CRITICAL: Add here
-                    'metadata': metadata,
-                    'curvature': aug_curvature_dict
-                }
+                        for curv_type, curvatures in aug_curvature_dict.items()
+                    }
             
-                augmented_views.append(view_data)
-                
-                logger.info(f"View {i+1}: {metadata['augmented_nodes']} nodes, "
-                        f"{metadata.get('augmented_edges', aug_graph.number_of_edges())} edges")
-                logger.info(f"View {i+1}: {len(aug_node_names)} node names, {len(aug_labels)} labels")
+            # ====================================================================
+            # Store view as dictionary with all aligned data
+            # ====================================================================
+            view_data = {
+                'graph': aug_graph,
+                'features': aug_features,
+                'node_names': aug_node_names,  # List[str]
+                'labels': aug_labels,  # np.ndarray
+                'metadata': metadata,
+                'curvature': aug_curvature_dict
+            }
             
-            logger.info(f"\n{'='*80}")
-            logger.info(f"✓ Generated {num_views} augmented views with proper alignment")
-            logger.info(f"{'='*80}\n")
+            augmented_views.append(view_data)
             
-            return augmented_views
+            logger.info(f"✓ View {i+1}: {metadata['augmented_nodes']} nodes, "
+                    f"{metadata.get('augmented_edges', aug_graph.number_of_nodes())} edges")
+            logger.info(f"✓ View {i+1}: {len(aug_node_names)} node names, {len(aug_labels)} labels stored")
         
+        # ========================================================================
+        # Final summary
+        # ========================================================================
+        logger.info(f"\n{'='*80}")
+        logger.info(f"✓ GENERATED {num_views} AUGMENTED VIEWS")
+        logger.info(f"  Strategy: {strategy}")
+        logger.info(f"  All views use proper label-name alignment")
+        logger.info(f"{'='*80}\n")
+        
+        return augmented_views
+                
     def compute_augmented_curvature(self, aug_G: nx.Graph, features: torch.Tensor, method='both'):
         """
         Calculate curvature for an augmented graph

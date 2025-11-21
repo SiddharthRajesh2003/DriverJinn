@@ -84,7 +84,8 @@ class ContrastiveDriverGenePredictor(nn.Module):
             num_hop_types=len(hop_types),
             num_heads=num_attention_heads,
             dropout=dropout,
-            pathway_aggregation=pathway_aggregator
+            pathway_aggregation=pathway_aggregator,
+            concat_heads=concat
         )
         
         # Projection head for contrastive learning

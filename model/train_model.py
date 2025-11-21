@@ -10,6 +10,7 @@ from pathlib import Path
 import argparse
 import matplotlib.pyplot as plt
 import seaborn as sns
+from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 
 from utils.logging_manager import get_logger
 from model.DriverGenePredictor import ContrastiveDriverGenePredictor, compute_ndcg
@@ -298,6 +299,7 @@ def train_single_fold(
     attention_mode: str = 'hybrid',
     pathway_aggregator: str = 'hierarchical',
     num_heads: int = 4,
+    num_layers: int = 3,
     concat_heads: bool = True,
     ranking_loss_type: str = 'pairwise',
     ranking_margin: float = 1.0,
@@ -381,7 +383,7 @@ def train_single_fold(
     else:
         hidden_channels = 256
         projection_dim = 128
-        num_layers = 3
+        num_layers = num_layers
     
     # Create model with reduced size
     model = create_cancer_driver_model(
@@ -392,7 +394,7 @@ def train_single_fold(
         attention_mode=attention_mode,
         pathway_aggregator=pathway_aggregator,
         num_heads=num_heads,
-        concat_heads=True,
+        concat_heads=concat_heads,
         device=device
     )
     
@@ -552,7 +554,13 @@ def train_single_fold(
                 # Forward pass with mixed precision
                 with torch.amp.autocast('cuda') if scaler else torch.no_grad():
                     # Get scores
-                    scores, _ = model.forward(view_x, view_edge_index, view_curvature)
+                    scores= gradient_checkpoint(
+                        lambda x, e, c: model.forward(x, e, c)[0],  # Only need scores
+                        view_x,
+                        view_edge_index,
+                        view_curvature,
+                        use_reentrant=False
+                    )
                     
                     # Compute ranking loss
                     ranking_criterion = RankingLoss(
@@ -993,6 +1001,8 @@ def main():
                         help='Set the learning rate')
     parser.add_argument('--num_heads', type=int, default=4,
                         help='Number of attention heads')
+    parser.add_argument('--num_layers', type = int, default = 3,
+                        help = 'Choose the number of GNN layers')
     parser.add_argument('--concat_heads', action='store_true', default=True,
                         help='Concatenate attention heads (vs average)')
     parser.add_argument('--ranking_loss_type', type=str, default='pairwise',
@@ -1111,7 +1121,9 @@ def main():
             results_dir=results_dir,
             model_prefix=args.model_out_prefix,
             attention_mode=args.attention_mode,
+            gradient_accumulation_steps=args.gradient_accumulation_steps,
             num_heads=args.num_heads,
+            num_layers=args.num_layers,
             concat_heads=args.concat_heads,
             ranking_loss_type=args.ranking_loss_type,
             ranking_margin=args.ranking_margin,

@@ -51,14 +51,17 @@ class MultiLayerAttention(nn.Module):
         
         # Stack layer outputs: [num_nodes, num_layers, hidden_dim]
         stacked = torch.stack(layer_outputs, dim=1)
-        batch_size, num_layers, _ = stacked.shape
+        num_nodes, num_layers, hidden_dim = stacked.shape
+        
+        # Reshape for batch processing : [num_nodes * num_layers, hidden_dim]
+        stacked_flat = stacked.view(-1, hidden_dim)
         
         # Compute queries, keys, values
-        Q = self.q_linear(stacked).view(batch_size, num_layers, self.num_heads, self.head_dim)
-        K = self.k_linear(stacked).view(batch_size, num_layers, self.num_heads, self.head_dim)
-        V = self.v_linear(stacked).view(batch_size, num_layers, self.num_heads, self.head_dim)
+        Q = self.q_linear(stacked_flat).view(num_nodes, num_layers, self.num_heads, self.head_dim)
+        K = self.k_linear(stacked_flat).view(num_nodes, num_layers, self.num_heads, self.head_dim)
+        V = self.v_linear(stacked_flat).view(num_nodes, num_layers, self.num_heads, self.head_dim)
         
-        # Transpose for attention: [batch_size, num_heads, num_layers, head_dim]
+        # Transpose for attention: [num_nodes, num_heads, num_layers, head_dim]
         Q = Q.transpose(1, 2)
         K = K.transpose(1, 2)
         V = V.transpose(1, 2)
@@ -71,16 +74,17 @@ class MultiLayerAttention(nn.Module):
         # Apply attention to values
         context = torch.matmul(attention, V)
         
-        # Reshape and project: [batch_size, num_layers, hidden_dim]
-        context = context.transpose(1, 2).contiguous().view(batch_size, num_layers, self.hidden_dim)
-        output = self.out_linear(context)
+        # Reshape and project: [num_nodes, num_layers, hidden_dim]
+        context = context.transpose(1, 2).contiguous().view(num_nodes, num_layers, self.hidden_dim)
+        output_flat = context.view(-1, self.hidden_dim)
+        output = self.out_linear(output_flat).view(num_nodes, num_layers, self.hidden_dim)
         
         # Aggregate across layers (mean pooling)
         aggregated = output.mean(dim=1)
         aggregated = self.layer_norm(aggregated + layer_outputs[-1])  # Residual from last layer
         
         if return_attention:
-            # Average attention weights across heads: [batch_size, num_layers]
+            # Average attention weights across heads: [num_nodes, num_layers]
             avg_attention = attention.mean(dim=1).mean(dim=-1)
             return aggregated, avg_attention
         
@@ -296,25 +300,49 @@ class HybridAggregator(nn.Module):
         num_hop_types: int,
         num_heads: int = 4,
         pathway_aggregation: str = 'attention',
-        dropout: float = 0.2
+        dropout: float = 0.2,
+        concat_heads: bool = True
     ):
         super().__init__()
         
+        self.hidden_channels = hidden_channels
+        self.concat_heads = concat_heads
+        
+        actual_hidden_dim = hidden_channels * num_heads if concat_heads else hidden_channels
+        
         # Stage 1: Aggregate layers within each pathway
         self.layer_aggregator = MultiLayerAttention(
-            hidden_dim=hidden_channels,
+            hidden_dim=actual_hidden_dim,
             num_heads=num_heads,
             dropout=dropout
         )
         
         # Stage 2: Aggregate across pathways
         self.pathway_aggregator = MultiPathwayAggregator(
-            hidden_channels=hidden_channels,
+            hidden_channels=actual_hidden_dim,
             num_curvature_types=num_curvature_types,
             num_hop_types=num_hop_types,
             aggregation_method=pathway_aggregation,
             dropout=dropout
         )
+        
+        # Projection layer to map back to base hidden channels
+        if concat_heads and num_heads > 1:
+            self.output_projection = nn.Sequential(
+                nn.Linear(actual_hidden_dim, hidden_channels),
+                nn.LayerNorm(hidden_channels),
+                nn.ReLU(),
+                nn.Dropout(dropout)
+            )
+        else:
+            self.output_projection = nn.Identity()
+        
+        logger.info(f"Initialized HybridAggregator:")
+        logger.info(f"  - Base hidden_channels: {hidden_channels}")
+        logger.info(f"  - Concat heads: {concat_heads}")
+        logger.info(f"  - Actual dimension: {actual_hidden_dim}")
+        logger.info(f"  - Num heads: {num_heads}")
+        logger.info(f"  - Output projection: {concat_heads and num_heads > 1}")
     
     def forward(
         self,
@@ -366,6 +394,9 @@ class HybridAggregator(nn.Module):
             pathway_layer_aggregated,
             return_attention=return_attention
         )
+        
+        # Project back to base hidden channels
+        final_output = self.output_projection(final_output)
         
         if return_attention:
             attention_info = {
