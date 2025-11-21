@@ -6,13 +6,7 @@ import pandas as pd
 import gc
 import numpy as np
 import pickle
-import os
 from pathlib import Path
-from sklearn.metrics import (
-    classification_report, roc_auc_score, roc_curve, 
-    average_precision_score, precision_recall_curve
-)
-from statsmodels.stats.multitest import multipletests
 import argparse
 import matplotlib.pyplot as plt
 import seaborn as sns
@@ -254,6 +248,7 @@ def create_cancer_driver_model(
     projection_dim: int = 128,
     num_layers: int = 3,
     attention_mode: str = 'hybrid',
+    pathway_aggregator: str = 'hierarchical',
     num_heads: int = 4,
     concat_heads: bool = True,
     device: torch.device = None
@@ -272,6 +267,7 @@ def create_cancer_driver_model(
         num_attention_heads=num_heads,
         use_attention=True,
         attention_mode=attention_mode,
+        pathway_aggregator=pathway_aggregator,
         concat=concat_heads,
         temperature=0.7,
         dropout=0.2,
@@ -300,6 +296,7 @@ def train_single_fold(
     results_dir: Path,
     model_prefix: str = "",
     attention_mode: str = 'hybrid',
+    pathway_aggregator: str = 'hierarchical',
     num_heads: int = 4,
     concat_heads: bool = True,
     ranking_loss_type: str = 'pairwise',
@@ -323,18 +320,36 @@ def train_single_fold(
     if features is None:
         raise ValueError("No 'feature' or 'x' key found in original data")
     
-    # Extract node names (stored as a list)
-    node_names = original.get('node_name', None)
-    if node_names is None:
-        logger.warning("No 'node_name' found in original data. Using indices as names.")
-        node_names = np.array([f"Gene_{i}" for i in range(features.shape[0])])
-    elif isinstance(node_names, list):
-        node_names = np.array(node_names)
-    elif isinstance(node_names, torch.Tensor):
-        node_names = node_names.cpu().numpy()
+    # Extract node names using node_id_to_name mapping from augmented_views
+    num_nodes = features.shape[0]
+    
+    # Get node_id_to_name mapping from first augmented view (since it's not in original)
+    if augmented_views and len(augmented_views) > 0 and 'metadata' in augmented_views[0]:
+        node_id_to_name = augmented_views[0]['metadata'].get('node_id_to_name', {})
+        if node_id_to_name:
+            # Create array of names in order of node IDs
+            # The dict maps node_id -> np.str_('GENE_NAME')
+            node_names = np.array([str(node_id_to_name.get(i, f"Gene_{i}")) for i in range(num_nodes)])
+            logger.info(f"Using node_id_to_name mapping from augmented_views with {len(node_id_to_name)} entries")
+        else:
+            logger.warning("node_id_to_name mapping is empty in augmented_views metadata")
+            node_names = np.array([f"Gene_{i}" for i in range(num_nodes)])
+    
+    # Fallback to node_name if available in original
+    elif 'node_name' in original:
+        node_names = original['node_name']
+        if isinstance(node_names, list):
+            node_names = np.array(node_names)
+        elif isinstance(node_names, torch.Tensor):
+            node_names = node_names.cpu().numpy()
+        else:
+            node_names = np.array(list(node_names))
+        logger.info("Using node_name field from original data")
+    
+    # Final fallback to generic names
     else:
-        # Convert any other iterable to numpy array
-        node_names = np.array(list(node_names))
+        logger.warning("No node name mapping found. Using generic Gene_<id> format.")
+        node_names = np.array([f"Gene_{i}" for i in range(num_nodes)])
     
     num_original_nodes = features.shape[0]
     if len(train_mask_original) != num_original_nodes:
@@ -375,6 +390,7 @@ def train_single_fold(
         projection_dim=projection_dim,
         num_layers=num_layers,
         attention_mode=attention_mode,
+        pathway_aggregator=pathway_aggregator,
         num_heads=num_heads,
         concat_heads=True,
         device=device
@@ -971,6 +987,8 @@ def main():
     parser.add_argument('--attention_mode', type=str, default='hybrid',
                         choices=['standard', 'edge_feature', 'bias', 'gated', 'hybrid'],
                         help='Attention mode for message passing')
+    parser.add_argument('--pathway_aggregator', type = str, default='attention',
+                        choices= ['attention','concat', 'hierarchical', 'mean'])
     parser.add_argument('--learning_rate', type=float, default=1e-3,
                         help='Set the learning rate')
     parser.add_argument('--num_heads', type=int, default=4,

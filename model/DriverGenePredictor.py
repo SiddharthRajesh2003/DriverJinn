@@ -46,6 +46,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         num_attention_heads: int = 4,
         use_attention:bool = True,
         attention_mode:str = 'hybrid',
+        pathway_aggregator: str = 'hierarchical',
         concat:bool = True,
         min_edge_ratio: float = 0.15,
         negative_slope: float = 0.2,
@@ -83,7 +84,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
             num_hop_types=len(hop_types),
             num_heads=num_attention_heads,
             dropout=dropout,
-            pathway_aggregation='hierarchical'
+            pathway_aggregation=pathway_aggregator
         )
         
         # Projection head for contrastive learning
