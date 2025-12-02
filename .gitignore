@@ -10,3 +10,4 @@ model/model_tester.py
 all_model_results/
 results.tar.gz
 misc/
+model_results/

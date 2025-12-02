@@ -968,28 +968,40 @@ class ContrastiveDriverGenePredictor(nn.Module):
         # Zero gradients
         optimizer.zero_grad()
         
-        # NEW: Use no_grad for contrastive learning part to save memory
-        with torch.amp.autocast('cuda') if torch.cuda.is_available() else torch.no_grad():
-            z1 = self.get_contrastive_projection(view1['x'], view1['edge_index'], curv1)
-            z2 = self.get_contrastive_projection(view2['x'], view2['edge_index'], curv2)
+        # Contrastive Learning
+        embeddings_1, _ = self.encode(
+            view1['x'],
+            view1['edge_index'],
+            curv1,
+            return_attention=False
+        )
+        
+        embeddings_2, _ = self.encode(
+            view2['x'],
+            view2['edge_index'],
+            curv2,
+            return_attention=False
+        )
+        
+        z1 = self.projection(embeddings_1)
+        z1 = F.normalize(z1, dim=-1)
+        
+        z2 = self.projection(embeddings_2)
+        z2 = F.normalize(z2, dim=-1)
+        
         contrastive_loss = self.compute_contrastive_loss(z1, z2)
         
-        # Detach contrastive loss to save memory
         contrastive_loss_value = contrastive_loss.item()
-        del z1, z2
         
         # Ranking loss
         ranking_criterion = RankingLoss(margin=margin, loss_type=ranking_loss_type)
         
-        scores1, _ = self.forward(view1['x'], view1['edge_index'], curv1)
-        scores2, _ = self.forward(view2['x'], view2['edge_index'], curv2)
+        scores1 = self.ranking_head(embeddings_1).squeeze(-1)
+        scores2 = self.ranking_head(embeddings_2).squeeze(-1)
         
         ranking_loss1 = ranking_criterion(scores1, aug_labels1, aug_train_mask1)
         ranking_loss2 = ranking_criterion(scores2, aug_labels2, aug_train_mask2)
         ranking_loss = (ranking_loss1 + ranking_loss2) / 2.0
-        
-        # NEW: Clean up intermediate tensors
-        del scores1, scores2, ranking_loss1, ranking_loss2
         
         # Combined loss
         total_loss = (contrastive_weight * contrastive_loss
@@ -1041,14 +1053,15 @@ class ContrastiveDriverGenePredictor(nn.Module):
                 scores1[aug_train_mask1].detach().cpu().numpy(),
                 aug_labels1[aug_train_mask1].detach().cpu().numpy()
             )
-            
+        
         return {
         'total_loss': total_loss.item(),
         'contrastive_loss': contrastive_loss.item(),
         'ranking_loss': ranking_loss,
         'train_ndcg': train_ndcg
         }
-        
+    
+    
     def evaluate(
         self,
         data: Dict,

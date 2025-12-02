@@ -207,7 +207,14 @@ class SchurComplementAugmentation:
             
             augmented_features = torch.from_numpy(augmented_features)
             augmented_labels = torch.from_numpy(augmented_labels)
-            
+        
+        
+        eliminated_node_id_to_name = {
+            node_id: node_id_to_name_original[node_id]
+            for node_id in eliminated_nodes
+            if node_id in node_id_to_name_original
+        }
+        
         metadata = {
             'original_nodes': num_nodes,
             'augmented_nodes': G_aug.number_of_nodes(),
@@ -219,6 +226,7 @@ class SchurComplementAugmentation:
             'added_edges': len(added_edges),
             'avg_clique_size': np.mean(clique_sizes) if clique_sizes else 0,
             'eliminated_node_ids': eliminated_nodes,
+            'eliminated_node_id_to_name': eliminated_node_id_to_name,
             'strategy': 'priority',
             'node_id_to_name': node_id_to_name_aug,
             'augmented_node_names': augmented_node_names,
@@ -347,6 +355,12 @@ class SchurComplementAugmentation:
             augmented_features = torch.from_numpy(augmented_features)
             augmented_labels = torch.from_numpy(augmented_labels)
         
+        eliminated_node_id_to_name = {
+            node_id: node_id_to_name_original[node_id]
+            for node_id in eliminated_nodes
+            if node_id in node_id_to_name_original
+        }
+        
         metadata = {
             'original_nodes': num_nodes,
             'augmented_nodes': G_aug.number_of_nodes(),
@@ -358,6 +372,7 @@ class SchurComplementAugmentation:
             'added_edges': len(added_edges),
             'avg_clique_size': np.mean(clique_sizes) if clique_sizes else 0,
             'eliminated_node_ids': eliminated_nodes,
+            'eliminated_node_id_to_name': eliminated_node_id_to_name,
             'strategy': 'priority',
             'node_id_to_name': node_id_to_name_aug,
             'augmented_node_names': augmented_node_names,
@@ -503,6 +518,12 @@ class SchurComplementAugmentation:
             augmented_features = torch.from_numpy(augmented_features)
             augmented_labels = torch.from_numpy(augmented_labels)
         
+        eliminated_node_id_to_name = {
+            node_id: node_id_to_name_original[node_id]
+            for node_id in eliminated_nodes
+            if node_id in node_id_to_name_original
+        }
+        
         metadata = {
             'original_nodes': num_nodes,
             'augmented_nodes': G_aug.number_of_nodes(),
@@ -510,6 +531,7 @@ class SchurComplementAugmentation:
             'final_node_list': final_node_list,
             'node_mapping': node_mapping,
             'eliminated_node_ids': eliminated_nodes,
+            'eliminated_node_id_to_name': eliminated_node_id_to_name,
             'eliminated_nodes': len(eliminated_nodes),
             'original_edges': G.number_of_edges(),
             'augmented_edges': G_aug.number_of_edges(),

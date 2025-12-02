@@ -24,6 +24,59 @@ gc.collect()
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
+def setup_multi_gpu(
+    model,
+    use_multi_gpu: bool = False,
+    gpu_ids: List = None
+):
+    """Setup model for multi-GPU training
+    
+    Args:
+        model: PyTorch model
+        use_multi_gpu: Whether to use multiple GPUs
+        gpu_ids: Specific GPU IDs (None = all available)
+    
+    Returns:
+        model: Wrapped model
+        device: Primary device
+        is_multi_gpu: Whether multi-GPU is enabled
+    """
+    
+    if not torch.cuda.is_available():
+        print('CUDA not available, using CPU')
+        return model, torch.device('cpu'), False
+    
+    num_gpus = torch.cuda.device_count()
+    print('\nGPU Configuration:')
+    print(f'    Available GPUs: {num_gpus}')
+    for i in range(num_gpus):
+        props = torch.cuda.get_device_properties(i)
+        mem_gb = props.total_memory / 1024**3
+        print(f"  GPU {i}: {props.name} ({mem_gb:.1f} GB)")
+        
+    # Single GPU mode
+    if not use_multi_gpu or num_gpus <= 1:
+        device = torch.device('cuda:0')
+        model = model.to(device)
+        print(f"\n✓ Using single GPU: cuda:0")
+        return model, device, False
+    
+    # Multi-GPU Mode
+    if gpu_ids is None:
+        gpu_ids = list(range(num_gpus))
+        
+    print(f"\n✓ Using DataParallel on {len(gpu_ids)} GPUs: {gpu_ids}")
+    
+    model = nn.DataParallel(model, device_ids=gpu_ids)
+    primary_device = torch.device(f'cuda:{gpu_ids[0]}')
+    model = model.to(primary_device)
+    
+    print(f"  Primary device: cuda:{gpu_ids[0]}")
+    print(f"  Batch will be split across {len(gpu_ids)} GPUs")
+    
+    return model, primary_device, True
+
+
 def check_for_nans(tensor, name="tensor", raise_error=True):
     """Check if tensor contains NaN or Inf values"""
     if torch.isnan(tensor).any():
@@ -189,6 +242,7 @@ def preprocess_curvature_data(data: Dict, curvature_type: str = 'ollivier') -> D
     
     return data
 
+
 def evaluate_with_ranking_metrics(
     model: nn.Module,
     data: Dict,
@@ -248,9 +302,11 @@ def create_cancer_driver_model(
     hidden_channels: int = 256,
     projection_dim: int = 128,
     num_layers: int = 3,
+    temperature: float = 0.4,
     attention_mode: str = 'hybrid',
     pathway_aggregator: str = 'hierarchical',
     num_heads: int = 4,
+    dropout: float = 0.2,
     concat_heads: bool = True,
     device: torch.device = None
 ) -> ContrastiveDriverGenePredictor:
@@ -267,11 +323,11 @@ def create_cancer_driver_model(
         hop_types=['one_hop', 'two_hop'],
         num_attention_heads=num_heads,
         use_attention=True,
+        temperature=temperature,
         attention_mode=attention_mode,
         pathway_aggregator=pathway_aggregator,
         concat=concat_heads,
-        temperature=0.7,
-        dropout=0.2,
+        dropout=dropout,
         device=device
     ).to(device)
 
@@ -300,12 +356,16 @@ def train_single_fold(
     pathway_aggregator: str = 'hierarchical',
     num_heads: int = 4,
     num_layers: int = 3,
+    temperature:float = 0.4,
+    dropout: float = 0.2,
     concat_heads: bool = True,
     ranking_loss_type: str = 'pairwise',
     ranking_margin: float = 1.0,
     gradient_accumulation_steps: int = 4,
     mixed_precision: bool = True,
-    reduce_model_size: bool = True
+    reduce_model_size: bool = True,
+    use_multi_gpu: bool = False,
+    gpu_ids: Optional[List] = None
 ) -> Tuple[ContrastiveDriverGenePredictor, Dict, Dict]:
     
     """Train model on a single fold with ranking objective"""
@@ -327,30 +387,36 @@ def train_single_fold(
     
     # Get node_id_to_name mapping from first augmented view (since it's not in original)
     if augmented_views and len(augmented_views) > 0 and 'metadata' in augmented_views[0]:
-        node_id_to_name = augmented_views[0]['metadata'].get('node_id_to_name', {})
-        if node_id_to_name:
+        node_id_to_name_aug = augmented_views[0]['metadata'].get('node_id_to_name', {})
+        eliminated_node_id_to_name = augmented_views[0]['metadata'].get('eliminated_node_id_to_name', {})
+        
+        if node_id_to_name_aug or eliminated_node_id_to_name:
+            # Combine augmented and eliminated mappings to reconstruct original full mapping
+            node_id_to_name_full = {**node_id_to_name_aug, **eliminated_node_id_to_name}
+            
             # Create array of names in order of node IDs
             # The dict maps node_id -> np.str_('GENE_NAME')
-            node_names = np.array([str(node_id_to_name.get(i, f"Gene_{i}")) for i in range(num_nodes)])
-            logger.info(f"Using node_id_to_name mapping from augmented_views with {len(node_id_to_name)} entries")
+            node_names = np.array([str(node_id_to_name_full.get(i, f"Gene_{i}")) for i in range(num_nodes)])
+            
+            logger.info(f"Reconstructed full node mapping: {len(node_id_to_name_aug)} remaining + "
+                    f"{len(eliminated_node_id_to_name)} eliminated = {len(node_id_to_name_full)} total")
+            
+            # Log eliminated nodes information
+            if eliminated_node_id_to_name:
+                logger.info(f"Eliminated nodes during augmentation:")
+                # Show first few eliminated nodes as examples
+                sample_eliminated = list(eliminated_node_id_to_name.items())[:5]
+                for node_id, gene_name in sample_eliminated:
+                    logger.info(f"  Node {node_id}: {gene_name}")
+                if len(eliminated_node_id_to_name) > 5:
+                    logger.info(f"  ... and {len(eliminated_node_id_to_name) - 5} more")
+            else:
+                logger.warning("eliminated_node_id_to_name mapping is empty in augmented_views metadata")
         else:
-            logger.warning("node_id_to_name mapping is empty in augmented_views metadata")
+            logger.warning("Both node_id_to_name and eliminated_node_id_to_name mappings are empty")
             node_names = np.array([f"Gene_{i}" for i in range(num_nodes)])
-    
-    # Fallback to node_name if available in original
-    elif 'node_name' in original:
-        node_names = original['node_name']
-        if isinstance(node_names, list):
-            node_names = np.array(node_names)
-        elif isinstance(node_names, torch.Tensor):
-            node_names = node_names.cpu().numpy()
-        else:
-            node_names = np.array(list(node_names))
-        logger.info("Using node_name field from original data")
-    
-    # Final fallback to generic names
     else:
-        logger.warning("No node name mapping found. Using generic Gene_<id> format.")
+        logger.warning("No augmented_views metadata found")
         node_names = np.array([f"Gene_{i}" for i in range(num_nodes)])
     
     num_original_nodes = features.shape[0]
@@ -380,6 +446,7 @@ def train_single_fold(
         projection_dim = 32
         num_layers = 2
         num_heads = 1
+        concat_heads = False
     else:
         hidden_channels = 256
         projection_dim = 128
@@ -392,11 +459,26 @@ def train_single_fold(
         projection_dim=projection_dim,
         num_layers=num_layers,
         attention_mode=attention_mode,
+        temperature=temperature,
+        dropout=dropout,
         pathway_aggregator=pathway_aggregator,
         num_heads=num_heads,
         concat_heads=concat_heads,
         device=device
     )
+    
+    # Setup multi-GPU before moving to device
+    model, primary_device, is_multi_gpu = setup_multi_gpu(
+        model=model,
+        use_multi_gpu=use_multi_gpu,
+        gpu_ids=gpu_ids
+    )
+    
+    # Update device to primary device for multi-GPU
+    if is_multi_gpu:
+        device = primary_device
+    
+    actual_model = model.module if is_multi_gpu else model
     
     # Optimizer
     optimizer = torch.optim.AdamW(
@@ -511,7 +593,7 @@ def train_single_fold(
                     view_curvature = view_curvature.to(device)
                 else:
                     # Compute curvature on-the-fly
-                    view_curvature = model.compute_augmented_curvature(
+                    view_curvature = actual_model.compute_augmented_curvature(
                         view_edge_index,
                         None,
                         view_x,
@@ -521,7 +603,7 @@ def train_single_fold(
                     )
                 
                 # Validate curvature
-                view_curvature = model.validate_and_fix_curvature_dimensions(
+                view_curvature = actual_model.validate_and_fix_curvature_dimensions(
                     view_edge_index, view_curvature, f"View{accum_step}"
                 )
                 
@@ -592,6 +674,7 @@ def train_single_fold(
                             )
                             train_ndcg = compute_ndcg(train_scores[train_mask_original], 
                                                     labels[train_mask_original], k=50)
+                            
                         accumulated_metrics['train_ndcg'] = train_ndcg
                     else:
                         # Reuse previous value
@@ -643,10 +726,12 @@ def train_single_fold(
         optimizer.zero_grad()
         torch.cuda.empty_cache()
         
+        # Replace your validation and early stopping section with this:
+
         # Validation (less frequently to save time)
         if epoch % 5 == 0 or epoch == num_epochs - 1:
             val_metrics = evaluate_with_ranking_metrics(
-                model, original_device, labels, val_mask_original,
+                actual_model, original_device, labels, val_mask_original,
                 curvature_type='ollivier', device=device
             )
             
@@ -662,9 +747,17 @@ def train_single_fold(
                     'mrr': 0.0
                 }
             
-            # Update scheduler
+            # Update scheduler ONLY when we have fresh validation metrics
             if epoch >= 10:
                 scheduler.step(val_metrics.get('ndcg@50', 0))
+            
+            # Check early stopping ONLY when we have fresh validation metrics
+            current_ndcg = val_metrics.get('ndcg@50', 0)
+            if early_stopping(current_ndcg):
+                logger.info(f"Early stopping triggered at epoch {epoch}")
+                logger.info(f"Best NDCG@50: {early_stopping.best_score:.4f} at epoch {early_stopping.best_epoch}")
+                break
+            
         else:
             # Skip validation - reuse previous metrics as dict
             if history['val_ndcg@50']:
@@ -678,6 +771,8 @@ def train_single_fold(
                 }
             else:
                 val_metrics = {'ndcg@50': 0, 'auroc': 0, 'auprc': 0, 'f1': 0, 'precision@50': 0, 'mrr': 0}
+            
+            # DO NOT check early stopping on reused metrics
         
         # Store history
         history['train_loss'].append(avg_loss)
@@ -704,10 +799,22 @@ def train_single_fold(
             best_val_ndcg = val_metrics.get('ndcg@50', 0)
             best_metrics = val_metrics
             
-            model.save_checkpoint(
-                str(model_path), epoch, optimizer, best_metrics,
-                metadata={'fold': fold_idx}
-            )
+            if is_multi_gpu:
+                torch.save(
+                    {
+                        'epoch': epoch,
+                        'model_state_dict': model.module.state_dict(),
+                        'optimizer_state_dict': optimizer.state_dict(),
+                        'best_metrics': best_metrics,
+                        'metadata': {'fold': fold_idx}
+                    },
+                    model_path
+                )
+            else:
+                actual_model.save_checkpoint(
+                    str(model_path), epoch, optimizer, best_metrics,
+                    metadata={'fold': fold_idx}
+                )
         
         # Early stopping
         if early_stopping(val_metrics.get('ndcg@50', 0)):
@@ -715,8 +822,19 @@ def train_single_fold(
             break
     
     # Load best model
-    checkpoint = model.load_checkpoint(str(model_path), optimizer, device)
-    print(f"\n✓ Loaded best model from epoch {checkpoint['epoch']}")
+    # Load best model - FIX 2: Handle multi-GPU loading
+    if is_multi_gpu:
+        checkpoint = torch.load(model_path, map_location=device)
+        # Load into the underlying model (module)
+        model.module.load_state_dict(checkpoint['model_state_dict'])
+        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+        best_metrics = checkpoint.get('best_metrics', best_metrics)
+        epoch_loaded = checkpoint['epoch']
+    else:
+        checkpoint = actual_model.load_checkpoint(str(model_path), optimizer, device)
+        epoch_loaded = checkpoint['epoch']
+        
+    print(f"\n✓ Loaded best model from epoch {epoch_loaded}")
     print(f"  Best Val NDCG@50: {best_val_ndcg:.4f}")
     print(f"  Best Val AUROC: {best_metrics.get('auroc', 0):.4f}")
     print(f"  Best Val MRR: {best_metrics.get('mrr', 0):.4f}")
@@ -727,7 +845,7 @@ def train_single_fold(
     print(f"SCORING ALL GENES - FOLD {fold_idx}")
     print(f"{'='*80}")
     
-    scored_genes_df = model.score_genes_with_statistics(
+    scored_genes_df = actual_model.score_genes_with_statistics(
         data=original_device,
         labels=labels,
         node_names=node_names,  # <-- Pass node names here
@@ -914,7 +1032,7 @@ def aggregate_gene_scores(all_fold_dfs: List[pd.DataFrame], save_dir: Path, pref
             print(f"\nTop 20 Consensus Significant Genes:")
             print("-" * 80)
             display_cols = ['aggregate_rank', 'gene_name', 'mean_score', 'std_score',
-                          'folds_significant', 'total_folds', 'mean_adjusted_pvalue']
+                            'folds_significant', 'total_folds', 'mean_adjusted_pvalue']
             print(consensus_genes[display_cols].head(20).to_string(index=False))
         
         # Save aggregate results
@@ -992,6 +1110,10 @@ def main():
                         help='Number of training epochs per fold')
     parser.add_argument('--hidden_channels', type=int, default=256,
                         help='Hidden layer channels')
+    parser.add_argument('--temperature', type=float, default=0.4,
+                        help = 'Choose the temperature for contrastive loss.')
+    parser.add_argument('--dropout', type=float, default=0.2,
+                        help='Choose the proportion of neurons to drop')
     parser.add_argument('--attention_mode', type=str, default='hybrid',
                         choices=['standard', 'edge_feature', 'bias', 'gated', 'hybrid'],
                         help='Attention mode for message passing')
@@ -1003,7 +1125,7 @@ def main():
                         help='Number of attention heads')
     parser.add_argument('--num_layers', type = int, default = 3,
                         help = 'Choose the number of GNN layers')
-    parser.add_argument('--concat_heads', action='store_true', default=True,
+    parser.add_argument('--concat_heads', action='store_true', default=False,
                         help='Concatenate attention heads (vs average)')
     parser.add_argument('--ranking_loss_type', type=str, default='pairwise',
                         choices=['pairwise', 'listwise', 'pointwise'],
@@ -1020,6 +1142,7 @@ def main():
                         help='Maximum augmented views to use per training step')
     parser.add_argument('--checkpoint_layers', action='store_true',
                         help='Use gradient checkpointing for each layer')
+    
     # Add command-line argument for emergency mode
     parser.add_argument('--emergency_mode', action='store_true',
                         help='Use drastically reduced model for OOM issues')
@@ -1027,6 +1150,12 @@ def main():
                         help='Maximum number of augmented views to keep in memory')
     parser.add_argument('--reduce_model_size', action='store_true', default = False,
                         help = 'For OOM issues, use this arg to reduce the model size')
+    
+    # Multi-GPU Arguments
+    parser.add_argument('--use_multi_gpu', action = 'store_true', default=False,
+                        help = 'Use Multiple GPUs with DataParallel')
+    parser.add_argument('--gpu_ids', type = int, nargs='+', default=None,
+                        help='Specific GPU IDs to use (default=None)')
     args = parser.parse_args()
     
     # Create directories
@@ -1127,7 +1256,9 @@ def main():
             concat_heads=args.concat_heads,
             ranking_loss_type=args.ranking_loss_type,
             ranking_margin=args.ranking_margin,
-            reduce_model_size=args.reduce_model_size
+            reduce_model_size=args.reduce_model_size,
+            use_multi_gpu=args.use_multi_gpu,
+            gpu_ids=args.gpu_ids
         )
         
         all_fold_metrics.append(best_metrics)
