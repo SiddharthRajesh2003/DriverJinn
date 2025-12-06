@@ -385,7 +385,7 @@ def train_single_fold(
     # Extract node names using node_id_to_name mapping from augmented_views
     num_nodes = features.shape[0]
     
-    # Get node_id_to_name mapping from first augmented view (since it's not in original)
+    # Get node_id_to_name mapping from first augmented view
     if augmented_views and len(augmented_views) > 0 and 'metadata' in augmented_views[0]:
         node_id_to_name_aug = augmented_views[0]['metadata'].get('node_id_to_name', {})
         eliminated_node_id_to_name = augmented_views[0]['metadata'].get('eliminated_node_id_to_name', {})
@@ -395,29 +395,81 @@ def train_single_fold(
             node_id_to_name_full = {**node_id_to_name_aug, **eliminated_node_id_to_name}
             
             # Create array of names in order of node IDs
-            # The dict maps node_id -> np.str_('GENE_NAME')
             node_names = np.array([str(node_id_to_name_full.get(i, f"Gene_{i}")) for i in range(num_nodes)])
             
             logger.info(f"Reconstructed full node mapping: {len(node_id_to_name_aug)} remaining + "
                     f"{len(eliminated_node_id_to_name)} eliminated = {len(node_id_to_name_full)} total")
             
+            # ============================================================================
+            # EXTRACT LABELS USING THE SAME INDICES
+            # ============================================================================
+            # The keys in node_id_to_name_full are the ORIGINAL indices
+            # We can use these to get the correct labels from original['label']
+            
+            original_labels_full = original['label']  # Full original labels tensor
+            
+            # Create aligned labels array
+            aligned_labels = torch.zeros(num_nodes, dtype=original_labels_full.dtype)
+            
+            for i in range(num_nodes):
+                if i in node_id_to_name_full:
+                    # This node exists in the mapping, use its original label
+                    aligned_labels[i] = original_labels_full[i]
+                else:
+                    # This shouldn't happen if reconstruction is correct
+                    logger.warning(f"Node {i} not found in node_id_to_name_full mapping")
+                    aligned_labels[i] = 0  # Default to non-driver
+            
+            # OVERRIDE the labels variable with aligned labels
+            labels = aligned_labels
+            logger.info(f"✓ Aligned labels using node_id_to_name_full mapping")
+            
+            # ============================================================================
+            # VERIFY ALIGNMENT WITH KNOWN DRIVERS
+            # ============================================================================
+            known_drivers_to_check = ['TP53', 'KRAS', 'EGFR', 'PIK3CA', 'BRAF', 'PTEN']
+            logger.info(f"\nVerifying label alignment with known driver genes...")
+            
+            all_correct = True
+            for gene in known_drivers_to_check:
+                if gene in node_names:
+                    idx = np.where(node_names == gene)[0][0]
+                    label = labels[idx].item()
+                    
+                    if label == 1:
+                        logger.info(f"  ✓ {gene} (index {idx}): label=1 (driver)")
+                    else:
+                        logger.error(f"  ❌ {gene} (index {idx}): label={label} (INCORRECT!)")
+                        all_correct = False
+            
+            if not all_correct:
+                logger.error("❌ Label alignment verification FAILED!")
+                logger.error("Some known driver genes are not labeled as drivers.")
+            else:
+                logger.info(f"✓ All checked known drivers are correctly labeled")
+            
             # Log eliminated nodes information
             if eliminated_node_id_to_name:
-                logger.info(f"Eliminated nodes during augmentation:")
-                # Show first few eliminated nodes as examples
+                logger.info(f"\nEliminated nodes during augmentation:")
                 sample_eliminated = list(eliminated_node_id_to_name.items())[:5]
                 for node_id, gene_name in sample_eliminated:
-                    logger.info(f"  Node {node_id}: {gene_name}")
+                    original_label = original_labels_full[node_id].item()
+                    logger.info(f"  Node {node_id}: {gene_name} (original label={original_label})")
                 if len(eliminated_node_id_to_name) > 5:
                     logger.info(f"  ... and {len(eliminated_node_id_to_name) - 5} more")
-            else:
-                logger.warning("eliminated_node_id_to_name mapping is empty in augmented_views metadata")
+            
         else:
             logger.warning("Both node_id_to_name and eliminated_node_id_to_name mappings are empty")
             node_names = np.array([f"Gene_{i}" for i in range(num_nodes)])
     else:
         logger.warning("No augmented_views metadata found")
         node_names = np.array([f"Gene_{i}" for i in range(num_nodes)])
+
+    # Final validation
+    if len(node_names) != len(labels):
+        raise ValueError(f"FATAL: After alignment, {len(node_names)} names vs {len(labels)} labels")
+
+    logger.info(f"\n✓ Node names and labels are aligned: {len(node_names)} genes")
     
     num_original_nodes = features.shape[0]
     if len(train_mask_original) != num_original_nodes:
@@ -777,6 +829,7 @@ def train_single_fold(
         # Store history
         history['train_loss'].append(avg_loss)
         history['val_auroc'].append(val_metrics.get('auroc', 0))
+        history['train_ndcg'].append(accumulated_metrics['train_ndcg'])
         history['val_auprc'].append(val_metrics.get('auprc', 0))
         history['val_f1'].append(val_metrics.get('f1', 0))
         history['val_ndcg@50'].append(val_metrics.get('ndcg@50', 0))

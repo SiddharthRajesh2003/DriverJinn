@@ -1163,32 +1163,14 @@ class ContrastiveDriverGenePredictor(nn.Module):
     def score_all_genes(
         self,
         data: Dict,
+        labels: torch.Tensor,
+        node_names: Optional[np.ndarray] = None,  # <-- ADD THIS
         curvature_type: str = 'ollivier',
         device: torch.device = None,
         save_path: Optional[str] = None,
         save_prefix: str = ''
     ) -> pd.DataFrame:
-        """
-        Score ALL genes and return ranked DataFrame.
-        
-        Args:
-            data: Graph data dictionary
-            curvature_type: Type of curvature to use
-            device: Device to use for computation
-            save_path: Optional directory path to save CSV (if None, no file saved)
-            save_prefix: Optional prefix for output filename
-        
-        Returns:
-            DataFrame with all genes scored and ranked
-        
-        Example:
-            >>> df = model.score_all_genes(
-            ...     data,
-            ...     save_path='results/',
-            ...     save_prefix='experiment1'
-            ... )
-            # Saves to: results/experiment1_gene_rankings.csv
-        """
+        """Score ALL genes and return ranked DataFrame."""
         self.eval()
         
         device = device if device else self.device
@@ -1199,6 +1181,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         edge_curvature = data[curv_key].to(device)
         features = data.get('feature', data.get('x')).to(device)
         edge_index = data['edge_index'].to(device)
+        labels = labels.to(device)
         
         edge_curvature = self.validate_and_fix_curvature_dimensions(
             edge_index, edge_curvature, "ScoreAllGenes"
@@ -1207,17 +1190,21 @@ class ContrastiveDriverGenePredictor(nn.Module):
         scores, _ = self.forward(features, edge_index, edge_curvature)
         scores_normalized = torch.sigmoid(scores)
         
-        node_names = data.get('node_name', [f"Gene_{i}" for i in range(len(scores))])
-        true_labels = data.get('label', torch.zeros(len(scores)))
+        # Use provided node_names or generate defaults
+        if node_names is None:
+            node_names = [f"Gene_{i}" for i in range(len(scores))]
         
+        # IMPORTANT: Store everything with original_index BEFORE sorting
         df = pd.DataFrame({
-            'gene_name': node_names,
+            'original_index': np.arange(len(scores)),
+            'gene_id': np.arange(len(scores)),  # Original gene ID
+            'gene_name': node_names,  # <-- Use provided names in original order
             'driver_score': scores.cpu().numpy(),
             'driver_probability': scores_normalized.cpu().numpy(),
-            'true_label': true_labels.cpu().numpy(),
-            'rank': 0
+            'true_label': labels.cpu().numpy(),
         })
         
+        # NOW sort by score
         df = df.sort_values('driver_score', ascending=False).reset_index(drop=True)
         df['rank'] = df.index + 1
         df['percentile'] = df['rank'] / len(df) * 100
@@ -1301,7 +1288,29 @@ class ContrastiveDriverGenePredictor(nn.Module):
             logger.error(f"Node names length ({len(node_names)}) doesn't match labels ({num_genes})")
             node_names = np.array([f"Gene_{i}" for i in range(num_genes)])
         
-        df_scores = self.score_all_genes(data, curvature_type, device)
+        df_scores = self.score_all_genes(data, labels, node_names, curvature_type, device)
+
+        # Add this verification:
+        logger.info("\n=== VERIFYING DATAFRAME ALIGNMENT ===")
+        tp53_rows = df_scores[df_scores['gene_name'] == 'TP53']
+        if len(tp53_rows) > 0:
+            tp53_row = tp53_rows.iloc[0]
+            logger.info(f"TP53 in DataFrame:")
+            logger.info(f"  original_index: {tp53_row['original_index']}")
+            logger.info(f"  gene_name: {tp53_row['gene_name']}")
+            logger.info(f"  true_label: {tp53_row['true_label']}")
+            logger.info(f"  driver_score: {tp53_row['driver_score']:.4f}")
+            
+            # Verify against labels tensor
+            orig_idx = int(tp53_row['original_index'])
+            actual_label = labels[orig_idx].item()
+            logger.info(f"  labels[{orig_idx}]: {actual_label}")
+            
+            if tp53_row['true_label'] == actual_label == 1:
+                logger.info("  ✓ TP53 alignment is CORRECT!")
+            else:
+                logger.error("  ❌ TP53 alignment is BROKEN!")
+        logger.info("=" * 40 + "\n")
         
         # Add gene IDs and gene names to the dataframe
         df_scores['gene_id'] = np.arange(len(df_scores))
