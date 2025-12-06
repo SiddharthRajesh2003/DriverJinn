@@ -11,7 +11,6 @@ from sklearn.metrics import roc_auc_score, average_precision_score, precision_re
 from statsmodels.stats.multitest import multipletests
 
 
-# Assuming these are available from your codebase
 from utils.logging_manager import get_logger
 from model.support_models import ProjectionHead, BinaryClassifier, RankingLoss
 from model.curvature_aware_gnn import CurvatureAwareGNN
@@ -30,7 +29,7 @@ except ImportError:
 class ContrastiveDriverGenePredictor(nn.Module):
     """
     Model for cancer driver prediction with potential driver identification:
-    - Binary classification: driver (1) vs non-driver (0)
+    - Ranking genes based on their features and interactions to be potential drivers
     - Post-hoc identification of potential drivers from false positives
         based on curvature features, confidence, and node properties
     """
@@ -1311,10 +1310,6 @@ class ContrastiveDriverGenePredictor(nn.Module):
             else:
                 logger.error("  ❌ TP53 alignment is BROKEN!")
         logger.info("=" * 40 + "\n")
-        
-        # Add gene IDs and gene names to the dataframe
-        df_scores['gene_id'] = np.arange(len(df_scores))
-        df_scores['gene_name'] = node_names
         
         device = device if device else self.device
         if device is None:
