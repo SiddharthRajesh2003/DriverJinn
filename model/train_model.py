@@ -356,6 +356,8 @@ def train_single_fold(
     pathway_aggregator: str = 'hierarchical',
     num_heads: int = 4,
     num_layers: int = 3,
+    hidden_channels: int = 256,
+    projection_dim: int = 128,
     temperature:float = 0.4,
     dropout: float = 0.2,
     concat_heads: bool = True,
@@ -500,8 +502,8 @@ def train_single_fold(
         num_heads = 1
         concat_heads = False
     else:
-        hidden_channels = 256
-        projection_dim = 128
+        hidden_channels = hidden_channels
+        projection_dim = projection_dim
         num_layers = num_layers
     
     # Create model with reduced size
@@ -1163,6 +1165,8 @@ def main():
                         help='Number of training epochs per fold')
     parser.add_argument('--hidden_channels', type=int, default=256,
                         help='Hidden layer channels')
+    parser.add_argument('--projection_dim', type=int, default=128,
+                        help = 'Projection Dimensions')
     parser.add_argument('--temperature', type=float, default=0.4,
                         help = 'Choose the temperature for contrastive loss.')
     parser.add_argument('--dropout', type=float, default=0.2,
@@ -1306,6 +1310,8 @@ def main():
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             num_heads=args.num_heads,
             num_layers=args.num_layers,
+            projection_dim=args.projection_dim,
+            hidden_channels=args.hidden_channels,
             concat_heads=args.concat_heads,
             ranking_loss_type=args.ranking_loss_type,
             ranking_margin=args.ranking_margin,

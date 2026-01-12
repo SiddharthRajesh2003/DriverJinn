@@ -139,7 +139,8 @@ class ContrastiveDriverGenePredictor(nn.Module):
         if return_attention:
             attention_info = {
                 'pathway_attention': pathway_attention,
-                'pathway_outputs': pathway_outputs
+                'pathway_outputs': pathway_outputs,
+                'gnn_attention': gnn_attention
             }
         
         return final_repr, attention_info
@@ -1165,6 +1166,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         labels: torch.Tensor,
         node_names: Optional[np.ndarray] = None,  # <-- ADD THIS
         curvature_type: str = 'ollivier',
+        eliminated_node_ids: Optional[set] = None,
         device: torch.device = None,
         save_path: Optional[str] = None,
         save_prefix: str = ''
@@ -1192,6 +1194,10 @@ class ContrastiveDriverGenePredictor(nn.Module):
         # Use provided node_names or generate defaults
         if node_names is None:
             node_names = [f"Gene_{i}" for i in range(len(scores))]
+        
+        if eliminated_node_ids is not None:
+            kept_mask = np.array([i not in eliminated_node_ids
+                                    for i in range(len(scores))])
         
         # IMPORTANT: Store everything with original_index BEFORE sorting
         df = pd.DataFrame({
