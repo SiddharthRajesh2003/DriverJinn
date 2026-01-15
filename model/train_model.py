@@ -24,6 +24,8 @@ gc.collect()
 torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
+logger = get_logger(__name__)
+
 def setup_multi_gpu(
     model,
     use_multi_gpu: bool = False,
@@ -360,14 +362,17 @@ def train_single_fold(
     projection_dim: int = 128,
     temperature:float = 0.4,
     dropout: float = 0.2,
+    return_all_layers: float = False,
     concat_heads: bool = True,
+    early_stopping_patience: int = 50,
     ranking_loss_type: str = 'pairwise',
     ranking_margin: float = 1.0,
     gradient_accumulation_steps: int = 4,
     mixed_precision: bool = True,
     reduce_model_size: bool = True,
     use_multi_gpu: bool = False,
-    gpu_ids: Optional[List] = None
+    gpu_ids: Optional[List] = None,
+    validation_frequency: int = 10
 ) -> Tuple[ContrastiveDriverGenePredictor, Dict, Dict]:
     
     """Train model on a single fold with ranking objective"""
@@ -560,7 +565,7 @@ def train_single_fold(
     )
     
     # Early stopping based on NDCG@50
-    early_stopping = EarlyStopping(patience=50, min_delta=0.0001, mode='max')
+    early_stopping = EarlyStopping(patience = early_stopping_patience, min_delta=0.0001, mode='max')
     
     # Mixed precision scaler
     scaler = torch.amp.GradScaler('cuda') if mixed_precision and torch.cuda.is_available() else None
@@ -615,7 +620,46 @@ def train_single_fold(
     print(f"Early stopping metric: NDCG@50")
     print(f"Attention mode: {attention_mode}")
     print(f"{'='*80}\n")
-    
+
+    # ============================================================================
+    # PRECOMPUTE LABEL MAPPINGS FOR ALL VIEWS (Memory Optimization)
+    # ============================================================================
+    logger.info("Precomputing label mappings for all augmented views...")
+    num_original = labels.shape[0]
+    precomputed_mappings = []
+
+    for view_idx, view in enumerate(augmented_views):
+        eliminated_ids = set(view['metadata']['eliminated_node_ids'])
+        aug_size = view['x'].shape[0]
+
+        # Create mapping dictionary
+        orig_to_aug = {}
+        aug_idx = 0
+        for orig_idx in range(num_original):
+            if orig_idx not in eliminated_ids:
+                orig_to_aug[orig_idx] = aug_idx
+                aug_idx += 1
+
+        # Precompute augmented labels and mask tensors
+        aug_labels_cpu = torch.full((aug_size,), -100, dtype=torch.long)
+        aug_mask_cpu = torch.zeros(aug_size, dtype=torch.bool)
+
+        for orig_idx in range(num_original):
+            if orig_idx in orig_to_aug:
+                aug_idx = orig_to_aug[orig_idx]
+                if aug_idx < aug_size:
+                    aug_labels_cpu[aug_idx] = labels.cpu()[orig_idx]
+                    aug_mask_cpu[aug_idx] = train_mask_original.cpu()[orig_idx]
+
+        precomputed_mappings.append({
+            'aug_labels': aug_labels_cpu,
+            'aug_mask': aug_mask_cpu,
+            'aug_size': aug_size
+        })
+
+    logger.info(f"✓ Precomputed mappings for {len(augmented_views)} views")
+    # ============================================================================
+
     for epoch in range(num_epochs):
         # Clear cache at start of epoch
         torch.cuda.empty_cache()
@@ -660,51 +704,54 @@ def train_single_fold(
                 view_curvature = actual_model.validate_and_fix_curvature_dimensions(
                     view_edge_index, view_curvature, f"View{accum_step}"
                 )
-                
-                # Map labels/masks
-                eliminated_ids = set(view['metadata']['eliminated_node_ids'])
-                aug_size = view_x.shape[0]
-                num_original = labels.shape[0]
-                
-                orig_to_aug = {}
-                aug_idx = 0
-                for orig_idx in range(num_original):
-                    if orig_idx not in eliminated_ids:
-                        orig_to_aug[orig_idx] = aug_idx
-                        aug_idx += 1
-                
-                aug_labels = torch.full((aug_size,), -100, dtype=torch.long, device=device)
-                aug_mask = torch.zeros(aug_size, dtype=torch.bool, device=device)
-                
-                for orig_idx in range(num_original):
-                    if orig_idx in orig_to_aug:
-                        aug_idx = orig_to_aug[orig_idx]
-                        if aug_idx < aug_size:
-                            aug_labels[aug_idx] = labels[orig_idx]
-                            aug_mask[aug_idx] = train_mask_original[orig_idx]
-                
+
+                # Use precomputed labels/masks (Memory Optimization)
+                mapping = precomputed_mappings[view_idx]
+                aug_labels = mapping['aug_labels'].to(device)
+                aug_mask = mapping['aug_mask'].to(device)
+
                 if aug_mask.sum() == 0:
                     logger.warning(f"Step {accum_step}: No training samples after mapping")
                     continue
                 
                 # Forward pass with mixed precision
-                with torch.amp.autocast('cuda') if scaler else torch.no_grad():
-                    # Get scores
+                if scaler:
+                    with torch.amp.autocast('cuda'):
+                        # Get scores (Memory Optimization: disable return_all_layers during training)
+                        scores= gradient_checkpoint(
+                            lambda x, e, c: model.forward(x, e, c, return_all_layers=return_all_layers)[0],
+                            view_x,
+                            view_edge_index,
+                            view_curvature,
+                            use_reentrant=False
+                        )
+
+                        # Compute ranking loss
+                        ranking_criterion = RankingLoss(
+                            margin=ranking_margin,
+                            loss_type=ranking_loss_type
+                        )
+                        loss = ranking_criterion(scores, aug_labels, aug_mask)
+
+                        # Scale for accumulation
+                        loss = loss / gradient_accumulation_steps
+                else:
+                    # No mixed precision
                     scores= gradient_checkpoint(
-                        lambda x, e, c: model.forward(x, e, c)[0],  # Only need scores
+                        lambda x, e, c: model.forward(x, e, c, return_all_layers=return_all_layers)[0],
                         view_x,
                         view_edge_index,
                         view_curvature,
                         use_reentrant=False
                     )
-                    
+
                     # Compute ranking loss
                     ranking_criterion = RankingLoss(
-                        margin=ranking_margin, 
+                        margin=ranking_margin,
                         loss_type=ranking_loss_type
                     )
                     loss = ranking_criterion(scores, aug_labels, aug_mask)
-                    
+
                     # Scale for accumulation
                     loss = loss / gradient_accumulation_steps
                 
@@ -718,26 +765,32 @@ def train_single_fold(
                 successful_steps += 1
                 
                 if successful_steps > 0:
-                    # Compute training NDCG periodically
-                    if epoch % 5 == 0:  # Don't compute every epoch to save time
+                    # Compute training NDCG periodically (Memory Optimization: less frequent)
+                    if epoch % validation_frequency == 0:  # Compute based on validation_frequency
                         with torch.no_grad():
                             train_scores, _ = model.forward(
-                                original_device['x'], 
-                                original_device['edge_index'], 
-                                original_device['ollivier_curvature']
+                                original_device['x'],
+                                original_device['edge_index'],
+                                original_device['ollivier_curvature'],
+                                return_all_layers=return_all_layers
                             )
-                            train_ndcg = compute_ndcg(train_scores[train_mask_original], 
+                            train_ndcg = compute_ndcg(train_scores[train_mask_original],
                                                     labels[train_mask_original], k=50)
-                            
+
                         accumulated_metrics['train_ndcg'] = train_ndcg
                     else:
                         # Reuse previous value
                         accumulated_metrics['train_ndcg'] = history['train_ndcg'][-1] if history['train_ndcg'] else 0.0
                 
-                # Clean up immediately
+                # Clean up immediately (CRITICAL for OOM)
                 del view_x, view_edge_index, view_curvature
                 del aug_labels, aug_mask, scores, loss
-                torch.cuda.empty_cache()
+                del view  # Delete the view reference too
+
+                # Aggressive CUDA cache clearing
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                    torch.cuda.synchronize()  # Ensure cleanup completes
                 
             except RuntimeError as e:
                 if "out of memory" in str(e):
@@ -780,15 +833,17 @@ def train_single_fold(
         optimizer.zero_grad()
         torch.cuda.empty_cache()
         
-        # Replace your validation and early stopping section with this:
-
-        # Validation (less frequently to save time)
-        if epoch % 5 == 0 or epoch == num_epochs - 1:
+        # Validation (Memory Optimization: configurable frequency to save time and memory)
+        if epoch % validation_frequency == 0 or epoch == num_epochs - 1:
             val_metrics = evaluate_with_ranking_metrics(
                 actual_model, original_device, labels, val_mask_original,
                 curvature_type='ollivier', device=device
             )
-            
+
+            # CRITICAL: Clear validation activations immediately
+            torch.cuda.empty_cache()
+            gc.collect()
+
             # SAFETY CHECK: Ensure val_metrics is a dict
             if not isinstance(val_metrics, dict):
                 logger.error(f"val_metrics is {type(val_metrics)}, expected dict. Creating empty dict.")
@@ -800,7 +855,7 @@ def train_single_fold(
                     'precision@50': 0.0,
                     'mrr': 0.0
                 }
-            
+
             # Update scheduler ONLY when we have fresh validation metrics
             if epoch >= 10:
                 scheduler.step(val_metrics.get('ndcg@50', 0))
@@ -853,7 +908,7 @@ def train_single_fold(
         if val_metrics.get('ndcg@50', 0) > best_val_ndcg:
             best_val_ndcg = val_metrics.get('ndcg@50', 0)
             best_metrics = val_metrics
-            
+
             if is_multi_gpu:
                 torch.save(
                     {
@@ -870,7 +925,11 @@ def train_single_fold(
                     str(model_path), epoch, optimizer, best_metrics,
                     metadata={'fold': fold_idx}
                 )
-        
+
+            # CRITICAL: Clear checkpoint tensors from GPU memory
+            torch.cuda.empty_cache()
+            gc.collect()
+
         # Early stopping
         if early_stopping(val_metrics.get('ndcg@50', 0)):
             logger.info(f"Early stopping at epoch {epoch}")
@@ -1199,14 +1258,22 @@ def main():
                         help='Maximum augmented views to use per training step')
     parser.add_argument('--checkpoint_layers', action='store_true',
                         help='Use gradient checkpointing for each layer')
-    
-    # Add command-line argument for emergency mode
+    parser.add_argument('--attention_chunk_size', type=int, default=1000,
+                    help='Process nodes in chunks for attention (lower = less memory)')
+    parser.add_argument('--return_all_layers', action='store_true', default = False,
+                        help = 'Return all layers')
+    # ============================================================================
+    # MEMORY OPTIMIZATION ARGUMENTS
+    # ============================================================================
     parser.add_argument('--emergency_mode', action='store_true',
-                        help='Use drastically reduced model for OOM issues')
+                        help='Use drastically reduced model for OOM issues (auto-sets optimal params)')
     parser.add_argument('--max_augmented_views', type=int, default=3,
-                        help='Maximum number of augmented views to keep in memory')
-    parser.add_argument('--reduce_model_size', action='store_true', default = False,
-                        help = 'For OOM issues, use this arg to reduce the model size')
+                        help='Maximum number of augmented views to keep in memory (default: 3, recommended: 2)')
+    parser.add_argument('--reduce_model_size', action='store_true', default=False,
+                        help='Reduce model dimensions (hidden=64, proj=32, layers=2, heads=1)')
+    parser.add_argument('--validation_frequency', type=int, default=10,
+                        help='Validate every N epochs (default: 10, lower saves memory)')
+    # ============================================================================
     
     # Multi-GPU Arguments
     parser.add_argument('--use_multi_gpu', action = 'store_true', default=False,
@@ -1214,7 +1281,23 @@ def main():
     parser.add_argument('--gpu_ids', type = int, nargs='+', default=None,
                         help='Specific GPU IDs to use (default=None)')
     args = parser.parse_args()
-    
+
+    # ============================================================================
+    # EMERGENCY MODE AUTO-CONFIGURATION
+    # ============================================================================
+    if args.emergency_mode:
+        logger.warning("⚠️  EMERGENCY MODE ACTIVATED - Using aggressive memory optimizations")
+        args.reduce_model_size = True
+        args.max_augmented_views = 2
+        args.gradient_accumulation_steps = 8
+        args.attention_chunk_size = 500
+        args.mixed_precision = True
+        args.validation_frequency = 20
+        logger.warning(f"  → Hidden channels: 64, Projection: 32, Layers: 2, Heads: 1")
+        logger.warning(f"  → Max views: 2, Chunk size: 500, Grad accum: 8")
+        logger.warning(f"  → Mixed precision: ON, Validation frequency: 20")
+    # ============================================================================
+
     # Create directories
     models_dir = Path(args.model_out_dir)
     results_dir = Path(args.train_metrics_dir)
@@ -1247,7 +1330,16 @@ def main():
     
     original = data['original']
     augmented_views = data['augmented_views']
-    
+
+    # ============================================================================
+    # LIMIT AUGMENTED VIEWS (Memory Optimization)
+    # ============================================================================
+    if len(augmented_views) > args.max_augmented_views:
+        logger.warning(f"Limiting augmented views from {len(augmented_views)} to {args.max_augmented_views} to save memory")
+        augmented_views = augmented_views[:args.max_augmented_views]
+    logger.info(f"Using {len(augmented_views)} augmented views for training")
+    # ============================================================================
+
     # Validate and preprocess
     print("\n" + "="*80)
     print("VALIDATING AND PREPROCESSING DATA")
@@ -1310,6 +1402,7 @@ def main():
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             num_heads=args.num_heads,
             num_layers=args.num_layers,
+            early_stopping_patience=args.early_stopping_patience,
             projection_dim=args.projection_dim,
             hidden_channels=args.hidden_channels,
             concat_heads=args.concat_heads,
@@ -1317,7 +1410,8 @@ def main():
             ranking_margin=args.ranking_margin,
             reduce_model_size=args.reduce_model_size,
             use_multi_gpu=args.use_multi_gpu,
-            gpu_ids=args.gpu_ids
+            gpu_ids=args.gpu_ids,
+            validation_frequency=args.validation_frequency
         )
         
         all_fold_metrics.append(best_metrics)

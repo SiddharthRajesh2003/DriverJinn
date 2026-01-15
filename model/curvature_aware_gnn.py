@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import Dict, List, Optional, Tuple
+from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 from utils.logging_manager import get_logger
 from model.message_passing import CurvatureConstrainedMessagePassing
 
@@ -125,7 +126,55 @@ class CurvatureAwareGNN(nn.Module):
             })
         
         self.dropout = dropout
-    
+        self.use_pathway_checkpointing = True  # Enable per-pathway checkpointing
+
+    def _process_single_pathway(
+        self,
+        x: torch.Tensor,
+        edge_index: torch.Tensor,
+        edge_curvature: torch.Tensor,
+        pathway_key: str,
+        curv_type: str,
+        return_all_layers: bool,
+        return_attention: bool
+    ) -> Tuple[List[torch.Tensor], List[torch.Tensor]]:
+        """
+        Process a single pathway through all layers.
+        This function is checkpointed to save memory.
+        """
+        h = x.clone()
+        layer_outputs = []
+        layer_attentions = []
+
+        for i, conv in enumerate(self.conv_layers[pathway_key]):
+            # Message passing
+            h, alpha = conv(h, edge_index, edge_curvature, return_attention)
+
+            # Normalization
+            if self.use_pathway_norms:
+                h = self.pathway_batch_norms[pathway_key][i](h)
+            else:
+                h = self.batch_norms[i](h)
+
+            # Activation
+            h = F.relu(h)
+
+            # Dropout
+            h = F.dropout(h, p=self.dropout, training=self.training)
+
+            if return_all_layers:
+                layer_outputs.append(h)
+                if return_attention and alpha is not None:
+                    layer_attentions.append(alpha)
+
+        # If not return_all_layers, only return final output
+        if not return_all_layers:
+            layer_outputs = [h]
+            if return_attention and alpha is not None:
+                layer_attentions = [alpha]
+
+        return layer_outputs, layer_attentions
+
     def forward(
         self,
         x: torch.Tensor,
@@ -180,37 +229,37 @@ class CurvatureAwareGNN(nn.Module):
         for curv_type in self.curvature_types:
             for hop_type in self.hop_types:
                 pathway_key = f"{curv_type}_{hop_type}"
-                h = x.clone()  # Start fresh for each pathway
-                
-                layer_outputs = []
-                layer_attentions = []
-                
-                for i, conv in enumerate(self.conv_layers[pathway_key]):
-                    # Message passing
-                    h, alpha = conv(h, edge_index, edge_curvature, return_attention)
-                    
-                    # Normalization
-                    if self.use_pathway_norms:
-                        h = self.pathway_batch_norms[pathway_key][i](h)
-                    else:
-                        h = self.batch_norms[i](h)
-                    
-                    # Activation
-                    h = F.relu(h)
-                    
-                    # Dropout
-                    h = F.dropout(h, p=self.dropout, training=self.training)
-                    
-                    if return_all_layers:
-                        layer_outputs.append(h)
-                        if return_attention and alpha is not None:
-                            layer_attentions.append(alpha)
-                
-                # Store final or all layer outputs
-                outputs[curv_type][hop_type] = layer_outputs if return_all_layers else [h]
-                
+
+                # CRITICAL: Use checkpointing during training for memory efficiency
+                if self.training and self.use_pathway_checkpointing:
+                    # Checkpoint each pathway to save memory
+                    layer_outputs, layer_attentions = gradient_checkpoint(
+                        self._process_single_pathway,
+                        x, edge_index, edge_curvature,
+                        pathway_key, curv_type,
+                        return_all_layers, return_attention,
+                        use_reentrant=False
+                    )
+                else:
+                    # During eval: process pathway and immediately detach to save memory
+                    layer_outputs, layer_attentions = self._process_single_pathway(
+                        x, edge_index, edge_curvature,
+                        pathway_key, curv_type,
+                        return_all_layers, return_attention
+                    )
+
+                    # CRITICAL: Detach outputs during eval to free computational graph
+                    if not self.training:
+                        layer_outputs = [out.detach() for out in layer_outputs]
+                        if layer_attentions is not None:
+                            layer_attentions = [att.detach() if att is not None else None
+                                                for att in layer_attentions]
+
+                # Store pathway outputs
+                outputs[curv_type][hop_type] = layer_outputs
+
                 if return_attention:
-                    attention_weights[curv_type][hop_type] = layer_attentions if return_all_layers else ([alpha] if alpha is not None else [])
+                    attention_weights[curv_type][hop_type] = layer_attentions
         
         return outputs, attention_weights
     

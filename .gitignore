@@ -11,3 +11,4 @@ all_model_results/
 results.tar.gz
 misc/
 model_results/
+.claude/

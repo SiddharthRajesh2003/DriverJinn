@@ -14,7 +14,7 @@ from statsmodels.stats.multitest import multipletests
 from utils.logging_manager import get_logger
 from model.support_models import ProjectionHead, BinaryClassifier, RankingLoss
 from model.curvature_aware_gnn import CurvatureAwareGNN
-from model.multi_layer_attention import HybridAggregator
+from model.mla import MemoryEfficientHybridAggregator as HybridAggregator
 
 logger = get_logger(__name__)
 
@@ -114,21 +114,25 @@ class ContrastiveDriverGenePredictor(nn.Module):
         x: torch.Tensor,
         edge_index: torch.Tensor,
         edge_curvature: torch.Tensor,
-        return_attention: bool = True
+        return_attention: bool = True,
+        return_all_layers: bool = False
     ) -> Tuple[torch.Tensor, Optional[Dict]]:
         """
         Encode graph into representation vector
+
+        Args:
+            return_all_layers: If False, only return final layer (saves memory during training)
         """
         # Get representations from all curvature + hop pathways
         # Returns: {curvature: {hop: [layer_outputs]}}
         # Get pathway outputs with checkpointing
         pathway_outputs, gnn_attention = gradient_checkpoint(
-                self._encoder_wrapper, x, edge_index, edge_curvature, 
-                return_all_layers=True,
+                self._encoder_wrapper, x, edge_index, edge_curvature,
+                return_all_layers=return_all_layers,
                 return_attention=return_attention,
                 use_reentrant=False
             )
-        
+
         # Aggregate pathways
         final_repr, pathway_attention = self.aggregator(
             pathway_outputs,
@@ -142,7 +146,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
                 'pathway_outputs': pathway_outputs,
                 'gnn_attention': gnn_attention
             }
-        
+
         return final_repr, attention_info
 
     def _encoder_wrapper(self, x, edge_index, edge_curvature, return_all_layers, return_attention):
@@ -791,17 +795,23 @@ class ContrastiveDriverGenePredictor(nn.Module):
         x: torch.Tensor,
         edge_index: torch.Tensor,
         edge_curvature: torch.Tensor,
-        return_embeddings:bool = False
+        return_embeddings:bool = False,
+        return_all_layers: bool = False
     ) -> torch.Tensor:
         """
         Compute driver likelihood scores for ranking (NOT binary classification).
-        
+
+        Args:
+            return_all_layers: If False, only use final layer (saves memory during training)
+
         Returns:
             scores: [num_nodes] unbounded scores (higher = more likely driver)
         """
-        h, _ = self.encode(x, edge_index, edge_curvature, return_attention=False)
+        h, _ = self.encode(x, edge_index, edge_curvature,
+                          return_attention=False,
+                          return_all_layers=return_all_layers)
         scores = self.ranking_head(h).squeeze(-1)
-        
+
         if return_embeddings:
             return scores, h
         return scores, None
@@ -1089,14 +1099,18 @@ class ContrastiveDriverGenePredictor(nn.Module):
         edge_curvature = self.validate_and_fix_curvature_dimensions(
             edge_index, edge_curvature, "Evaluation"
         )
-        
+
         scores, _ = self.forward(features, edge_index, edge_curvature)
         scores = scores[mask]
         labels = labels[mask]
-        
+
         scores_np = scores.detach().cpu().numpy()
         labels_np = labels.detach().cpu().numpy()
-        
+
+        # CRITICAL: Explicitly delete GPU tensors to free memory immediately
+        del scores, features, edge_index, edge_curvature
+        torch.cuda.empty_cache()
+
         metrics = {}
         
         # AUROC and AUPRC
@@ -1293,7 +1307,11 @@ class ContrastiveDriverGenePredictor(nn.Module):
             logger.error(f"Node names length ({len(node_names)}) doesn't match labels ({num_genes})")
             node_names = np.array([f"Gene_{i}" for i in range(num_genes)])
         
-        df_scores = self.score_all_genes(data, labels, node_names, curvature_type, device)
+        df_scores = self.score_all_genes(
+            data = data, labels = labels, node_names = node_names,
+            curvature_type=curvature_type,
+            device=device
+        )
 
         # Add this verification:
         logger.info("\n=== VERIFYING DATAFRAME ALIGNMENT ===")
