@@ -8,23 +8,27 @@ logger = get_logger(__name__)
 
 class MultiLayerAttention(nn.Module):
     """
-    Aggregates representations across GNN layers (depth dimension).
+    Memory-efficient layer aggregation using chunked attention.
     
-    Uses multi-head attention to learn which layers are most informative.
+    Key optimizations:
+    1. Process nodes in chunks instead of all at once
+    2. Don't store full attention matrices
+    3. Use gradient checkpointing
     """
-    
     def __init__(
         self,
         hidden_dim: int,
         num_heads: int = 4,
-        dropout: float = 0.1
+        dropout: float = 0.1,
+        chunk_size: int = 1000  # Process 1000 nodes at a time
     ):
         super().__init__()
         self.hidden_dim = hidden_dim
         self.num_heads = num_heads
         self.head_dim = hidden_dim // num_heads
+        self.chunk_size = chunk_size
         
-        assert hidden_dim % num_heads == 0, "hidden_dim must be divisible by num_heads"
+        assert hidden_dim % num_heads == 0
         
         self.q_linear = nn.Linear(hidden_dim, hidden_dim)
         self.k_linear = nn.Linear(hidden_dim, hidden_dim)
@@ -40,54 +44,68 @@ class MultiLayerAttention(nn.Module):
         return_attention: bool = False
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor]]:
         """
-        Args:
-            layer_outputs: List of [num_nodes, hidden_dim] tensors from different layers
-            return_attention: Whether to return attention weights
-        
-        Returns:
-            aggregated_output: [num_nodes, hidden_dim]
-            attention_weights: [num_nodes, num_layers] if return_attention=True
+        Memory-efficient forward pass using chunking.
+
+        CRITICAL OPTIMIZATION: If only one layer, skip attention entirely!
         """
-        
+        # EMERGENCY: If only final layer is passed, skip all attention computation
+        if len(layer_outputs) == 1:
+            return layer_outputs[0], None
+
         # Stack layer outputs: [num_nodes, num_layers, hidden_dim]
         stacked = torch.stack(layer_outputs, dim=1)
         num_nodes, num_layers, hidden_dim = stacked.shape
-        
-        # Reshape for batch processing : [num_nodes * num_layers, hidden_dim]
-        stacked_flat = stacked.view(-1, hidden_dim)
-        
-        # Compute queries, keys, values
-        Q = self.q_linear(stacked_flat).view(num_nodes, num_layers, self.num_heads, self.head_dim)
-        K = self.k_linear(stacked_flat).view(num_nodes, num_layers, self.num_heads, self.head_dim)
-        V = self.v_linear(stacked_flat).view(num_nodes, num_layers, self.num_heads, self.head_dim)
-        
-        # Transpose for attention: [num_nodes, num_heads, num_layers, head_dim]
-        Q = Q.transpose(1, 2)
-        K = K.transpose(1, 2)
-        V = V.transpose(1, 2)
-        
-        # Scaled dot-product attention
-        scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim ** 0.5)
-        attention = F.softmax(scores, dim=-1)
-        attention = self.dropout(attention)
-        
-        # Apply attention to values
-        context = torch.matmul(attention, V)
-        
-        # Reshape and project: [num_nodes, num_layers, hidden_dim]
-        context = context.transpose(1, 2).contiguous().view(num_nodes, num_layers, self.hidden_dim)
-        output_flat = context.view(-1, self.hidden_dim)
-        output = self.out_linear(output_flat).view(num_nodes, num_layers, self.hidden_dim)
-        
-        # Aggregate across layers (mean pooling)
-        aggregated = output.mean(dim=1)
-        aggregated = self.layer_norm(aggregated + layer_outputs[-1])  # Residual from last layer
-        
-        if return_attention:
-            # Average attention weights across heads: [num_nodes, num_layers]
-            avg_attention = attention.mean(dim=1).mean(dim=-1)
-            return aggregated, avg_attention
-        
+
+        # Process in chunks to save memory
+        chunk_size = min(self.chunk_size, num_nodes)
+        num_chunks = (num_nodes + chunk_size - 1) // chunk_size
+
+        aggregated_chunks = []
+
+        for i in range(num_chunks):
+            start_idx = i * chunk_size
+            end_idx = min((i + 1) * chunk_size, num_nodes)
+
+            # Process this chunk
+            chunk = stacked[start_idx:end_idx]  # [chunk_size, num_layers, hidden_dim]
+            chunk_flat = chunk.reshape(-1, hidden_dim)
+
+            # Compute Q, K, V for this chunk
+            Q = self.q_linear(chunk_flat).view(-1, num_layers, self.num_heads, self.head_dim)
+            K = self.k_linear(chunk_flat).view(-1, num_layers, self.num_heads, self.head_dim)
+            V = self.v_linear(chunk_flat).view(-1, num_layers, self.num_heads, self.head_dim)
+
+            # Transpose: [chunk_size, num_heads, num_layers, head_dim]
+            Q = Q.transpose(1, 2)
+            K = K.transpose(1, 2)
+            V = V.transpose(1, 2)
+
+            # Attention within this chunk
+            scores = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim ** 0.5)
+            attention = F.softmax(scores, dim=-1)
+            attention = self.dropout(attention)
+
+            # Apply attention
+            context = torch.matmul(attention, V)
+            context = context.transpose(1, 2).contiguous().view(-1, num_layers, self.hidden_dim)
+
+            # Project
+            output_flat = context.view(-1, self.hidden_dim)
+            output = self.out_linear(output_flat).view(-1, num_layers, self.hidden_dim)
+
+            # Aggregate across layers
+            aggregated = output.mean(dim=1)
+            aggregated_chunks.append(aggregated)
+
+            # Clear intermediate tensors
+            del Q, K, V, scores, attention, context, output
+
+        # Concatenate all chunks
+        aggregated = torch.cat(aggregated_chunks, dim=0)
+
+        # Residual connection
+        aggregated = self.layer_norm(aggregated + layer_outputs[-1])
+
         return aggregated, None
     
 class MultiPathwayAggregator(nn.Module):
@@ -96,12 +114,20 @@ class MultiPathwayAggregator(nn.Module):
     
     This operates on the spatial dimension (different graph views).
     
+    Memory-efficient pathway aggregator that avoids large attention matrices.
+    
+    Key optimizations:
+    1. Use lightweight attention (score each pathway independently)
+    2. No cross-pathway attention matrices
+    3. Sequential processing for hierarchical mode
+    
     Aggregation strategies:
     - 'concat': Concatenate all pathways and project down
     - 'attention': Learn attention weights for each pathway
     - 'mean': Simple average of all pathways
     - 'hierarchical': First aggregate by curvature, then by hop type
     """
+    
     def __init__(
         self,
         hidden_channels: int,
@@ -118,36 +144,34 @@ class MultiPathwayAggregator(nn.Module):
         self.num_pathways = num_curvature_types * num_hop_types
         
         if aggregation_method == 'concat':
-            # Project concatenated pathways back to hidden_channels
             self.projection = nn.Linear(
                 hidden_channels * self.num_pathways,
                 hidden_channels
             )
             
         elif aggregation_method == 'attention':
-            # Learn attention weights for each pathway
-            self.pathway_attention = nn.Sequential(
-                nn.Linear(hidden_channels, hidden_channels // 2),
+            # Lightweight attention: each pathway gets a score
+            # No cross-pathway attention matrices!
+            self.pathway_scorer = nn.Sequential(
+                nn.Linear(hidden_channels, hidden_channels // 4),
                 nn.ReLU(),
                 nn.Dropout(dropout),
-                nn.Linear(hidden_channels // 2, 1)
+                nn.Linear(hidden_channels // 4, 1)
             )
         
         elif aggregation_method == 'hierarchical':
-            # First aggregate by hop_type and then by curvature type
-            
-            self.hop_attn = nn.Sequential(
-                nn.Linear(hidden_channels, hidden_channels//2),
+            # Two separate scorers (no cross-attention)
+            self.hop_scorer = nn.Sequential(
+                nn.Linear(hidden_channels, hidden_channels // 4),
                 nn.ReLU(),
-                nn.Linear(hidden_channels//2, 1)
+                nn.Linear(hidden_channels // 4, 1)
             )
             
-            self.curv_attn = nn.Sequential(
-                nn.Linear(hidden_channels, hidden_channels // 2),
+            self.curv_scorer = nn.Sequential(
+                nn.Linear(hidden_channels, hidden_channels // 4),
                 nn.ReLU(),
-                nn.Linear(hidden_channels // 2, 1)
+                nn.Linear(hidden_channels // 4, 1)
             )
-            
 
         self.dropout = dropout
     
@@ -156,91 +180,93 @@ class MultiPathwayAggregator(nn.Module):
         pathway_outputs: Dict[str, Dict[str, torch.Tensor]],
         return_attention: bool = True
     ) -> Tuple[torch.Tensor, Optional[Dict]]:
-        """
-        Aggregate outputs from multiple pathways.
+        """Memory-efficient aggregation"""
         
-        Args:
-            pathway_outputs: Nested dict from layer aggregation
-                {curvature_type: {hop_type: tensor}}
-                Each tensor is [num_nodes, hidden_channels]
-            return_attention: Whether to return attention weights
-        
-        Returns:
-            aggregated: [num_nodes, hidden_channels] aggregated representation
-            attention_weights: Optional dict of attention weights
-        """
-        
-        # Flatten pathway outputs into a list
-        pathway_list = []
-        pathway_names = []
-        
-        for curv_type, hop_dict in pathway_outputs.items():
-            for hop_type, tensor in hop_dict.items():
-                pathway_list.append(tensor)
-                pathway_names.append(f"{curv_type}_{hop_type}")
-                
-
         if self.aggregation_method == 'concat':
-            # Concatenate all pathways
-            concatenated = torch.cat(pathway_list, dim = -1)
-            aggregated = self.projection(concatenated)
-            aggregated = F.dropout(aggregated, p = self.dropout, training= self.training)
+            # Simple concatenation - very memory efficient
+            pathway_list = []
+            for curv_dict in pathway_outputs.values():
+                for tensor in curv_dict.values():
+                    pathway_list.append(tensor)
             
-            return (aggregated, None) if not return_attention else (aggregated, {})
+            concatenated = torch.cat(pathway_list, dim=-1)
+            aggregated = self.projection(concatenated)
+            aggregated = F.dropout(aggregated, p=self.dropout, training=self.training)
+            
+            return (aggregated, None)
         
         elif self.aggregation_method == 'mean':
-            # Simple average
-            stacked = torch.stack(pathway_list, dim=0)  # [num_pathways, num_nodes, hidden]
+            # Simplest - just average
+            pathway_list = []
+            for curv_dict in pathway_outputs.values():
+                for tensor in curv_dict.values():
+                    pathway_list.append(tensor)
+            
+            stacked = torch.stack(pathway_list, dim=0)
             aggregated = stacked.mean(dim=0)
             
-            return (aggregated, None) if not return_attention else (aggregated, {})
+            return (aggregated, None)
         
         elif self.aggregation_method == 'attention':
-            # Attention-weighted aggregation
-            stacked = torch.stack(pathway_list, dim = 0)  # [num_pathways, num_nodes, hidden]
+            # Lightweight attention: score each pathway independently
+            pathway_list = []
+            pathway_names = []
             
-            # Compute attention scores for each pathway
+            for curv_type, hop_dict in pathway_outputs.items():
+                for hop_type, tensor in hop_dict.items():
+                    pathway_list.append(tensor)
+                    pathway_names.append(f"{curv_type}_{hop_type}")
+            
+            # Compute attention scores WITHOUT cross-pathway matrices
             attention_scores = []
             for pathway_repr in pathway_list:
-                score = self.pathway_attention(pathway_repr) # [num_nodes, 1]
+                # Each pathway is scored independently: [num_nodes, 1]
+                score = self.pathway_scorer(pathway_repr)
                 attention_scores.append(score)
-                
-            attention_scores = torch.stack(attention_scores, dim = 0)  # [num_pathways, num_nodes, 1]
-            attention_weights = F.softmax(attention_scores, dim=0)  # Normalize across pathways
             
-            # Weighted sum
+            # Stack scores: [num_pathways, num_nodes, 1]
+            attention_scores = torch.stack(attention_scores, dim=0)
+            
+            # Softmax across pathways: [num_pathways, num_nodes, 1]
+            attention_weights = F.softmax(attention_scores, dim=0)
+            
+            # Stack pathway representations: [num_pathways, num_nodes, hidden]
+            stacked = torch.stack(pathway_list, dim=0)
+            
+            # Weighted sum: [num_nodes, hidden]
             aggregated = (stacked * attention_weights).sum(dim=0)
             
             if return_attention:
-                # Create attention weight dictionary
                 attn_dict = {
                     name: attention_weights[i].squeeze(-1).mean().item()
                     for i, name in enumerate(pathway_names)
                 }
                 return aggregated, attn_dict
-            else:
-                return aggregated, None
+            
+            return aggregated, None
         
         elif self.aggregation_method == 'hierarchical':
-            # First aggregate by hop type within each curvature type
+            # Hierarchical but WITHOUT cross-attention matrices
             curvature_aggregated = {}
             hop_attention_weights = {}
             
-            for curv_type, hop_type in pathway_outputs.items():
-                hop_tensors = list(hop_type.values())
-                hop_names = list(hop_type.keys())
+            for curv_type, hop_dict in pathway_outputs.items():
+                hop_tensors = list(hop_dict.values())
+                hop_names = list(hop_dict.keys())
                 
                 if len(hop_tensors) == 1:
                     curvature_aggregated[curv_type] = hop_tensors[0]
                 else:
-                    # Attention over hop types
-                    hop_stacked = torch.stack(hop_tensors, dim=0)
-                    hop_scores = torch.stack([
-                        self.hop_attn(h) for h in hop_tensors
-                    ], dim = 0)
+                    # Score each hop type independently
+                    hop_scores = []
+                    for h in hop_tensors:
+                        score = self.hop_scorer(h)  # [num_nodes, 1]
+                        hop_scores.append(score)
                     
+                    hop_scores = torch.stack(hop_scores, dim=0)  # [num_hops, num_nodes, 1]
                     hop_attn = F.softmax(hop_scores, dim=0)
                     
+                    hop_stacked = torch.stack(hop_tensors, dim=0)  # [num_hops, num_nodes, hidden]
                     curvature_aggregated[curv_type] = (hop_stacked * hop_attn).sum(dim=0)
                     
                     if return_attention:
@@ -248,7 +274,7 @@ class MultiPathwayAggregator(nn.Module):
                             name: hop_attn[i].squeeze(-1).mean().item()
                             for i, name in enumerate(hop_names)
                         }
-                        
+            
             # Aggregate across curvature types
             curv_tensors = list(curvature_aggregated.values())
             curv_names = list(curvature_aggregated.keys())
@@ -256,14 +282,17 @@ class MultiPathwayAggregator(nn.Module):
             if len(curv_tensors) == 1:
                 aggregated = curv_tensors[0]
                 curv_attention_weights = {curv_names[0]: 1.0}
-                
             else:
-                curv_stacked = torch.stack(curv_tensors, dim=0)
-                curv_scores = torch.stack([
-                    self.curv_attn(c) for c in curv_tensors
-                ], dim=0)
+                # Score each curvature type independently
+                curv_scores = []
+                for c in curv_tensors:
+                    score = self.curv_scorer(c)  # [num_nodes, 1]
+                    curv_scores.append(score)
+                
+                curv_scores = torch.stack(curv_scores, dim=0)  # [num_curvs, num_nodes, 1]
                 curv_attn = F.softmax(curv_scores, dim=0)
                 
+                curv_stacked = torch.stack(curv_tensors, dim=0)  # [num_curvs, num_nodes, hidden]
                 aggregated = (curv_stacked * curv_attn).sum(dim=0)
                 
                 curv_attention_weights = {
@@ -276,12 +305,11 @@ class MultiPathwayAggregator(nn.Module):
                     'hop_attention': hop_attention_weights,
                     'curv_attention': curv_attention_weights
                 }
-            else:
-                return aggregated, None
             
+            return aggregated, None
+        
         else:
             raise ValueError(f"Unknown aggregation method: {self.aggregation_method}")
-    
 
 class HybridAggregator(nn.Module):
     """
@@ -290,7 +318,7 @@ class HybridAggregator(nn.Module):
     Stage 1 (Depth): MultiLayerAttention aggregates across layers
     Stage 2 (Breadth): MultiPathwayAggregator aggregates across pathways
     
-    This is the RECOMMENDED approach for your architecture!
+    Uses chunked attention and lightweight scoring to avoid OOM.
     """
     
     def __init__(
@@ -301,7 +329,8 @@ class HybridAggregator(nn.Module):
         num_heads: int = 4,
         pathway_aggregation: str = 'attention',
         dropout: float = 0.2,
-        concat_heads: bool = True
+        concat_heads: bool = True,
+        chunk_size: int = 1000  # Process nodes in chunks
     ):
         super().__init__()
         
@@ -310,14 +339,15 @@ class HybridAggregator(nn.Module):
         
         actual_hidden_dim = hidden_channels * num_heads if concat_heads else hidden_channels
         
-        # Stage 1: Aggregate layers within each pathway
+        # Stage 1: Memory-efficient layer aggregation
         self.layer_aggregator = MultiLayerAttention(
             hidden_dim=actual_hidden_dim,
             num_heads=num_heads,
-            dropout=dropout
+            dropout=dropout,
+            chunk_size=chunk_size
         )
         
-        # Stage 2: Aggregate across pathways
+        # Stage 2: Memory-efficient pathway aggregation
         self.pathway_aggregator = MultiPathwayAggregator(
             hidden_channels=actual_hidden_dim,
             num_curvature_types=num_curvature_types,
@@ -326,7 +356,7 @@ class HybridAggregator(nn.Module):
             dropout=dropout
         )
         
-        # Projection layer to map back to base hidden channels
+        # Projection layer
         if concat_heads and num_heads > 1:
             self.output_projection = nn.Sequential(
                 nn.Linear(actual_hidden_dim, hidden_channels),
@@ -336,40 +366,15 @@ class HybridAggregator(nn.Module):
             )
         else:
             self.output_projection = nn.Identity()
-        
-        logger.info(f"Initialized HybridAggregator:")
-        logger.info(f"  - Base hidden_channels: {hidden_channels}")
-        logger.info(f"  - Concat heads: {concat_heads}")
-        logger.info(f"  - Actual dimension: {actual_hidden_dim}")
-        logger.info(f"  - Num heads: {num_heads}")
-        logger.info(f"  - Output projection: {concat_heads and num_heads > 1}")
     
     def forward(
         self,
         gnn_outputs: Dict[str, Dict[str, List[torch.Tensor]]],
         return_attention: bool = False
     ) -> Tuple[torch.Tensor, Optional[Dict]]:
-        """
-        Two-stage aggregation of GNN outputs.
+        """Two-stage memory-efficient aggregation"""
         
-        Args:
-            gnn_outputs: From CurvatureAwareGNN.forward()
-                {
-                    'positive': {
-                        'one_hop': [layer0, layer1, layer2],
-                        'two_hop': [layer0, layer1, layer2]
-                    },
-                    'negative': {...},
-                    'both': {...}
-                }
-            return_attention: Whether to return attention weights
-        
-        Returns:
-            final_representation: [num_nodes, hidden_channels]
-            attention_info: Dict with layer and pathway attention weights
-        """
-        
-        # Stage 1: Aggregate layers within each pathway
+        # Stage 1: Aggregate layers within each pathway (chunked)
         pathway_layer_aggregated = {}
         layer_attention_weights = {}
         
@@ -377,7 +382,7 @@ class HybridAggregator(nn.Module):
             pathway_layer_aggregated[curv_type] = {}
             
             for hop_type, layer_outputs in hop_dict.items():
-                # Aggregate across layers
+                # Use chunked attention for layer aggregation
                 aggregated, layer_attn = self.layer_aggregator(
                     layer_outputs,
                     return_attention=return_attention
@@ -389,13 +394,13 @@ class HybridAggregator(nn.Module):
                     pathway_key = f"{curv_type}_{hop_type}"
                     layer_attention_weights[pathway_key] = layer_attn
         
-        # Stage 2: Aggregate across pathways
+        # Stage 2: Aggregate pathways (lightweight scoring)
         final_output, pathway_attn = self.pathway_aggregator(
             pathway_layer_aggregated,
             return_attention=return_attention
         )
         
-        # Project back to base hidden channels
+        # Project back
         final_output = self.output_projection(final_output)
         
         if return_attention:

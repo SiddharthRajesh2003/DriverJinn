@@ -12,9 +12,9 @@ from statsmodels.stats.multitest import multipletests
 
 
 from utils.logging_manager import get_logger
-from model.support_models import ProjectionHead, BinaryClassifier, RankingLoss
+from model.support_models import ProjectionHead, BinaryClassifier
 from model.curvature_aware_gnn import CurvatureAwareGNN
-from model.mla import MemoryEfficientHybridAggregator as HybridAggregator
+from model.multi_layer_attention import HybridAggregator
 
 logger = get_logger(__name__)
 
