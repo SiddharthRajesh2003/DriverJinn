@@ -1,7 +1,8 @@
 import math
 import torch
 import torch.nn as nn
-from typing import Tuple, List, Optional, Dict
+import torch.nn.functional as F
+from typing import Tuple, List, Dict
 import pandas as pd
 import gc
 import numpy as np
@@ -26,57 +27,24 @@ torch.backends.cudnn.allow_tf32 = True
 
 logger = get_logger(__name__)
 
-def setup_multi_gpu(
-    model,
-    use_multi_gpu: bool = False,
-    gpu_ids: List = None
-):
-    """Setup model for multi-GPU training
-    
-    Args:
-        model: PyTorch model
-        use_multi_gpu: Whether to use multiple GPUs
-        gpu_ids: Specific GPU IDs (None = all available)
-    
+def setup_device(model):
+    """Setup model on GPU or CPU.
+
     Returns:
-        model: Wrapped model
-        device: Primary device
-        is_multi_gpu: Whether multi-GPU is enabled
+        model: Model moved to device
+        device: The device being used
     """
-    
     if not torch.cuda.is_available():
         print('CUDA not available, using CPU')
-        return model, torch.device('cpu'), False
-    
-    num_gpus = torch.cuda.device_count()
-    print('\nGPU Configuration:')
-    print(f'    Available GPUs: {num_gpus}')
-    for i in range(num_gpus):
-        props = torch.cuda.get_device_properties(i)
-        mem_gb = props.total_memory / 1024**3
-        print(f"  GPU {i}: {props.name} ({mem_gb:.1f} GB)")
-        
-    # Single GPU mode
-    if not use_multi_gpu or num_gpus <= 1:
-        device = torch.device('cuda:0')
-        model = model.to(device)
-        print(f"\n✓ Using single GPU: cuda:0")
-        return model, device, False
-    
-    # Multi-GPU Mode
-    if gpu_ids is None:
-        gpu_ids = list(range(num_gpus))
-        
-    print(f"\n✓ Using DataParallel on {len(gpu_ids)} GPUs: {gpu_ids}")
-    
-    model = nn.DataParallel(model, device_ids=gpu_ids)
-    primary_device = torch.device(f'cuda:{gpu_ids[0]}')
-    model = model.to(primary_device)
-    
-    print(f"  Primary device: cuda:{gpu_ids[0]}")
-    print(f"  Batch will be split across {len(gpu_ids)} GPUs")
-    
-    return model, primary_device, True
+        return model, torch.device('cpu')
+
+    device = torch.device('cuda:0')
+    props = torch.cuda.get_device_properties(0)
+    mem_gb = props.total_memory / 1024**3
+    print(f"\n✓ Using GPU: {props.name} ({mem_gb:.1f} GB)")
+
+    model = model.to(device)
+    return model, device
 
 
 def check_for_nans(tensor, name="tensor", raise_error=True):
@@ -339,7 +307,7 @@ def create_cancer_driver_model(
     logger.info(f"  - Attention mode: {attention_mode}")
     logger.info(f"  - Attention heads: {num_heads} (concat={concat_heads})")
     logger.info(f"  - Device: {device}")
-    logger.info(f"  - Training objective: Ranking (not binary classification)")
+    logger.info(f"  - Training objective: Ranking")
     
     return model
 
@@ -365,13 +333,14 @@ def train_single_fold(
     return_all_layers: float = False,
     concat_heads: bool = True,
     early_stopping_patience: int = 50,
-    ranking_loss_type: str = 'pairwise',
-    ranking_margin: float = 1.0,
+    ranking_loss_type: str = 'bpr',
+    ranking_margin: float = 0.5,
+    focal_gamma: float = 2.0,
+    use_focal: bool = True,
+    contrastive_weight: float = 0.3,
     gradient_accumulation_steps: int = 4,
     mixed_precision: bool = True,
     reduce_model_size: bool = True,
-    use_multi_gpu: bool = False,
-    gpu_ids: Optional[List] = None,
     validation_frequency: int = 10
 ) -> Tuple[ContrastiveDriverGenePredictor, Dict, Dict]:
     
@@ -526,18 +495,9 @@ def train_single_fold(
         device=device
     )
     
-    # Setup multi-GPU before moving to device
-    model, primary_device, is_multi_gpu = setup_multi_gpu(
-        model=model,
-        use_multi_gpu=use_multi_gpu,
-        gpu_ids=gpu_ids
-    )
-    
-    # Update device to primary device for multi-GPU
-    if is_multi_gpu:
-        device = primary_device
-    
-    actual_model = model.module if is_multi_gpu else model
+    # Setup device (GPU or CPU)
+    model, device = setup_device(model)
+    actual_model = model
     
     # Optimizer
     optimizer = torch.optim.AdamW(
@@ -547,12 +507,12 @@ def train_single_fold(
         betas=(0.9, 0.999)
     )
     
-    # Learning rate scheduler (maximize NDCG)
+    # Learning rate scheduler (maximize NDCG) - Less aggressive for stability
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, 
+        optimizer,
         mode='max',
-        factor=0.5, 
-        patience=20, 
+        factor=0.7,  # Reduced from 0.5 (less aggressive reduction)
+        patience=30,  # Increased from 20 (more patience)
         min_lr=1e-6
     )
     
@@ -615,8 +575,8 @@ def train_single_fold(
     print(f"\n{'='*80}")
     print("TRAINING WITH RANKING OBJECTIVE")
     print(f"{'='*80}")
-    print(f"Loss type: Contrastive + {ranking_loss_type.capitalize()} Ranking")
-    print(f"Ranking margin: {ranking_margin}")
+    print(f"Loss type: Contrastive ({contrastive_weight:.0%}) + {ranking_loss_type.capitalize()} Ranking ({1-contrastive_weight:.0%})")
+    print(f"Ranking margin: {ranking_margin} | Focal gamma: {focal_gamma} | Use focal: {use_focal}")
     print(f"Early stopping metric: NDCG@50")
     print(f"Attention mode: {attention_mode}")
     print(f"{'='*80}\n")
@@ -628,7 +588,7 @@ def train_single_fold(
     num_original = labels.shape[0]
     precomputed_mappings = []
 
-    for view_idx, view in enumerate(augmented_views):
+    for _, view in enumerate(augmented_views):
         eliminated_ids = set(view['metadata']['eliminated_node_ids'])
         aug_size = view['x'].shape[0]
 
@@ -672,120 +632,203 @@ def train_single_fold(
         optimizer.zero_grad()
         
         accumulated_loss = 0.0
+        accumulated_contrastive_loss = 0.0
+        accumulated_ranking_loss = 0.0
         accumulated_metrics = {'train_ndcg': 0.0}
         successful_steps = 0
-        
-        # Process one view at a time with smaller chunks
+
+        # Create ranking criterion once per epoch (more efficient)
+        ranking_criterion = RankingLoss(
+            margin=ranking_margin,
+            loss_type=ranking_loss_type,
+            focal_gamma=focal_gamma,
+            use_focal=use_focal
+        )
+
+        # Process views with contrastive + ranking loss
         for accum_step in range(gradient_accumulation_steps):
             try:
-                # Sample ONE view per step to minimize memory
-                view_idx = torch.randint(0, len(augmented_views), (1,)).item()
-                view = augmented_views[view_idx]
-                
-                # Move view to device ONLY when needed
-                view_x = view['x'].to(device)
-                view_edge_index = view['edge_index'].to(device)
-                view_curvature = view.get('ollivier_curvature')
-                
-                if view_curvature is not None:
-                    view_curvature = view_curvature.to(device)
+                # Sample TWO views for contrastive learning
+                # Use deterministic pairing based on epoch for stability
+                num_views = len(augmented_views)
+                if num_views >= 2:
+                    # Deterministic pairing reduces gradient variance
+                    view1_idx = (epoch * gradient_accumulation_steps + accum_step) % num_views
+                    view2_idx = (epoch * gradient_accumulation_steps + accum_step + 1) % num_views
                 else:
-                    # Compute curvature on-the-fly
-                    view_curvature = actual_model.compute_augmented_curvature(
-                        view_edge_index,
-                        None,
-                        view_x,
+                    # If only one view, use it for both
+                    view1_idx, view2_idx = 0, 0
+
+                # === Load View 1 ===
+                view1 = augmented_views[view1_idx]
+                view1_x = view1['x'].to(device)
+                view1_edge_index = view1['edge_index'].to(device)
+                view1_curvature = view1.get('ollivier_curvature')
+
+                if view1_curvature is not None:
+                    view1_curvature = view1_curvature.to(device)
+                else:
+                    view1_curvature = actual_model.compute_augmented_curvature(
+                        view1_edge_index, None, view1_x,
                         original_curvature=original_device['ollivier_curvature'],
                         original_edge_index=original_device['edge_index'],
                         method='transfer'
                     )
-                
-                # Validate curvature
-                view_curvature = actual_model.validate_and_fix_curvature_dimensions(
-                    view_edge_index, view_curvature, f"View{accum_step}"
+
+                view1_curvature = actual_model.validate_and_fix_curvature_dimensions(
+                    view1_edge_index, view1_curvature, f"View1_Step{accum_step}"
                 )
 
-                # Use precomputed labels/masks (Memory Optimization)
-                mapping = precomputed_mappings[view_idx]
-                aug_labels = mapping['aug_labels'].to(device)
-                aug_mask = mapping['aug_mask'].to(device)
+                # === Load View 2 ===
+                view2 = augmented_views[view2_idx]
+                view2_x = view2['x'].to(device)
+                view2_edge_index = view2['edge_index'].to(device)
+                view2_curvature = view2.get('ollivier_curvature')
+
+                if view2_curvature is not None:
+                    view2_curvature = view2_curvature.to(device)
+                else:
+                    view2_curvature = actual_model.compute_augmented_curvature(
+                        view2_edge_index, None, view2_x,
+                        original_curvature=original_device['ollivier_curvature'],
+                        original_edge_index=original_device['edge_index'],
+                        method='transfer'
+                    )
+
+                view2_curvature = actual_model.validate_and_fix_curvature_dimensions(
+                    view2_edge_index, view2_curvature, f"View2_Step{accum_step}"
+                )
+
+                # Use precomputed labels/masks for view1 (for ranking loss)
+                mapping1 = precomputed_mappings[view1_idx]
+                aug_labels = mapping1['aug_labels'].to(device)
+                aug_mask = mapping1['aug_mask'].to(device)
 
                 if aug_mask.sum() == 0:
                     logger.warning(f"Step {accum_step}: No training samples after mapping")
+                    del view1_x, view1_edge_index, view1_curvature
+                    del view2_x, view2_edge_index, view2_curvature
                     continue
-                
+
                 # Forward pass with mixed precision
                 if scaler:
                     with torch.amp.autocast('cuda'):
-                        # Get scores (Memory Optimization: disable return_all_layers during training)
-                        scores= gradient_checkpoint(
-                            lambda x, e, c: model.forward(x, e, c, return_all_layers=return_all_layers)[0],
-                            view_x,
-                            view_edge_index,
-                            view_curvature,
+                        # === Encode both views ===
+                        embeddings1, _ = gradient_checkpoint(
+                            actual_model._encoder_wrapper,
+                            view1_x, view1_edge_index, view1_curvature,
+                            return_all_layers, False,
                             use_reentrant=False
                         )
+                        # Aggregate pathway outputs
+                        h1, _ = actual_model.aggregator(embeddings1, return_attention=False)
 
-                        # Compute ranking loss
-                        ranking_criterion = RankingLoss(
-                            margin=ranking_margin,
-                            loss_type=ranking_loss_type
+                        embeddings2, _ = gradient_checkpoint(
+                            actual_model._encoder_wrapper,
+                            view2_x, view2_edge_index, view2_curvature,
+                            return_all_layers, False,
+                            use_reentrant=False
                         )
-                        loss = ranking_criterion(scores, aug_labels, aug_mask)
+                        h2, _ = actual_model.aggregator(embeddings2, return_attention=False)
+
+                        # === Contrastive Loss ===
+                        # Project to contrastive space
+                        z1 = F.normalize(actual_model.projection(h1), dim=-1)
+                        z2 = F.normalize(actual_model.projection(h2), dim=-1)
+
+                        # Find common nodes between views for contrastive loss
+                        min_nodes = min(z1.size(0), z2.size(0))
+                        z1_common = z1[:min_nodes]
+                        z2_common = z2[:min_nodes]
+
+                        contrastive_loss = actual_model.compute_contrastive_loss(z1_common, z2_common)
+
+                        # === Ranking Loss (on view1) ===
+                        scores = actual_model.ranking_head(h1).squeeze(-1)
+                        ranking_loss = ranking_criterion(scores, aug_labels, aug_mask)
+
+                        # === Combined Loss ===
+                        loss = (contrastive_weight * contrastive_loss +
+                                (1 - contrastive_weight) * ranking_loss)
+
+                        # Clip loss to prevent extreme spikes
+                        loss = torch.clamp(loss, max=10.0)
 
                         # Scale for accumulation
                         loss = loss / gradient_accumulation_steps
                 else:
-                    # No mixed precision
-                    scores= gradient_checkpoint(
-                        lambda x, e, c: model.forward(x, e, c, return_all_layers=return_all_layers)[0],
-                        view_x,
-                        view_edge_index,
-                        view_curvature,
+                    # No mixed precision - same logic
+                    embeddings1, _ = gradient_checkpoint(
+                        actual_model._encoder_wrapper,
+                        view1_x, view1_edge_index, view1_curvature,
+                        return_all_layers, False,
                         use_reentrant=False
                     )
+                    h1, _ = actual_model.aggregator(embeddings1, return_attention=False)
 
-                    # Compute ranking loss
-                    ranking_criterion = RankingLoss(
-                        margin=ranking_margin,
-                        loss_type=ranking_loss_type
+                    embeddings2, _ = gradient_checkpoint(
+                        actual_model._encoder_wrapper,
+                        view2_x, view2_edge_index, view2_curvature,
+                        return_all_layers, False,
+                        use_reentrant=False
                     )
-                    loss = ranking_criterion(scores, aug_labels, aug_mask)
+                    h2, _ = actual_model.aggregator(embeddings2, return_attention=False)
 
-                    # Scale for accumulation
+                    # Contrastive Loss
+                    z1 = F.normalize(actual_model.projection(h1), dim=-1)
+                    z2 = F.normalize(actual_model.projection(h2), dim=-1)
+
+                    min_nodes = min(z1.size(0), z2.size(0))
+                    z1_common = z1[:min_nodes]
+                    z2_common = z2[:min_nodes]
+
+                    contrastive_loss = actual_model.compute_contrastive_loss(z1_common, z2_common)
+
+                    # Ranking Loss
+                    scores = actual_model.ranking_head(h1).squeeze(-1)
+                    ranking_loss = ranking_criterion(scores, aug_labels, aug_mask)
+
+                    # Combined Loss
+                    loss = (contrastive_weight * contrastive_loss +
+                            (1 - contrastive_weight) * ranking_loss)
+
+                    # Clip loss to prevent extreme spikes
+                    loss = torch.clamp(loss, max=10.0)
+
                     loss = loss / gradient_accumulation_steps
-                
+
                 # Backward
                 if scaler:
                     scaler.scale(loss).backward()
                 else:
                     loss.backward()
-                
-                accumulated_loss += loss.item() * gradient_accumulation_steps
-                successful_steps += 1
-                
-                if successful_steps > 0:
-                    # Compute training NDCG periodically (Memory Optimization: less frequent)
-                    if epoch % validation_frequency == 0:  # Compute based on validation_frequency
-                        with torch.no_grad():
-                            train_scores, _ = model.forward(
-                                original_device['x'],
-                                original_device['edge_index'],
-                                original_device['ollivier_curvature'],
-                                return_all_layers=return_all_layers
-                            )
-                            train_ndcg = compute_ndcg(train_scores[train_mask_original],
-                                                    labels[train_mask_original], k=50)
 
-                        accumulated_metrics['train_ndcg'] = train_ndcg
-                    else:
-                        # Reuse previous value
-                        accumulated_metrics['train_ndcg'] = history['train_ndcg'][-1] if history['train_ndcg'] else 0.0
-                
+                accumulated_loss += loss.item() * gradient_accumulation_steps
+                accumulated_contrastive_loss += contrastive_loss.item()
+                accumulated_ranking_loss += ranking_loss.item()
+                successful_steps += 1
+
+                # Compute training NDCG periodically
+                if successful_steps > 0 and epoch % validation_frequency == 0:
+                    with torch.no_grad():
+                        train_scores, _ = model.forward(
+                            original_device['x'],
+                            original_device['edge_index'],
+                            original_device['ollivier_curvature'],
+                            return_all_layers=return_all_layers
+                        )
+                        train_ndcg = compute_ndcg(train_scores[train_mask_original],
+                                                labels[train_mask_original], k=50)
+                    accumulated_metrics['train_ndcg'] = train_ndcg
+                elif successful_steps > 0:
+                    accumulated_metrics['train_ndcg'] = history['train_ndcg'][-1] if history['train_ndcg'] else 0.0
+
                 # Clean up immediately (CRITICAL for OOM)
-                del view_x, view_edge_index, view_curvature
-                del aug_labels, aug_mask, scores, loss
-                del view  # Delete the view reference too
+                del view1_x, view1_edge_index, view1_curvature
+                del view2_x, view2_edge_index, view2_curvature
+                del embeddings1, embeddings2, h1, h2, z1, z2
+                del aug_labels, aug_mask, scores, loss, contrastive_loss, ranking_loss
+                del view1, view2, z1_common, z2_common  # Delete view references
 
                 # Aggressive CUDA cache clearing
                 if torch.cuda.is_available():
@@ -896,9 +939,11 @@ def train_single_fold(
         
         # Logging
         if epoch % 10 == 0:
+            avg_contrastive = accumulated_contrastive_loss / max(successful_steps, 1)
+            avg_ranking = accumulated_ranking_loss / max(successful_steps, 1)
             print(
                 f"Epoch {epoch:3d} | "
-                f"Loss: {avg_loss:.4f} | "
+                f"Loss: {avg_loss:.4f} (C:{avg_contrastive:.3f} R:{avg_ranking:.3f}) | "
                 f"Steps: {successful_steps}/{gradient_accumulation_steps} | "
                 f"NDCG@50: {val_metrics.get('ndcg@50', 0):.4f} | "
                 f"LR: {optimizer.param_groups[0]['lr']:.6f}"
@@ -909,22 +954,10 @@ def train_single_fold(
             best_val_ndcg = val_metrics.get('ndcg@50', 0)
             best_metrics = val_metrics
 
-            if is_multi_gpu:
-                torch.save(
-                    {
-                        'epoch': epoch,
-                        'model_state_dict': model.module.state_dict(),
-                        'optimizer_state_dict': optimizer.state_dict(),
-                        'best_metrics': best_metrics,
-                        'metadata': {'fold': fold_idx}
-                    },
-                    model_path
-                )
-            else:
-                actual_model.save_checkpoint(
-                    str(model_path), epoch, optimizer, best_metrics,
-                    metadata={'fold': fold_idx}
-                )
+            actual_model.save_checkpoint(
+                str(model_path), epoch, optimizer, best_metrics,
+                metadata={'fold': fold_idx}
+            )
 
             # CRITICAL: Clear checkpoint tensors from GPU memory
             torch.cuda.empty_cache()
@@ -936,17 +969,8 @@ def train_single_fold(
             break
     
     # Load best model
-    # Load best model - FIX 2: Handle multi-GPU loading
-    if is_multi_gpu:
-        checkpoint = torch.load(model_path, map_location=device)
-        # Load into the underlying model (module)
-        model.module.load_state_dict(checkpoint['model_state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
-        best_metrics = checkpoint.get('best_metrics', best_metrics)
-        epoch_loaded = checkpoint['epoch']
-    else:
-        checkpoint = actual_model.load_checkpoint(str(model_path), optimizer, device)
-        epoch_loaded = checkpoint['epoch']
+    checkpoint = actual_model.load_checkpoint(str(model_path), optimizer, device)
+    epoch_loaded = checkpoint['epoch']
         
     print(f"\n✓ Loaded best model from epoch {epoch_loaded}")
     print(f"  Best Val NDCG@50: {best_val_ndcg:.4f}")
@@ -1243,15 +1267,21 @@ def main():
                         help = 'Choose the number of GNN layers')
     parser.add_argument('--concat_heads', action='store_true', default=False,
                         help='Concatenate attention heads (vs average)')
-    parser.add_argument('--ranking_loss_type', type=str, default='pairwise',
-                        choices=['pairwise', 'listwise', 'pointwise'],
-                        help='Type of ranking loss')
-    parser.add_argument('--ranking_margin', type=float, default=1.0,
+    parser.add_argument('--ranking_loss_type', type=str, default='bpr',
+                        choices=['pairwise', 'sampled_pairwise', 'bpr', 'listwise', 'approxndcg'],
+                        help='Type of ranking loss (bpr is most stable)')
+    parser.add_argument('--ranking_margin', type=float, default=0.5,
                         help='Margin for pairwise ranking loss')
+    parser.add_argument('--focal_gamma', type=float, default=2.0,
+                        help='Focal loss gamma (higher = more focus on hard examples)')
+    parser.add_argument('--use_focal', action='store_true', default=True,
+                        help='Use focal weighting in ranking loss')
+    parser.add_argument('--contrastive_weight', type=float, default=0.1,
+                        help='Weight for contrastive loss (0-1, reduced to 0.1 for better balance). Ranking weight = 1 - contrastive_weight')
     parser.add_argument('--early_stopping_patience', type=int, default=50,
                         help='Early stopping patience')
-    parser.add_argument('--gradient_accumulation_steps', type=int, default=4,
-                    help='Number of gradient accumulation steps')
+    parser.add_argument('--gradient_accumulation_steps', type=int, default=8,
+                    help='Number of gradient accumulation steps (increased for stability)')
     parser.add_argument('--mixed_precision', action='store_true',
                         help='Use mixed precision training')
     parser.add_argument('--max_views_per_step', type=int, default=2,
@@ -1273,13 +1303,6 @@ def main():
                         help='Reduce model dimensions (hidden=64, proj=32, layers=2, heads=1)')
     parser.add_argument('--validation_frequency', type=int, default=10,
                         help='Validate every N epochs (default: 10, lower saves memory)')
-    # ============================================================================
-    
-    # Multi-GPU Arguments
-    parser.add_argument('--use_multi_gpu', action = 'store_true', default=False,
-                        help = 'Use Multiple GPUs with DataParallel')
-    parser.add_argument('--gpu_ids', type = int, nargs='+', default=None,
-                        help='Specific GPU IDs to use (default=None)')
     args = parser.parse_args()
 
     # ============================================================================
@@ -1408,9 +1431,10 @@ def main():
             concat_heads=args.concat_heads,
             ranking_loss_type=args.ranking_loss_type,
             ranking_margin=args.ranking_margin,
+            focal_gamma=args.focal_gamma,
+            use_focal=args.use_focal,
+            contrastive_weight=args.contrastive_weight,
             reduce_model_size=args.reduce_model_size,
-            use_multi_gpu=args.use_multi_gpu,
-            gpu_ids=args.gpu_ids,
             validation_frequency=args.validation_frequency
         )
         

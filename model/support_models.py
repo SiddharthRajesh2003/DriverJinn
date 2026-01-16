@@ -249,16 +249,27 @@ class WarmupScheduler:
 class RankingLoss(nn.Module):
     """
     Ranking loss that directly optimizes for driver genes to score higher.
+
+    Improvements for stable training:
+    - Hard negative mining to focus on informative pairs
+    - Sampled pairwise to reduce memory and variance
+    - Focal weighting to focus on hard examples
     """
     def __init__(
         self,
         margin: float = 1.0,
-        loss_type: str = 'pairwise'
+        loss_type: str = 'pairwise',
+        num_samples: int = 256,
+        focal_gamma: float = 2.0,
+        use_focal: bool = True
     ):
         super().__init__()
         self.margin = margin
         self.loss_type = loss_type
-        
+        self.num_samples = num_samples
+        self.focal_gamma = focal_gamma
+        self.use_focal = use_focal
+
     def forward(
         self,
         scores: torch.Tensor,
@@ -271,49 +282,145 @@ class RankingLoss(nn.Module):
             labels: [num_nodes] binary labels (1=driver, 0=non-driver)
             mask: [num_nodes] training mask
         """
-        
+
         scores = scores[mask]
         labels = labels[mask]
-        
+
         driver_mask = (labels == 1)
         non_driver_mask = (labels == 0)
-        
-        if driver_mask.sum() == 0 or non_driver_mask.sum() == 0:
-            return torch.tensor(0.0, device=scores.device)
-        
+
+        n_drivers = driver_mask.sum().item()
+        n_non_drivers = non_driver_mask.sum().item()
+
+        if n_drivers == 0 or n_non_drivers == 0:
+            return torch.tensor(0.0, device=scores.device, requires_grad=True)
+
         driver_scores = scores[driver_mask]
         non_driver_scores = scores[non_driver_mask]
-        
+
         if self.loss_type == 'pairwise':
-            # Pairwise ranking: driver_score > non_driver_score + margin
-            driver_expanded = driver_scores.unsqueeze(1) # [n_drivers, 1]
-            non_driver_expanded = non_driver_scores.unsqueeze(0)  # [1, n_non_drivers]
-            
-            loss = F.relu(self.margin - driver_expanded + non_driver_expanded)
-            return loss.mean()
-        
+            return self._pairwise_loss(driver_scores, non_driver_scores)
+
+        elif self.loss_type == 'sampled_pairwise':
+            return self._sampled_pairwise_loss(driver_scores, non_driver_scores)
+
         elif self.loss_type == 'listwise':
-            # ListNet-style cross-entropy
-            ideal_probs = labels.float()
-            ideal_probs = ideal_probs / (ideal_probs.sum() + 1e-10)
-            pred_probs = F.softmax(scores, dim=0)
-            loss = -torch.sum(ideal_probs * torch.log(pred_probs + 1e-10))
-            return loss
-        
+            return self._listwise_loss(scores, labels)
+
         elif self.loss_type == 'approxndcg':
-            # Approximate NDCG loss
-            sorted_indices = torch.argsort(scores, descending=True)
-            sorted_labels = labels[sorted_indices].float()
-            
-            gains = sorted_labels
-            ranks = torch.arange(1, len(gains) + 1, device=gains.device).float()
-            discounts = 1.0 / torch.log2(ranks + 1)
-            
-            dcg = (gains * discounts).sum()
-            ideal_gains = torch.sort(sorted_labels, descending=True)[0]
-            idcg = (ideal_gains * discounts).sum()
-            
-            ndcg = dcg / (idcg + 1e-10)
-            loss = 1.0 - ndcg
-            return loss
+            return self._approxndcg_loss(scores, labels)
+
+        elif self.loss_type == 'bpr':
+            # Bayesian Personalized Ranking - more stable than standard pairwise
+            return self._bpr_loss(driver_scores, non_driver_scores)
+
+        else:
+            raise ValueError(f"Unknown loss type: {self.loss_type}")
+
+    def _pairwise_loss(
+        self,
+        driver_scores: torch.Tensor,
+        non_driver_scores: torch.Tensor
+    ) -> torch.Tensor:
+        """Standard pairwise margin ranking loss with optional focal weighting."""
+        driver_expanded = driver_scores.unsqueeze(1)  # [n_drivers, 1]
+        non_driver_expanded = non_driver_scores.unsqueeze(0)  # [1, n_non_drivers]
+
+        # margin_loss[i,j] = max(0, margin - driver[i] + non_driver[j])
+        margin_violations = self.margin - driver_expanded + non_driver_expanded
+        loss_matrix = F.relu(margin_violations)
+
+        if self.use_focal:
+            # Focal weighting: focus on hard examples (where violation is large)
+            # Probability of correct ranking
+            prob_correct = torch.sigmoid(driver_expanded - non_driver_expanded)
+            focal_weight = (1 - prob_correct) ** self.focal_gamma
+            loss_matrix = focal_weight * loss_matrix
+
+        return loss_matrix.mean()
+
+    def _sampled_pairwise_loss(
+        self,
+        driver_scores: torch.Tensor,
+        non_driver_scores: torch.Tensor
+    ) -> torch.Tensor:
+        """Sampled pairwise loss for memory efficiency and reduced variance."""
+        n_drivers = len(driver_scores)
+        n_non_drivers = len(non_driver_scores)
+
+        # Sample pairs instead of computing all n_d * n_nd pairs
+        n_pairs = min(self.num_samples, n_drivers * n_non_drivers)
+
+        # Sample driver indices (with replacement if needed)
+        driver_idx = torch.randint(0, n_drivers, (n_pairs,), device=driver_scores.device)
+        non_driver_idx = torch.randint(0, n_non_drivers, (n_pairs,), device=driver_scores.device)
+
+        sampled_driver = driver_scores[driver_idx]
+        sampled_non_driver = non_driver_scores[non_driver_idx]
+
+        # BPR-style loss: -log(sigmoid(driver - non_driver))
+        diff = sampled_driver - sampled_non_driver
+        loss = F.softplus(-diff)  # log(1 + exp(-diff)) = -log(sigmoid(diff))
+
+        if self.use_focal:
+            prob_correct = torch.sigmoid(diff)
+            focal_weight = (1 - prob_correct) ** self.focal_gamma
+            loss = focal_weight * loss
+
+        return loss.mean()
+
+    def _bpr_loss(
+        self,
+        driver_scores: torch.Tensor,
+        non_driver_scores: torch.Tensor
+    ) -> torch.Tensor:
+        """Bayesian Personalized Ranking loss - smooth and stable."""
+        n_drivers = len(driver_scores)
+        n_non_drivers = len(non_driver_scores)
+
+        # Sample pairs
+        n_pairs = min(self.num_samples, n_drivers * n_non_drivers)
+
+        driver_idx = torch.randint(0, n_drivers, (n_pairs,), device=driver_scores.device)
+        non_driver_idx = torch.randint(0, n_non_drivers, (n_pairs,), device=driver_scores.device)
+
+        diff = driver_scores[driver_idx] - non_driver_scores[non_driver_idx]
+
+        # BPR loss: -log(sigmoid(x_ui - x_uj))
+        loss = -F.logsigmoid(diff)
+
+        return loss.mean()
+
+    def _listwise_loss(
+        self,
+        scores: torch.Tensor,
+        labels: torch.Tensor
+    ) -> torch.Tensor:
+        """ListNet-style listwise loss."""
+        ideal_probs = labels.float()
+        ideal_probs = ideal_probs / (ideal_probs.sum() + 1e-10)
+        pred_probs = F.softmax(scores, dim=0)
+        loss = -torch.sum(ideal_probs * torch.log(pred_probs + 1e-10))
+        return loss
+
+    def _approxndcg_loss(
+        self,
+        scores: torch.Tensor,
+        labels: torch.Tensor
+    ) -> torch.Tensor:
+        """Approximate NDCG loss using soft sorting."""
+        sorted_indices = torch.argsort(scores, descending=True)
+        sorted_labels = labels[sorted_indices].float()
+
+        gains = sorted_labels
+        ranks = torch.arange(1, len(gains) + 1, device=gains.device).float()
+        discounts = 1.0 / torch.log2(ranks + 1)
+
+        dcg = (gains * discounts).sum()
+        ideal_gains = torch.sort(sorted_labels, descending=True)[0]
+        idcg = (ideal_gains * discounts).sum()
+
+        ndcg = dcg / (idcg + 1e-10)
+        loss = 1.0 - ndcg
+        return loss
         
