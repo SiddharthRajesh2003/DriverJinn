@@ -76,9 +76,9 @@ class EdgeCurvature:
                 edge = (row['source'], row['target'])
                 reversed_edge = (row['target'], row['source'])
                 
-                if edge in self.edge_curvature['OlivierRicci']:
+                if edge in self.edge_curvature['OllivierRicci']:
                     ollivier_results.append(self.edge_curvature['OllivierRicci'][edge])
-                elif reversed_edge in self.edge_curvature['OlivierRicci']:
+                elif reversed_edge in self.edge_curvature['OllivierRicci']:
                     ollivier_results.append(self.edge_curvature['OllivierRicci'][reversed_edge])
                 else:
                     ollivier_results.append(np.nan)

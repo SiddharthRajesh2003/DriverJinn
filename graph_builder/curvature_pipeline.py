@@ -77,19 +77,90 @@ class CurvaturePipeline:
     
     def load_data(self):
         """Load data from pickle file"""
-        
+
         logger.info(f'Loading data from pickle file: {self.dataset_file}')
-        
+
         with open(self.dataset_file, 'rb') as f:
             self.data_dict = pickle.load(f)
-            
+
         if self.data_dict is not None:
             logger.info('Data loaded successfully')
             logger.info(f"Features shape: {self.data_dict['feature'].shape}")
             logger.info(f"Edge index shape: {self.data_dict['edge_index'].shape}")
             logger.info(f"Number of nodes: {len(self.data_dict['node_name'])}")
-            
+
+            # Fix duplicate edges if detected
+            self._fix_duplicate_edges()
+
         return self.data_dict
+
+    def _fix_duplicate_edges(self):
+        """
+        Detect and fix duplicate edges in edge_index.
+
+        Some datasets have edge_index = [edges, edges] (duplicates) instead of
+        [edges, edges.flip(0)] (bidirectional). This method detects and fixes this issue.
+        """
+        edge_index = self.data_dict['edge_index']
+
+        if isinstance(edge_index, torch.Tensor):
+            edge_np = edge_index.numpy()
+        else:
+            edge_np = edge_index
+
+        num_edges = edge_np.shape[1]
+
+        # Convert to set of tuples to find unique edges
+        edge_list = list(zip(edge_np[0].tolist(), edge_np[1].tolist()))
+        unique_edges = set(edge_list)
+        num_unique = len(unique_edges)
+
+        # Check if we have duplicates (same direction)
+        if num_unique * 2 == num_edges:
+            # Check if first half equals second half (duplicate pattern)
+            half = num_edges // 2
+            first_half = set(edge_list[:half])
+            second_half = set(edge_list[half:])
+
+            if first_half == second_half:
+                logger.warning(f"⚠️ Detected duplicate edges: {num_edges} total, {num_unique} unique")
+                logger.info("Converting duplicates to proper bidirectional edges...")
+
+                # Take unique edges and create proper bidirectional format
+                unique_edge_index = edge_index[:, :half]
+                bidirectional_edge_index = torch.cat([
+                    unique_edge_index,
+                    unique_edge_index.flip(0)  # Reverse direction
+                ], dim=1)
+
+                self.data_dict['edge_index'] = bidirectional_edge_index
+
+                logger.info(f"✓ Fixed edge_index: {bidirectional_edge_index.shape[1]} edges (bidirectional)")
+
+                # Verify the fix
+                new_edge_list = list(zip(
+                    bidirectional_edge_index[0].tolist(),
+                    bidirectional_edge_index[1].tolist()
+                ))
+                forward_edges = set(new_edge_list[:half])
+                reverse_edges = set(new_edge_list[half:])
+
+                # Check that reverse edges are actually reversed
+                expected_reverse = {(b, a) for a, b in forward_edges}
+                if reverse_edges == expected_reverse:
+                    logger.info("✓ Verified: edges are now properly bidirectional")
+                else:
+                    logger.warning("⚠️ Verification failed - edges may not be properly bidirectional")
+        else:
+            # Check if already bidirectional
+            edges_set = set(edge_list)
+            reverse_edges = {(b, a) for a, b in edges_set}
+
+            if edges_set == reverse_edges:
+                logger.info("✓ Edge index is already properly bidirectional")
+            else:
+                overlap = len(edges_set & reverse_edges)
+                logger.info(f"Edge index has {num_edges} edges, {num_unique} unique, {overlap} bidirectional pairs")
     
     def create_train_test_split(self, test_size = 0.2, val_size = 0.1, stratify = True,
                                 random_seed = 42, use_existing_mask = False, train_ratio_from_mask=0.8):

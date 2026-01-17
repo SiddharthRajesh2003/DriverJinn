@@ -1,12 +1,10 @@
 from graph_builder.curvature_calculator import EdgeCurvature
 from utils.logging_manager import get_logger
 
-from collections import defaultdict
 import numpy as np
 import torch
 import pandas as pd
 
-from scipy.spatial.distance import cosine
 from sklearn.preprocessing import StandardScaler
 
 logger=get_logger(__name__)
