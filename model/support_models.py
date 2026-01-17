@@ -423,4 +423,78 @@ class RankingLoss(nn.Module):
         ndcg = dcg / (idcg + 1e-10)
         loss = 1.0 - ndcg
         return loss
+
+class EMA:
+    """
+    Exponential Moving Average for model weights.
+    Maintains a shadow copy of model parameters that's updated with exponential decay.
+    This smooths out training dynamics and often improves generalization.
+    """
+    def __init__(self, model: nn.Module, decay = 0.999, device: torch.device = None):
+        self.model = model
+        self.decay = decay 
+        self.device = device if device is not None else torch.device('cpu')
         
+        # Create shadow parameters (stored on CPU to save GPU memory)
+        self.shadow_params = {}
+        self.register_params(model)
+        
+    def register_params(
+        self,
+        model: nn.Module
+    ):
+        """Store initial model paramters"""
+        for name, param in model.named_parameters():
+            if param.requires_grad:
+                self.shadow_params[name] = param.data.clone().to(self.device)
+    
+    def update(
+        self,
+        model: nn.Module
+    ):
+        """Update shadow parameters with exponential moving average"""
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if param.requires_grad and name in self.shadow_params:
+                    # EMA update: shadow = decay * shadow + (1-decay) * current
+                    self.shadow_params[name].mul_(self.decay).add_(
+                        param.data.to(self.device), alpha = 1.0 - self.decay
+                    )
+    
+    def apply_shadow(
+        self,
+        model: nn.Module
+    ):
+        """Replace model parameters with EMA shadow parameters (for evaluation)"""
+        
+        self.backup_params = {}
+        for name, params in model.named_parameters():
+            if params.requires_grad and name in self.shadow_params:
+                self.backup_params[name] = params.data.clone()
+                params.data.copy_(self.shadow_params[name].to(params.device))
+                
+    
+    def restore(
+        self,
+        model: nn.Module
+    ):
+        """Restore original model parameters (after evaluation)"""
+        for name, param in model.named_parameters():
+            if name in self.backup_params:
+                param.data.copy_(self.backup_params[name])
+        
+        self.backup_params = {}
+    
+    def state_dict(self):
+        """Get EMA state for checkpointing"""
+        return {
+            'decay': self.decay,
+            'shadow_params': self.shadow_params
+        }
+    
+    def load_state_dict(
+        self, state_dict
+    ):
+        """Load EMA state from checkpoint"""
+        self.decay = state_dict['decay']
+        self.shadow_params = state_dict['shadow_params']

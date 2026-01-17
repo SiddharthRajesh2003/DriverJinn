@@ -15,7 +15,7 @@ from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 
 from utils.logging_manager import get_logger
 from model.DriverGenePredictor import ContrastiveDriverGenePredictor, compute_ndcg
-from model.support_models import WarmupScheduler, EarlyStopping, RankingLoss
+from model.support_models import WarmupScheduler, EarlyStopping, RankingLoss, EMA
 
 # Memory optimization
 torch.cuda.empty_cache()
@@ -341,7 +341,8 @@ def train_single_fold(
     gradient_accumulation_steps: int = 4,
     mixed_precision: bool = True,
     reduce_model_size: bool = True,
-    validation_frequency: int = 10
+    validation_frequency: int = 10,
+    decay: float = 0.999
 ) -> Tuple[ContrastiveDriverGenePredictor, Dict, Dict]:
     
     """Train model on a single fold with ranking objective"""
@@ -498,6 +499,13 @@ def train_single_fold(
     # Setup device (GPU or CPU)
     model, device = setup_device(model)
     actual_model = model
+    
+    # Initialize EMA 
+    ema = EMA(
+        model = actual_model,
+        decay = decay,  # High decay  = very smooth
+        device = torch.device('cpu')
+    )
     
     # Optimizer
     optimizer = torch.optim.AdamW(
@@ -747,9 +755,11 @@ def train_single_fold(
                         scores = actual_model.ranking_head(h1).squeeze(-1)
                         ranking_loss = ranking_criterion(scores, aug_labels, aug_mask)
 
-                        # === Combined Loss ===
+                        # === Combined Loss with Ranking Scaling ===
+                        # Scale ranking loss to match magnitude of contrastive loss
+                        scaled_ranking_loss = ranking_loss * 10.0
                         loss = (contrastive_weight * contrastive_loss +
-                                (1 - contrastive_weight) * ranking_loss)
+                                (1 - contrastive_weight) * scaled_ranking_loss)
 
                         # Clip loss to prevent extreme spikes
                         loss = torch.clamp(loss, max=10.0)
@@ -788,9 +798,11 @@ def train_single_fold(
                     scores = actual_model.ranking_head(h1).squeeze(-1)
                     ranking_loss = ranking_criterion(scores, aug_labels, aug_mask)
 
-                    # Combined Loss
+                    # Combined Loss with Ranking Scaling
+                    # Scale ranking loss to match magnitude of contrastive loss
+                    scaled_ranking_loss = ranking_loss * 10.0
                     loss = (contrastive_weight * contrastive_loss +
-                            (1 - contrastive_weight) * ranking_loss)
+                            (1 - contrastive_weight) * scaled_ranking_loss)
 
                     # Clip loss to prevent extreme spikes
                     loss = torch.clamp(loss, max=10.0)
@@ -873,15 +885,24 @@ def train_single_fold(
         else:
             optimizer.step()
         
+        ema.update(actual_model)
+        
         optimizer.zero_grad()
         torch.cuda.empty_cache()
         
         # Validation (Memory Optimization: configurable frequency to save time and memory)
         if epoch % validation_frequency == 0 or epoch == num_epochs - 1:
+            
+            # Apply EMA weights before validation
+            ema.apply_shadow(actual_model)
+            
             val_metrics = evaluate_with_ranking_metrics(
                 actual_model, original_device, labels, val_mask_original,
                 curvature_type='ollivier', device=device
             )
+            
+            # Restore original weights after validation
+            ema.restore(actual_model)
 
             # CRITICAL: Clear validation activations immediately
             torch.cuda.empty_cache()
@@ -941,9 +962,10 @@ def train_single_fold(
         if epoch % 10 == 0:
             avg_contrastive = accumulated_contrastive_loss / max(successful_steps, 1)
             avg_ranking = accumulated_ranking_loss / max(successful_steps, 1)
+            avg_ranking_scaled = avg_ranking * 10.0  # Show scaled value used in optimization
             print(
                 f"Epoch {epoch:3d} | "
-                f"Loss: {avg_loss:.4f} (C:{avg_contrastive:.3f} R:{avg_ranking:.3f}) | "
+                f"Loss: {avg_loss:.4f} (C:{avg_contrastive:.3f} R:{avg_ranking:.3f}→{avg_ranking_scaled:.2f}) | "
                 f"Steps: {successful_steps}/{gradient_accumulation_steps} | "
                 f"NDCG@50: {val_metrics.get('ndcg@50', 0):.4f} | "
                 f"LR: {optimizer.param_groups[0]['lr']:.6f}"
@@ -956,7 +978,10 @@ def train_single_fold(
 
             actual_model.save_checkpoint(
                 str(model_path), epoch, optimizer, best_metrics,
-                metadata={'fold': fold_idx}
+                metadata={
+                    'fold': fold_idx,
+                    'ema_state': ema.state_dict()
+                    }
             )
 
             # CRITICAL: Clear checkpoint tensors from GPU memory
@@ -971,7 +996,11 @@ def train_single_fold(
     # Load best model
     checkpoint = actual_model.load_checkpoint(str(model_path), optimizer, device)
     epoch_loaded = checkpoint['epoch']
-        
+    
+    # Restore EMA state if available
+    if 'metadata' in checkpoint and 'ema_state' in checkpoint['metadata']:
+        ema.load_state_dict(checkpoint['metadata']['ema_state'])
+    
     print(f"\n✓ Loaded best model from epoch {epoch_loaded}")
     print(f"  Best Val NDCG@50: {best_val_ndcg:.4f}")
     print(f"  Best Val AUROC: {best_metrics.get('auroc', 0):.4f}")
@@ -1292,6 +1321,8 @@ def main():
                     help='Process nodes in chunks for attention (lower = less memory)')
     parser.add_argument('--return_all_layers', action='store_true', default = False,
                         help = 'Return all layers')
+    parser.add_argument('--decay', type=float, default=0.999,
+                        help = 'Decay rate for Exponential Moving Average for model weights')
     # ============================================================================
     # MEMORY OPTIMIZATION ARGUMENTS
     # ============================================================================
@@ -1435,7 +1466,8 @@ def main():
             use_focal=args.use_focal,
             contrastive_weight=args.contrastive_weight,
             reduce_model_size=args.reduce_model_size,
-            validation_frequency=args.validation_frequency
+            validation_frequency=args.validation_frequency,
+            decay=args.decay
         )
         
         all_fold_metrics.append(best_metrics)
