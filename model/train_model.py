@@ -332,6 +332,7 @@ def train_single_fold(
     dropout: float = 0.2,
     return_all_layers: float = False,
     concat_heads: bool = True,
+    scheduler_patience: int = 50,
     early_stopping_patience: int = 50,
     ranking_loss_type: str = 'bpr',
     ranking_margin: float = 0.5,
@@ -520,7 +521,7 @@ def train_single_fold(
         optimizer,
         mode='max',
         factor=0.7,  # Reduced from 0.5 (less aggressive reduction)
-        patience=30,  # Increased from 20 (more patience)
+        patience=scheduler_patience,  # Increased from 20 (more patience)
         min_lr=1e-6
     )
     
@@ -1307,6 +1308,8 @@ def main():
                         help='Use focal weighting in ranking loss')
     parser.add_argument('--contrastive_weight', type=float, default=0.1,
                         help='Weight for contrastive loss (0-1, reduced to 0.1 for better balance). Ranking weight = 1 - contrastive_weight')
+    parser.add_argument('--scheduler_patience', type=int, default=50,
+                        help = 'Patience for scheduler to stop training on learning rate plateau')
     parser.add_argument('--early_stopping_patience', type=int, default=50,
                         help='Early stopping patience')
     parser.add_argument('--gradient_accumulation_steps', type=int, default=8,
@@ -1456,6 +1459,7 @@ def main():
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             num_heads=args.num_heads,
             num_layers=args.num_layers,
+            scheduler_patience=args.scheduler_patience,
             early_stopping_patience=args.early_stopping_patience,
             projection_dim=args.projection_dim,
             hidden_channels=args.hidden_channels,
