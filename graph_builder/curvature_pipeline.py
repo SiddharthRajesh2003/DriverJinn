@@ -824,8 +824,7 @@ class CurvaturePipeline:
                 node_features=node_features_np,
                 edge_weights=edge_weights,
                 node_names=node_names,
-                labels=labels,
-                strategy = strategy
+                labels=labels
             )
             
             # Extract aligned node names from metadata
