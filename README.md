@@ -3,7 +3,7 @@
 ## Packages Installation
 
 ```bash
-conda env create -f environment.yaml
+conda env create -p conda_envs/envs/gnn_env -f environment.yaml
 ```
 
 ```bash
