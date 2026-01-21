@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import multiprocessing as mp
 import os
 original_get_context = mp.get_context

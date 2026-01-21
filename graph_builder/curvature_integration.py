@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 from graph_builder.curvature_calculator import EdgeCurvature
 from utils.logging_manager import get_logger
 

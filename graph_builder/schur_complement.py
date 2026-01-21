@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import torch
 import networkx as nx
 import numpy as np

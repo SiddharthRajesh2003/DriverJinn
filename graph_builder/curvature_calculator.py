@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 from GraphRicciCurvature.OllivierRicci import OllivierRicci
 from GraphRicciCurvature.FormanRicci import FormanRicci
 import networkx as nx

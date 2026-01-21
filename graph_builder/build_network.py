@@ -1,3 +1,5 @@
+#!/usr/bin/env python
+
 import networkx as nx
 import os
 import numpy as np
