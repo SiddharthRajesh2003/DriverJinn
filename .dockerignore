@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+*.pyo
+.git/
+*.egg-info/
+conda_envs/
+results/
+*.pkl
+*.pt
+.vscode/
