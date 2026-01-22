@@ -40,6 +40,9 @@ COPY requirements.txt .
 # Install remaining python dependencies
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy application code
+COPY . .
+
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 

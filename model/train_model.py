@@ -1101,7 +1101,7 @@ def plot_metrics_comparison(metrics_data: List[Dict], save_dir: Path, prefix: st
         
         # Box plot
         box_data = [df[col].values for col in metrics_cols]
-        bp = axes[1].boxplot(box_data, labels=metrics_cols, patch_artist=True)
+        bp = axes[1].boxplot(box_data, tick_labels=metrics_cols, patch_artist=True)
         
         for patch in bp['boxes']:
             patch.set_facecolor('lightblue')
