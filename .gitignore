@@ -12,3 +12,5 @@ results.tar.gz
 misc/
 model_results/
 .claude/
+search.tar.gz
+hyperparam_results/

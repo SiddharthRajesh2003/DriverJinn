@@ -170,17 +170,17 @@ class HyperparameterSearch:
         """
         params = {
             # Model architecture (memory constrained)
-            'hidden_channels': trial.suggest_categorical('hidden_channels', [64, 96, 128]),
-            'projection_dim': trial.suggest_categorical('projection_dim', [32, 64]),
+            'hidden_channels': trial.suggest_categorical('hidden_channels', [64, 96, 128, 144]),
+            'projection_dim': trial.suggest_categorical('projection_dim', [32, 64, 72, 96]),
             'num_gnn_layers': trial.suggest_int('num_gnn_layers', 2, 4),
             'num_attention_heads': trial.suggest_categorical('num_attention_heads', [1, 2, 4]),
-            'attention_mode': trial.suggest_categorical('attention_mode', ['standard', 'gated', 'hybrid']),
-            'pathway_aggregator': trial.suggest_categorical('pathway_aggregator', ['attention', 'concat', 'mean']),
+            'attention_mode': trial.suggest_categorical('attention_mode', ['gated', 'hybrid', 'standard', 'edge_feature', 'bias']),
+            'pathway_aggregator': trial.suggest_categorical('pathway_aggregator', ['attention', 'concat', 'mean', 'hierarchical']),
             'concat_heads': trial.suggest_categorical('concat_heads', [True, False]),
 
             # Regularization
             'dropout': trial.suggest_float('dropout', 0.1, 0.4),
-            'temperature': trial.suggest_float('temperature', 0.3, 0.7),
+            'temperature': trial.suggest_float('temperature', 0.3, 1.0),
             'negative_slope': trial.suggest_float('negative_slope', 0.1, 0.3),
 
             # Training
@@ -196,12 +196,12 @@ class HyperparameterSearch:
             'focal_gamma': trial.suggest_float('focal_gamma', 1.0, 3.0),
 
             # Optimization
-            'gradient_accumulation_steps': trial.suggest_categorical('gradient_accumulation_steps', [8, 16]),
+            'gradient_accumulation_steps': trial.suggest_categorical('gradient_accumulation_steps', [8, 16, 24, 36]),
             'use_ema': trial.suggest_categorical('use_ema', [True, False]),
             'ema_decay': trial.suggest_float('ema_decay', 0.99, 0.999),
 
             # Scheduler
-            'scheduler_patience': trial.suggest_int('scheduler_patience', 20, 40),
+            'scheduler_patience': trial.suggest_int('scheduler_patience', 20, 150),
             'scheduler_factor': trial.suggest_float('scheduler_factor', 0.5, 0.8),
         }
 
@@ -327,15 +327,22 @@ class HyperparameterSearch:
                     aug_mask = torch.ones(view1_x.shape[0], dtype=torch.bool, device=self.device)
 
                     with torch.amp.autocast('cuda', enabled=scaler is not None):
-                        # Forward pass
-                        embeddings1, h1, z1 = model.forward(
+                        # Forward pass - encode both views
+                        embeddings1, _ = model.encode(
                             view1_x, view1_edge_index, view1_curvature,
-                            return_all_layers=True
+                            return_attention=False, return_all_layers=True
                         )
-                        embeddings2, h2, z2 = model.forward(
+                        h1, _ = model.aggregator(embeddings1, return_attention=False)
+
+                        embeddings2, _ = model.encode(
                             view2_x, view2_edge_index, view2_curvature,
-                            return_all_layers=True
+                            return_attention=False, return_all_layers=True
                         )
+                        h2, _ = model.aggregator(embeddings2, return_attention=False)
+
+                        # Project for contrastive loss
+                        z1 = F.normalize(model.projection(h1), dim=-1)
+                        z2 = F.normalize(model.projection(h2), dim=-1)
 
                         # Contrastive loss
                         min_nodes = min(z1.shape[0], z2.shape[0])
@@ -693,7 +700,7 @@ def main():
                         help='Number of Optuna trials')
     parser.add_argument('--n_folds', type=int, default=1,
                         help='Number of folds for cross-validation per trial (1 is faster for search)')
-    parser.add_argument('--epochs_per_trial', type=int, default=100,
+    parser.add_argument('--epochs_per_trial', type=int, default=500,
                         help='Maximum epochs per trial')
     parser.add_argument('--patience', type=int, default=30,
                         help='Early stopping patience')
