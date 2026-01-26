@@ -328,17 +328,16 @@ class HyperparameterSearch:
 
                     with torch.amp.autocast('cuda', enabled=scaler is not None):
                         # Forward pass - encode both views
-                        embeddings1, _ = model.encode(
+                        # encode() already returns aggregated embeddings
+                        h1, _ = model.encode(
                             view1_x, view1_edge_index, view1_curvature,
                             return_attention=False, return_all_layers=True
                         )
-                        h1, _ = model.aggregator(embeddings1, return_attention=False)
 
-                        embeddings2, _ = model.encode(
+                        h2, _ = model.encode(
                             view2_x, view2_edge_index, view2_curvature,
                             return_attention=False, return_all_layers=True
                         )
-                        h2, _ = model.aggregator(embeddings2, return_attention=False)
 
                         # Project for contrastive loss
                         z1 = F.normalize(model.projection(h1), dim=-1)
@@ -374,7 +373,7 @@ class HyperparameterSearch:
                     # Cleanup
                     del view1_x, view1_edge_index, view1_curvature
                     del view2_x, view2_edge_index, view2_curvature
-                    del embeddings1, embeddings2, h1, h2, z1, z2
+                    del h1, h2, z1, z2
                     del scores, loss, contrastive_loss, ranking_loss
 
                     if torch.cuda.is_available():

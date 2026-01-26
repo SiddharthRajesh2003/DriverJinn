@@ -180,10 +180,6 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
         
         # Filter edges if using standard attention mode
         if self.attention_mode == 'standard' and self.curvature_type != 'both':
-            logger.info(
-                f"Using legacy filtering mode for '{self.attention_mode}' attention. "
-                f"Consider using curvature-aware attention modes for better performance."
-            )
             filtered_edge_index, filtered_edge_curvature = self.filter_edges_by_curvature(
                 edge_index, edge_curvature, edge_attr
             )
@@ -241,10 +237,6 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
         
         Filter edges based on curvature type (positive/negative)
         """
-        logger.warning(
-            "filter_edges_by_curvature is DEPRECATED. "
-            "Use curvature-aware attention modes instead."
-        )
         
         num_edges_index = edge_index.shape[1]
         num_curv = edge_curvature.shape[0]

@@ -345,7 +345,9 @@ def train_single_fold(
     mixed_precision: bool = True,
     reduce_model_size: bool = True,
     validation_frequency: int = 10,
-    decay: float = 0.999
+    decay: float = 0.999,
+    learning_rate: float = 1e-3,
+    weight_decay: float = 1e-5
 ) -> Tuple[ContrastiveDriverGenePredictor, Dict, Dict]:
     
     """Train model on a single fold with ranking objective"""
@@ -513,11 +515,11 @@ def train_single_fold(
     # Optimizer
     optimizer = torch.optim.AdamW(
         model.parameters(),
-        lr=0.001,
-        weight_decay=1e-5,
+        lr=learning_rate,
+        weight_decay=weight_decay,
         betas=(0.9, 0.999)
     )
-    
+
     # Learning rate scheduler (maximize NDCG) - Less aggressive for stability
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
@@ -526,13 +528,13 @@ def train_single_fold(
         patience=scheduler_patience,  # Increased from 20 (more patience)
         min_lr=1e-6
     )
-    
+
     # Warmup scheduler
     warmup_scheduler = WarmupScheduler(
         optimizer,
         warmup_epochs=10,
-        initial_lr=1e-5,
-        target_lr=0.001
+        initial_lr=learning_rate / 100,  # Start at 1% of target LR
+        target_lr=learning_rate
     )
     
     # Early stopping based on NDCG@50
@@ -1293,6 +1295,8 @@ def main():
                         choices= ['attention','concat', 'hierarchical', 'mean'])
     parser.add_argument('--learning_rate', type=float, default=1e-3,
                         help='Set the learning rate')
+    parser.add_argument('--weight_decay', type=float, default=1e-5,
+                        help='Weight decay for AdamW optimizer')
     parser.add_argument('--num_heads', type=int, default=4,
                         help='Number of attention heads')
     parser.add_argument('--num_layers', type = int, default = 3,
@@ -1473,7 +1477,12 @@ def main():
             contrastive_weight=args.contrastive_weight,
             reduce_model_size=args.reduce_model_size,
             validation_frequency=args.validation_frequency,
-            decay=args.decay
+            decay=args.decay,
+            learning_rate=args.learning_rate,
+            weight_decay=args.weight_decay,
+            dropout=args.dropout,
+            temperature=args.temperature,
+            pathway_aggregator=args.pathway_aggregator
         )
         
         all_fold_metrics.append(best_metrics)
