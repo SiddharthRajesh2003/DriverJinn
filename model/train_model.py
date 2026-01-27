@@ -277,6 +277,7 @@ def create_cancer_driver_model(
     temperature: float = 0.4,
     attention_mode: str = 'hybrid',
     pathway_aggregator: str = 'hierarchical',
+    aggregation: str = 'add',
     num_heads: int = 4,
     dropout: float = 0.2,
     concat_heads: bool = True,
@@ -295,6 +296,7 @@ def create_cancer_driver_model(
         hop_types=['one_hop', 'two_hop'],
         num_attention_heads=num_heads,
         use_attention=True,
+        aggregation=aggregation,
         temperature=temperature,
         attention_mode=attention_mode,
         pathway_aggregator=pathway_aggregator,
@@ -336,6 +338,7 @@ def train_single_fold(
     concat_heads: bool = True,
     scheduler_patience: int = 50,
     early_stopping_patience: int = 50,
+    aggregation: str = 'add',
     ranking_loss_type: str = 'bpr',
     ranking_margin: float = 0.5,
     focal_gamma: float = 2.0,
@@ -495,6 +498,7 @@ def train_single_fold(
         attention_mode=attention_mode,
         temperature=temperature,
         dropout=dropout,
+        aggregation=aggregation,
         pathway_aggregator=pathway_aggregator,
         num_heads=num_heads,
         concat_heads=concat_heads,
@@ -1293,6 +1297,8 @@ def main():
                         help='Attention mode for message passing')
     parser.add_argument('--pathway_aggregator', type = str, default='attention',
                         choices= ['attention','concat', 'hierarchical', 'mean'])
+    parser.add_argument('--aggregation', type=str, default='add',
+                        help = 'Aggregation Method')
     parser.add_argument('--learning_rate', type=float, default=1e-3,
                         help='Set the learning rate')
     parser.add_argument('--weight_decay', type=float, default=1e-5,

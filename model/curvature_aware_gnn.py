@@ -36,6 +36,7 @@ class CurvatureAwareGNN(nn.Module):
         concat: Whether to concatenate or average multi-head outputs
         dropout: Dropout rate for regularization
         min_edge_ratio: Minimum fraction of edges to keep after filtering
+        aggregation: Aggregation method ('add', 'mean', 'max')
     """
     
     def __init__(
@@ -51,7 +52,8 @@ class CurvatureAwareGNN(nn.Module):
         concat: bool = True,
         dropout: float = 0.2,
         min_edge_ratio: float = 0.15,
-        negative_slope: float = 0.2
+        negative_slope: float = 0.2,
+        aggregation: str = 'add'
     ):
         super().__init__()
         self.num_layers = num_layers
@@ -98,7 +100,7 @@ class CurvatureAwareGNN(nn.Module):
                             out_channels=hidden_channels,  # Per-head dimension
                             curvature_type=curv_type,
                             hop_type=hop_type,
-                            aggregation='add',
+                            aggregation=aggregation,
                             use_attention=use_attention,
                             attention_mode=attention_mode,
                             heads=heads,

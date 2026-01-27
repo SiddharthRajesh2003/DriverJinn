@@ -46,6 +46,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         hop_types: List[str] = ['one_hop', 'two_hop'],
         num_attention_heads: int = 4,
         use_attention:bool = True,
+        aggregation: str = 'add',
         attention_mode:str = 'hybrid',
         pathway_aggregator: str = 'hierarchical',
         concat:bool = True,
@@ -71,6 +72,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
             curvature_types=curvature_types,
             hop_types=hop_types,
             use_attention=use_attention,
+            aggregation=aggregation,
             dropout=dropout,
             min_edge_ratio=min_edge_ratio,
             attention_mode=attention_mode,
@@ -100,7 +102,8 @@ class ContrastiveDriverGenePredictor(nn.Module):
             nn.Linear(hidden_channels, hidden_channels),
             nn.ReLU(),
             nn.Dropout(dropout),
-            nn.Linear(hidden_channels, 1) # Single score per node
+            nn.Linear(hidden_channels, 1), # Single score per node
+            nn.Sigmoid(1, 1)
         )
         
         # Deprecated 
