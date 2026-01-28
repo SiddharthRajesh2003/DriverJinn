@@ -169,7 +169,7 @@ class HyperparameterSearch:
         Constrained to max 128 hidden channels for memory efficiency.
         """
         params = {
-            # Model architecture (memory constrained)
+            # Model architecture
             'hidden_channels': trial.suggest_categorical('hidden_channels', [64, 96, 128, 144]),
             'projection_dim': trial.suggest_categorical('projection_dim', [32, 64, 72, 96]),
             'num_gnn_layers': trial.suggest_int('num_gnn_layers', 2, 4),

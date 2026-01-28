@@ -325,7 +325,7 @@ def train_single_fold(
     device: torch.device,
     model_save_dir: Path,
     results_dir: Path,
-    model_prefix: str = "",
+    model_prefix: str = None,
     attention_mode: str = 'hybrid',
     pathway_aggregator: str = 'hierarchical',
     num_heads: int = 4,
@@ -340,6 +340,7 @@ def train_single_fold(
     early_stopping_patience: int = 50,
     aggregation: str = 'add',
     ranking_loss_type: str = 'bpr',
+    ranking_loss_scale: float = 10.0,
     ranking_margin: float = 0.5,
     focal_gamma: float = 2.0,
     use_focal: bool = True,
@@ -766,7 +767,7 @@ def train_single_fold(
 
                         # === Combined Loss with Ranking Scaling ===
                         # Scale ranking loss to match magnitude of contrastive loss
-                        scaled_ranking_loss = ranking_loss * 10.0
+                        scaled_ranking_loss = ranking_loss * ranking_loss_scale
                         loss = (contrastive_weight * contrastive_loss +
                                 (1 - contrastive_weight) * scaled_ranking_loss)
 
@@ -1324,14 +1325,14 @@ def main():
                         help = 'Patience for scheduler to stop training on learning rate plateau')
     parser.add_argument('--early_stopping_patience', type=int, default=50,
                         help='Early stopping patience')
+    parser.add_argument('--ranking_loss_scale', type=float, default=10.0,
+                        help = 'Scale the ranking loss to prevent sharp increase due to contrastive loss')
     parser.add_argument('--gradient_accumulation_steps', type=int, default=8,
                     help='Number of gradient accumulation steps (increased for stability)')
     parser.add_argument('--mixed_precision', action='store_true',
                         help='Use mixed precision training')
     parser.add_argument('--max_views_per_step', type=int, default=2,
                         help='Maximum augmented views to use per training step')
-    parser.add_argument('--checkpoint_layers', action='store_true',
-                        help='Use gradient checkpointing for each layer')
     parser.add_argument('--attention_chunk_size', type=int, default=1000,
                     help='Process nodes in chunks for attention (lower = less memory)')
     parser.add_argument('--return_all_layers', action='store_true', default = False,
@@ -1477,6 +1478,7 @@ def main():
             hidden_channels=args.hidden_channels,
             concat_heads=args.concat_heads,
             ranking_loss_type=args.ranking_loss_type,
+            ranking_loss_scale=args.ranking_loss_scale,
             ranking_margin=args.ranking_margin,
             focal_gamma=args.focal_gamma,
             use_focal=args.use_focal,

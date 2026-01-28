@@ -103,7 +103,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
             nn.ReLU(),
             nn.Dropout(dropout),
             nn.Linear(hidden_channels, 1), # Single score per node
-            nn.Sigmoid(1, 1)
+            nn.Sigmoid()
         )
         
         # Deprecated 
