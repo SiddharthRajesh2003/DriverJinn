@@ -1,6 +1,7 @@
 #!/usr/bin/env python
 
 import math
+import random
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -28,6 +29,16 @@ torch.backends.cuda.matmul.allow_tf32 = True
 torch.backends.cudnn.allow_tf32 = True
 
 logger = get_logger(__name__)
+
+def set_seed(seed: int = 42):
+    """Set random seed for reproducibility across all libraries."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    logger.info(f"Random seed set to {seed}")
 
 def setup_device(model):
     """Setup model on GPU or CPU.
@@ -490,7 +501,7 @@ def train_single_fold(
         projection_dim = projection_dim
         num_layers = num_layers
     
-    # Create model with reduced size
+    # Create model
     model = create_cancer_driver_model(
         num_features=features.shape[1],  # Use features variable instead
         hidden_channels=hidden_channels,
@@ -1350,6 +1361,8 @@ def main():
                         help='Reduce model dimensions (hidden=64, proj=32, layers=2, heads=1)')
     parser.add_argument('--validation_frequency', type=int, default=10,
                         help='Validate every N epochs (default: 10, lower saves memory)')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for reproducibility')
     args = parser.parse_args()
 
     # ============================================================================
@@ -1379,9 +1392,11 @@ def main():
         results_subdir.mkdir(exist_ok=True, parents=True)
         results_dir = results_subdir
     
+    set_seed(args.seed)
+
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     torch.cuda.empty_cache()
-    
+
     print("\n" + "="*80)
     print("K-FOLD DRIVER GENE PREDICTOR WITH ADVANCED ATTENTION")
     print("="*80)
