@@ -291,13 +291,14 @@ def create_cancer_driver_model(
     aggregation: str = 'add',
     num_heads: int = 4,
     dropout: float = 0.2,
+    negative_slope: float = 0.2,
     concat_heads: bool = True,
     device: torch.device = None
 ) -> ContrastiveDriverGenePredictor:
     """Factory function to create cancer driver prediction model"""
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-    
+
     model = ContrastiveDriverGenePredictor(
         in_channels=num_features,
         hidden_channels=hidden_channels,
@@ -312,6 +313,7 @@ def create_cancer_driver_model(
         attention_mode=attention_mode,
         pathway_aggregator=pathway_aggregator,
         concat=concat_heads,
+        negative_slope=negative_slope,
         dropout=dropout,
         device=device
     ).to(device)
@@ -362,7 +364,9 @@ def train_single_fold(
     validation_frequency: int = 10,
     decay: float = 0.999,
     learning_rate: float = 1e-3,
-    weight_decay: float = 1e-5
+    weight_decay: float = 1e-5,
+    negative_slope: float = 0.2,
+    scheduler_factor: float = 0.7
 ) -> Tuple[ContrastiveDriverGenePredictor, Dict, Dict]:
     
     """Train model on a single fold with ranking objective"""
@@ -513,6 +517,7 @@ def train_single_fold(
         aggregation=aggregation,
         pathway_aggregator=pathway_aggregator,
         num_heads=num_heads,
+        negative_slope=negative_slope,
         concat_heads=concat_heads,
         device=device
     )
@@ -520,6 +525,17 @@ def train_single_fold(
     # Setup device (GPU or CPU)
     model, device = setup_device(model)
     actual_model = model
+
+    # Print model architecture and parameter count
+    print(f"\n{'='*60}")
+    print("MODEL ARCHITECTURE")
+    print(f"{'='*60}")
+    print(model)
+    total_params = sum(p.numel() for p in model.parameters())
+    trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
+    print(f"\nTotal parameters: {total_params:,}")
+    print(f"Trainable parameters: {trainable_params:,}")
+    print(f"{'='*60}\n")
     
     # Initialize EMA 
     ema = EMA(
@@ -540,7 +556,7 @@ def train_single_fold(
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
         mode='max',
-        factor=0.7,  # Reduced from 0.5 (less aggressive reduction)
+        factor=scheduler_factor,
         patience=scheduler_patience,  # Increased from 20 (more patience)
         min_lr=1e-6
     )
@@ -1361,6 +1377,10 @@ def main():
                         help='Reduce model dimensions (hidden=64, proj=32, layers=2, heads=1)')
     parser.add_argument('--validation_frequency', type=int, default=10,
                         help='Validate every N epochs (default: 10, lower saves memory)')
+    parser.add_argument('--negative_slope', type=float, default=0.2,
+                        help='Negative slope for LeakyReLU in GNN layers')
+    parser.add_argument('--scheduler_factor', type=float, default=0.7,
+                        help='Factor by which LR is reduced on plateau')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for reproducibility')
     args = parser.parse_args()
@@ -1505,7 +1525,9 @@ def main():
             weight_decay=args.weight_decay,
             dropout=args.dropout,
             temperature=args.temperature,
-            pathway_aggregator=args.pathway_aggregator
+            pathway_aggregator=args.pathway_aggregator,
+            negative_slope=args.negative_slope,
+            scheduler_factor=args.scheduler_factor
         )
         
         all_fold_metrics.append(best_metrics)

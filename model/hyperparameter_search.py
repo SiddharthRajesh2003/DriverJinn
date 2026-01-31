@@ -195,6 +195,9 @@ class HyperparameterSearch:
             'use_focal': trial.suggest_categorical('use_focal', [True, False]),
             'focal_gamma': trial.suggest_float('focal_gamma', 1.0, 3.0),
 
+            # Message passing
+            'aggregation': trial.suggest_categorical('aggregation', ['add', 'mean', 'max']),
+
             # Optimization
             'gradient_accumulation_steps': trial.suggest_categorical('gradient_accumulation_steps', [8, 16, 24, 36]),
             'use_ema': trial.suggest_categorical('use_ema', [True, False]),
@@ -220,6 +223,7 @@ class HyperparameterSearch:
             use_attention=True,
             attention_mode=params['attention_mode'],
             pathway_aggregator=params['pathway_aggregator'],
+            aggregation=params['aggregation'],
             concat=params['concat_heads'],
             negative_slope=params['negative_slope'],
             temperature=params['temperature'],
