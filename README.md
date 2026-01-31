@@ -101,6 +101,18 @@ GNNDriver/
 
 The full pipeline consists of four sequential steps:
 
+### Step 0: Dataset Format
+
+The graph dataset should be a dictionary object stored within a pickle file:
+
+```bash
+feature <class 'torch.Tensor'>
+node_name <class 'list'>
+edge_index <class 'torch.Tensor'>
+feature_name <class 'list'>
+label <class 'torch.Tensor'>
+```
+
 ### Step 1: Graph Curvature Enhancement
 
 Computes Ollivier and Forman curvatures on gene interaction networks, generates augmented graph views via Schur complement elimination, and creates stratified k-fold cross-validation splits.
