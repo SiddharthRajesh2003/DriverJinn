@@ -1,5 +1,7 @@
 # DriverJinn
 
+This project is still in development with fixes being continuously generated, to get the latest files
+
 A Graph Neural Network framework for cancer driver gene prediction using curvature-enhanced graph representations and contrastive learning.
 
 ## Data Preprocessing Pipeline
