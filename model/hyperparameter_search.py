@@ -7,6 +7,7 @@ import gc
 import pickle
 import argparse
 import json
+import random
 from pathlib import Path
 from datetime import datetime
 import numpy as np
@@ -20,6 +21,18 @@ from utils.logging_manager import get_logger
 from model.support_models import RankingLoss, EMA
 
 logger = get_logger(__name__)
+
+
+def set_seed(seed: int):
+    """Set random seed for reproducibility across all libraries."""
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    logger.info(f"Random seed set to {seed}")
+
 
 # Memory optimization
 torch.backends.cuda.matmul.allow_tf32 = True
@@ -104,8 +117,10 @@ class HyperparameterSearch:
         epochs_per_trial: int = 100,
         patience: int = 20,
         device: torch.device = None,
-        study_name: str = None
+        study_name: str = None,
+        seed: int = 42
     ):
+        self.seed = seed
         self.data_path = data_path
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -473,6 +488,10 @@ class HyperparameterSearch:
     def objective(self, trial: optuna.Trial) -> float:
         """Optuna objective function - returns mean NDCG@50 across folds"""
 
+        # Seed each trial deterministically based on trial number
+        trial_seed = self.seed + trial.number
+        set_seed(trial_seed)
+
         params = self.suggest_hyperparameters(trial)
 
         logger.info(f"\n{'='*60}")
@@ -709,10 +728,15 @@ def main():
                         help='Early stopping patience')
     parser.add_argument('--study_name', type=str, default=None,
                         help='Name for Optuna study')
+    parser.add_argument('--seed', type=int, default=42,
+                        help='Random seed for reproducibility')
 
     args = parser.parse_args()
 
     # Run search
+    # Set global seed before anything else
+    set_seed(args.seed)
+
     searcher = HyperparameterSearch(
         data_path=args.dataset,
         output_dir=args.output_dir,
@@ -720,7 +744,8 @@ def main():
         n_folds=args.n_folds,
         epochs_per_trial=args.epochs_per_trial,
         patience=args.patience,
-        study_name=args.study_name
+        study_name=args.study_name,
+        seed=args.seed
     )
 
     results = searcher.run()
