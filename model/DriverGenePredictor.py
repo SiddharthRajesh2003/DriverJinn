@@ -108,11 +108,11 @@ class ContrastiveDriverGenePredictor(nn.Module):
         
         # Deprecated 
         # Binary Classifier
-        self.classifier = BinaryClassifier(
-            input_dim=hidden_channels,
-            hidden_dim=hidden_channels,
-            dropout=dropout
-        )
+        # self.classifier = BinaryClassifier(
+        #    input_dim=hidden_channels,
+        #    hidden_dim=hidden_channels,
+        #    dropout=dropout
+        # )
         
     def encode(
         self,

@@ -305,6 +305,8 @@ class HyperparameterSearch:
         best_val_ndcg = 0.0
         best_metrics = {}
         epochs_without_improvement = 0
+        smoothed_ndcg = 0.0  # EMA of validation NDCG for scheduler/early stopping
+        metric_ema_alpha = 0.3  # Weight for new observation (lower = smoother)
 
         gradient_accumulation_steps = params['gradient_accumulation_steps']
         contrastive_weight = params['contrastive_weight']
@@ -450,10 +452,16 @@ class HyperparameterSearch:
                 if ema:
                     ema.restore(model)
 
-                # Update scheduler
-                scheduler.step(val_ndcg)
+                # Update smoothed NDCG (EMA of validation metric)
+                if smoothed_ndcg == 0.0:
+                    smoothed_ndcg = val_ndcg
+                else:
+                    smoothed_ndcg = metric_ema_alpha * val_ndcg + (1 - metric_ema_alpha) * smoothed_ndcg
 
-                # Track best
+                # Use smoothed NDCG for scheduler
+                scheduler.step(smoothed_ndcg)
+
+                # Track best (using raw NDCG for best model selection)
                 if val_ndcg > best_val_ndcg:
                     best_val_ndcg = val_ndcg
                     best_metrics = {
@@ -465,13 +473,13 @@ class HyperparameterSearch:
                 else:
                     epochs_without_improvement += 10
 
-                # Report to Optuna for pruning
+                # Report raw NDCG to Optuna for pruning
                 trial.report(val_ndcg, epoch)
 
                 if trial.should_prune():
                     raise optuna.TrialPruned()
 
-                # Early stopping
+                # Early stopping (using smoothed NDCG)
                 if epochs_without_improvement >= self.patience:
                     logger.info(f"Early stopping at epoch {epoch}")
                     break
@@ -561,7 +569,7 @@ class HyperparameterSearch:
         logger.info(f"Epochs per trial: {self.epochs_per_trial}")
 
         # Create Optuna study
-        sampler = TPESampler(seed=42)
+        sampler = TPESampler(seed=self.seed)
         pruner = HyperbandPruner(
             min_resource=10,
             max_resource=self.epochs_per_trial,

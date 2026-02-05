@@ -1,6 +1,8 @@
 # DriverJinn
 
-This project is still in development with fixes being continuously generated, to get the latest files
+This project is still in development with fixes being continuously generated.
+
+This model is currently being trained on NVIDIA H100 GPU.
 
 A Graph Neural Network framework for cancer driver gene prediction using curvature-enhanced graph representations and contrastive learning.
 

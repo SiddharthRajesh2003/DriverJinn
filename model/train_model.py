@@ -607,6 +607,8 @@ def train_single_fold(
     
     best_val_ndcg = 0.0
     best_metrics = None
+    smoothed_ndcg = 0.0  # EMA of validation NDCG for scheduler/early stopping
+    metric_ema_alpha = 0.3  # Weight for new observation (lower = smoother)
     
     # Construct model checkpoint path in a subfolder named after model_prefix
     if model_prefix:
@@ -957,15 +959,20 @@ def train_single_fold(
                     'mrr': 0.0
                 }
 
-            # Update scheduler ONLY when we have fresh validation metrics
-            if epoch >= 10:
-                scheduler.step(val_metrics.get('ndcg@50', 0))
-            
-            # Check early stopping ONLY when we have fresh validation metrics
+            # Update smoothed NDCG (EMA of validation metric)
             current_ndcg = val_metrics.get('ndcg@50', 0)
-            if early_stopping(current_ndcg):
+            if smoothed_ndcg == 0.0:
+                smoothed_ndcg = current_ndcg  # Initialize with first observation
+            else:
+                smoothed_ndcg = metric_ema_alpha * current_ndcg + (1 - metric_ema_alpha) * smoothed_ndcg
+
+            # Use smoothed NDCG for scheduler and early stopping decisions
+            if epoch >= 10:
+                scheduler.step(smoothed_ndcg)
+
+            if early_stopping(smoothed_ndcg):
                 logger.info(f"Early stopping triggered at epoch {epoch}")
-                logger.info(f"Best NDCG@50: {early_stopping.best_score:.4f} at epoch {early_stopping.best_epoch}")
+                logger.info(f"Best smoothed NDCG@50: {early_stopping.best_score:.4f} at epoch {early_stopping.best_epoch}")
                 break
             
         else:
@@ -1004,7 +1011,7 @@ def train_single_fold(
                 f"Epoch {epoch:3d} | "
                 f"Loss: {avg_loss:.4f} (C:{avg_contrastive:.3f} R:{avg_ranking:.3f}→{avg_ranking_scaled:.2f}) | "
                 f"Steps: {successful_steps}/{gradient_accumulation_steps} | "
-                f"NDCG@50: {val_metrics.get('ndcg@50', 0):.4f} | "
+                f"NDCG@50: {val_metrics.get('ndcg@50', 0):.4f} (smooth: {smoothed_ndcg:.4f}) | "
                 f"LR: {optimizer.param_groups[0]['lr']:.6f}"
             )
         
@@ -1025,8 +1032,8 @@ def train_single_fold(
             torch.cuda.empty_cache()
             gc.collect()
 
-        # Early stopping
-        if early_stopping(val_metrics.get('ndcg@50', 0)):
+        # Early stopping (using smoothed NDCG)
+        if early_stopping(smoothed_ndcg):
             logger.info(f"Early stopping at epoch {epoch}")
             break
     
