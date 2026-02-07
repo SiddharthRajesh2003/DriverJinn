@@ -402,60 +402,7 @@ class CurvaturePipeline:
             self.data_dict['kfold_splits'] = fold_data
         
         return fold_data
-    
-    def apply_fold_normalization(self, fold_idx, normalize=True):
-        """
-        Apply normalization for a specific k-fold split
-        
-        This should be called during k-fold cross-validation to normalize each fold separately
-        
-        Parameters:
-        fold_idx: int, index of the fold (0-based)
-        normalize: bool, whether to normalize
-        
-        Returns:
-        dict: Data dict with features normalized for this fold
-        """
-        if 'kfold_splits' not in self.enhanced_data_dict:
-            raise ValueError("No k-fold splits found. Run create_kfold_splits() first.")
-        
-        if fold_idx >= len(self.enhanced_data_dict['kfold_splits']):
-            raise ValueError(f"Fold index {fold_idx} out of range")
-        
-        fold_info = self.enhanced_data_dict['kfold_splits'][fold_idx]
-        train_mask = fold_info['train_mask']
-        
-        logger.info(f"Applying normalization for fold {fold_idx + 1}...")
-        
-        # Re-integrate features with this fold's training mask
-        if self.edge_curvature is None:
-            raise ValueError("Must calculate curvatures first")
-        
-        integrator = CurvatureFeatureIntegrator(self.edge_curvature, self.data_dict)
-        
-        fold_data_dict = integrator.create_enhanced_features(
-            normalize=normalize,
-            train_mask=train_mask,
-            val_mask=fold_info['val_mask'],
-            test_mask=None  # K-fold doesn't have separate test set
-        )
-        
-        # Add curvature edge features
-        curvature_dict = integrator.create_edge_features_dict()
-        fold_data_dict['ollivier_curvature'] = curvature_dict['edge_ollivier_curvature']
-        fold_data_dict['forman_curvature'] = curvature_dict['edge_forman_curvature']
-        fold_data_dict['edge_features'] = curvature_dict['edge_features']
-        fold_data_dict['edge_feature_names'] = curvature_dict['edge_feature_names']
-        
-        # Add fold information
-        fold_data_dict['current_fold'] = fold_idx + 1
-        fold_data_dict['train_mask'] = torch.tensor(train_mask)
-        fold_data_dict['val_mask'] = torch.tensor(fold_info['val_mask'])
-        fold_data_dict['train_idx'] = fold_info['train_idx']
-        fold_data_dict['val_idx'] = fold_info['val_idx']
-        
-        return fold_data_dict
-    
+
     def build_network(self):
         """Build NetworkX graph using Network class"""
         logger.info('Building NetworkX graph...')
@@ -600,7 +547,7 @@ class CurvaturePipeline:
             )
             
             # Add raw features to enhanced_data_dict for easy access
-            self.enhanced_data_dict['feature_raw'] = self.raw_enhanced_features
+            self.enhanced_data_dict['x_raw'] = self.raw_enhanced_features
             
             # Verify normalization if enabled
             if normalize and hasattr(integrator, 'curvature_scaler'):
@@ -625,26 +572,7 @@ class CurvaturePipeline:
             
             # Store the integrator for potential later use
             self.integrator = integrator
-            
-            # Save normalization parameters
-            try:
-                orig_scaler = getattr(integrator, 'original_scaler', None)
-                curv_scaler = getattr(integrator, 'curvature_scaler', None)
-                
-                if orig_scaler is not None:
-                    self.enhanced_data_dict['normalization_params'] = self.enhanced_data_dict.get('normalization_params', {})
-                    self.enhanced_data_dict['normalization_params']['original_mean'] = getattr(orig_scaler, 'mean_', None)
-                    self.enhanced_data_dict['normalization_params']['original_std'] = getattr(orig_scaler, 'scale_', None)
-                
-                if curv_scaler is not None:
-                    self.enhanced_data_dict['normalization_params'] = self.enhanced_data_dict.get('normalization_params', {})
-                    self.enhanced_data_dict['normalization_params']['curvature_mean'] = getattr(curv_scaler, 'mean_', None)
-                    self.enhanced_data_dict['normalization_params']['curvature_std'] = getattr(curv_scaler, 'scale_', None)
-                    
-                logger.info("✓ Normalization parameters stored")
-            except Exception as e:
-                logger.warning(f'Could not extract normalization parameters: {e}')
-            
+
             logger.info("Feature integration completed!")
             return self.enhanced_data_dict
             
@@ -1305,12 +1233,6 @@ class CurvaturePipeline:
                     view_idx
                 )
 
-            # Apply saved Fold-1 normalization to the view so data is ready before training
-            try:
-                self.apply_fold1_normalization_to_view(view_dict)
-            except Exception as e:
-                logger.warning(f"Could not apply Fold-1 normalization to view {view_idx}: {e}")
-
             pyg_views.append(view_dict)
         
         contrastive_dataset = {
@@ -1440,50 +1362,6 @@ class CurvaturePipeline:
         
         # Add node name list for model compatibility
         view_dict['node_name'] = aug_node_list
-        
-        # Try to apply normalization to the view features (non-destructive: write to 'x_norm')
-        try:
-            norm_params = self.enhanced_data_dict.get('normalization_params', None)
-            x = view_dict.get('x')
-            if x is not None:
-                is_torch = isinstance(x, torch.Tensor)
-                x_np = x.numpy() if is_torch else (np.array(x) if not isinstance(x, np.ndarray) else x)
-
-                # Determine original feature count and curvature feature count
-                orig_feat_count = self.data_dict['feature'].shape[1] if isinstance(self.data_dict['feature'], torch.Tensor) else self.data_dict['feature'].shape[1]
-                total_feat_count = x_np.shape[1]
-                curv_feat_count = total_feat_count - orig_feat_count
-
-                applied = False
-                if norm_params is not None:
-                    orig_mean = norm_params.get('original_mean')
-                    orig_std = norm_params.get('original_std')
-                    curv_mean = norm_params.get('curvature_mean')
-                    curv_std = norm_params.get('curvature_std')
-
-                    if orig_mean is not None and orig_std is not None and curv_mean is not None and curv_std is not None:
-                        # Ensure shapes align
-                        orig_std = np.where(orig_std == 0, 1.0, orig_std)
-                        curv_std = np.where(curv_std == 0, 1.0, curv_std)
-
-                        orig_part = (x_np[:, :orig_feat_count] - orig_mean) / orig_std
-                        curv_part = (x_np[:, orig_feat_count:] - curv_mean) / curv_std
-                        x_norm = np.hstack([orig_part, curv_part])
-                        view_dict['x_norm'] = torch.from_numpy(x_norm).to(dtype=x.dtype) if is_torch else x_norm
-                        logger.info('Applied stored normalization_params to augmented view and saved x_norm')
-                        applied = True
-
-                # Fallback: use fold-computed normalization if available
-                if (not applied) and ('fold_normalization' in view_dict):
-                    norm = view_dict['fold_normalization']
-                    mean = norm['mean']
-                    std = norm['std'].copy()
-                    std[std == 0] = 1.0
-                    x_norm = (x_np - mean) / std
-                    view_dict['x_norm'] = torch.from_numpy(x_norm).to(dtype=x.dtype) if is_torch else x_norm
-                    logger.info('Applied fold-computed normalization to augmented view and saved x_norm')
-        except Exception as e:
-            logger.warning(f'Failed to apply normalization to augmented view: {e}')
 
         logger.info(f"View {view_idx + 1} splits - Train: {train_count}, Val: {val_count}, Test: {test_count}")
         
@@ -1515,41 +1393,24 @@ class CurvaturePipeline:
                 aug_to_orig_idx[aug_idx] = orig_name_to_idx[node_name]
         
         num_aug_nodes = len(aug_node_list)
-        
-            # Get original k-fold splits and normalization info
+
         original_kfold_splits = self.enhanced_data_dict['kfold_splits']
-        normalization_info = self.enhanced_data_dict.get('normalization_info', {})
-    
-        # Check if we're using shared normalization (fitted on Fold 1)
-        is_shared_norm = normalization_info.get('mode') == 'kfold_shared'
-        fitted_on_fold = normalization_info.get('fitted_on_fold', 1)
-    
-        # Get the features we'll normalize (if needed)
-        features = view_dict.get('x')
-        
-        # Convert to numpy if it's a tensor
-        if features is not None and isinstance(features, torch.Tensor):
-            features_np = features.numpy()
-        elif features is not None:
-            features_np = np.array(features) if not isinstance(features, np.ndarray) else features
-        else:
-            features_np = None
-        
+
         # Propagate each fold
         augmented_kfold_splits = []
-        
+
         for fold_data in original_kfold_splits:
             fold_idx = fold_data['fold']
             orig_train_mask = fold_data['train_mask']
             orig_val_mask = fold_data['val_mask']
-            
+
             # Initialize masks for augmented view
             aug_train_mask = np.zeros(num_aug_nodes, dtype=bool)
             aug_val_mask = np.zeros(num_aug_nodes, dtype=bool)
-            
+
             train_count = 0
             val_count = 0
-            
+
             # Propagate masks to augmented nodes
             for aug_idx, orig_idx in aug_to_orig_idx.items():
                 if orig_train_mask[orig_idx]:
@@ -1558,23 +1419,7 @@ class CurvaturePipeline:
                 elif orig_val_mask[orig_idx]:
                     aug_val_mask[aug_idx] = True
                     val_count += 1
-            
-                # If we're using shared normalization and features exist
-                if is_shared_norm and features_np is not None and fold_idx == fitted_on_fold:
-                    # Store normalization parameters from this fold's training data
-                    train_features_np = features_np[aug_train_mask]
-                    
-                    if len(train_features_np) > 0:
-                        feature_mean = np.mean(train_features_np, axis=0)
-                        feature_std = np.std(train_features_np, axis=0)
-                        feature_std[feature_std == 0] = 1.0  # Avoid division by zero
-                    
-                        view_dict['fold_normalization'] = {
-                            'mean': feature_mean,
-                            'std': feature_std,
-                            'fitted_on_fold': fitted_on_fold
-                        }
-            
+
             augmented_fold_data = {
                 'fold': fold_idx,
                 'train_idx': np.where(aug_train_mask)[0],
@@ -1584,27 +1429,14 @@ class CurvaturePipeline:
                 'train_count': train_count,
                 'val_count': val_count
             }
-            
-            # Add normalization reference if we're using shared normalization
-            if is_shared_norm:
-                augmented_fold_data['normalization_reference'] = {
-                    'use_fold': fitted_on_fold,
-                    'mode': 'shared'
-                }
-            
+
             augmented_kfold_splits.append(augmented_fold_data)
-            
+
             logger.info(f"View {view_idx + 1}, Fold {fold_idx}: Train={train_count}, Val={val_count}")
-        
+
         # Add k-fold splits to view_dict
         view_dict['kfold_splits'] = augmented_kfold_splits
-        
-        # Add normalization mode to metadata
-        metadata['normalization'] = {
-            'mode': 'kfold_shared' if is_shared_norm else 'per_fold',
-            'fitted_on_fold': fitted_on_fold if is_shared_norm else None
-        }
-        
+
         # Add node name list for model compatibility
         view_dict['node_name'] = aug_node_list
         
@@ -1617,168 +1449,6 @@ class CurvaturePipeline:
         }
         
         return view_dict
-
-    def apply_fold1_normalization_to_view(self, view_dict):
-        """
-        Apply or verify Fold 1 normalization to view.
-        
-        FIXED: Now checks if features are already normalized to avoid double normalization.
-        If 'x_raw' exists, normalizes from raw. If only 'x' exists and it's already normalized,
-        just stores a copy as 'x_raw' for consistency.
-        
-        Uses stored params in self.enhanced_data_dict['normalization_params'] if present.
-        """
-        if 'x' not in view_dict or view_dict['x'] is None:
-            return
-        
-        # Check if already normalized (has x_raw stored)
-        if 'x_raw' in view_dict:
-            logger.info("View already has x_raw - features appear to be normalized already")
-            
-            # Verify normalization
-            x = view_dict['x']
-            is_torch = isinstance(x, torch.Tensor)
-            x_np = x.numpy() if is_torch else x
-            
-            orig_feat_count = self.data_dict['feature'].shape[1]
-            curv_mean = x_np[:, orig_feat_count:].mean()
-            
-            if abs(curv_mean) < 0.5:
-                logger.info(f"✓ Features properly normalized (curvature mean={curv_mean:.6f})")
-                return
-            else:
-                logger.warning(f"⚠️ Features may not be normalized correctly (curvature mean={curv_mean:.6f})")
-        
-        # Determine if we should normalize from raw or from current x
-        x = view_dict['x']
-        is_torch = isinstance(x, torch.Tensor)
-        x_np = x.numpy() if is_torch else (np.array(x) if not isinstance(x, np.ndarray) else x)
-        
-        norm_params = self.enhanced_data_dict.get('normalization_params', None)
-        
-        # Determine original feature count
-        orig_feat_count = self.data_dict['feature'].shape[1]
-        
-        # Check if x appears to be already normalized
-        curv_mean_before = x_np[:, orig_feat_count:].mean()
-        is_already_normalized = abs(curv_mean_before) < 0.5
-        
-        if is_already_normalized and 'x_raw' not in view_dict:
-            logger.info(f"Features appear normalized (curv_mean={curv_mean_before:.6f}), but no x_raw found")
-            logger.info("Storing current x as x_raw for consistency")
-            view_dict['x_raw'] = x if is_torch else x_np.copy()
-            return
-        
-        # If x_raw doesn't exist and x is not normalized, treat x as raw
-        if 'x_raw' not in view_dict and not is_already_normalized:
-            logger.info("No x_raw found and x appears unnormalized - treating x as raw features")
-            x_raw_np = x_np
-        elif 'x_raw' in view_dict:
-            # Use x_raw for normalization
-            x_raw = view_dict['x_raw']
-            x_raw_np = x_raw.numpy() if isinstance(x_raw, torch.Tensor) else x_raw
-        else:
-            # Already handled above - should not reach here
-            return
-        
-        # Apply normalization
-        applied = False
-        
-        if norm_params is not None:
-            orig_mean = norm_params.get('original_mean')
-            orig_std = norm_params.get('original_std')
-            curv_mean = norm_params.get('curvature_mean')
-            curv_std = norm_params.get('curvature_std')
-            
-            if orig_mean is not None and orig_std is not None and curv_mean is not None and curv_std is not None:
-                logger.info("Applying Fold-1 normalization from stored parameters...")
-                
-                # Ensure no division by zero
-                orig_std = np.where(orig_std == 0, 1.0, orig_std)
-                curv_std = np.where(curv_std == 0, 1.0, curv_std)
-                
-                # Normalize original features
-                orig_part = (x_raw_np[:, :orig_feat_count] - orig_mean) / orig_std
-                
-                # Normalize curvature features
-                curv_part = (x_raw_np[:, orig_feat_count:] - curv_mean) / curv_std
-                
-                # Combine
-                x_norm = np.hstack([orig_part, curv_part])
-                
-                # Store raw and normalized
-                if 'x_raw' not in view_dict:
-                    view_dict['x_raw'] = x if is_torch else x_raw_np.copy()
-                
-                view_dict['x'] = torch.from_numpy(x_norm).to(dtype=x.dtype) if is_torch else x_norm
-                applied = True
-                
-                # Verify
-                curv_mean_after = x_norm[:, orig_feat_count:].mean()
-                logger.info(f"After normalization: curvature mean={curv_mean_after:.6f}")
-                
-                if abs(curv_mean_after) > 0.5:
-                    logger.error(f"⚠️ Normalization failed! Mean should be ~0 but is {curv_mean_after:.4f}")
-                else:
-                    logger.info("✓ Fold-1 normalization applied successfully")
-        
-        # Fallback to fold-specific normalization stored in the view
-        if not applied and 'fold_normalization' in view_dict:
-            logger.info("Using fold-specific normalization from view_dict...")
-            norm = view_dict['fold_normalization']
-            mean = norm['mean']
-            std = norm['std'].copy()
-            std[std == 0] = 1.0
-            
-            x_norm = (x_raw_np - mean) / std
-            
-            if 'x_raw' not in view_dict:
-                view_dict['x_raw'] = x if is_torch else x_raw_np.copy()
-            
-            view_dict['x'] = torch.from_numpy(x_norm).to(dtype=x.dtype) if is_torch else x_norm
-            applied = True
-            
-            logger.info("Applied fold-specific normalization")
-        
-        if not applied:
-            logger.warning("No normalization parameters found - features left unchanged")
-
-
-    def verify_view_normalization(self, view_dict, view_name="view"):
-        """
-        Helper function to verify if a view is properly normalized
-        """
-        if 'x' not in view_dict:
-            logger.warning(f"{view_name}: No 'x' found")
-            return False
-        
-        x = view_dict['x']
-        is_torch = isinstance(x, torch.Tensor)
-        x_np = x.numpy() if is_torch else x
-        
-        orig_feat_count = self.data_dict['feature'].shape[1]
-        
-        # Check overall statistics
-        overall_mean = x_np.mean()
-        overall_std = x_np.std()
-        
-        # Check curvature statistics
-        curv_mean = x_np[:, orig_feat_count:].mean()
-        curv_std = x_np[:, orig_feat_count:].std()
-        
-        logger.info(f"{view_name} normalization check:")
-        logger.info(f"  Overall: mean={overall_mean:.6f}, std={overall_std:.6f}")
-        logger.info(f"  Curvature: mean={curv_mean:.6f}, std={curv_std:.6f}")
-        logger.info(f"  Has x_raw: {'x_raw' in view_dict}")
-        
-        is_normalized = abs(curv_mean) < 0.5 and abs(overall_mean) < 0.5
-        
-        if is_normalized:
-            logger.info(f"  ✓ {view_name} appears properly normalized")
-        else:
-            logger.warning(f"  ⚠️ {view_name} may not be properly normalized")
-        
-        return is_normalized
 
     def save_enhanced_dataset(self, output_file: str):
         """
@@ -1913,50 +1583,20 @@ class CurvaturePipeline:
             if create_split:
                 if use_kfold:
                     logger.info("\n=== Creating K-Fold Cross-Validation Splits ===")
-                    # K-fold splits can be created before feature integration
                     kfold_data = self.create_kfold_splits(
                         n_splits=n_folds,
                         stratify=stratify,
                         random_seed=random_seed
                     )
-                    
-                    # Use fold 0's training mask for normalization
-                    logger.info("Note: K-fold mode - using Fold 1 training data for normalization")
-                    logger.info("All folds will share the same normalization (fitted on Fold 1 train data)")
-                    
-                    # Create a temporary split_data using first fold
-                    first_fold = kfold_data[0]
-                    self.split_data = {
-                        'train_mask': first_fold['train_mask'],
-                        'val_mask': first_fold['val_mask'],
-                        'test_mask': np.zeros(len(first_fold['train_mask']), dtype=bool),
-                        'train_idx': first_fold['train_idx'],
-                        'val_idx': first_fold['val_idx'],
-                        'test_idx': np.array([]),
-                        'split_config': {
-                            'mode': 'kfold_shared_normalization',
-                            'note': 'All folds use Fold 1 training data for normalization'
-                        }
-                    }
-                    
-                    # Integrate features ONCE with fold 0's training mask
-                    self.integrate_features(normalize=normalize)
-                    
-                    # Copy k-fold splits to enhanced data dict
+
+                    # Store raw (unnormalized) features — normalization is
+                    # deferred to per-fold training to prevent data leakage.
+                    logger.info("K-fold mode: storing raw features (normalization deferred to per-fold training)")
+                    self.integrate_features(normalize=False)
+
                     self.enhanced_data_dict['kfold_splits'] = kfold_data
-                    
-                    # Add normalization info
-                    self.enhanced_data_dict['normalization_info'] = {
-                        'mode': 'kfold_shared',
-                        'fitted_on_fold': 1,
-                        'n_folds': n_folds,
-                        'note': 'All folds use same normalization for consistency'
-                    }
-                    
-                    logger.info("✅ All folds ready with consistent normalization")
-                    
-                    # Clear the temporary split_data
-                    self.split_data = None
+
+                    logger.info("✅ K-fold splits ready with raw features for per-fold normalization")
                     
                 else:
                     # Regular train/val/test split
@@ -2005,8 +1645,6 @@ class CurvaturePipeline:
                     curvature_method=method
                 )
                 
-                for i, view in enumerate(contrastive_data['augmented_views']):
-                    self.verify_view_normalization(view, f"Augmented View {i}")
 
                 
                 # Save contrastive dataset

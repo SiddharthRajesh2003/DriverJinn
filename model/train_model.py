@@ -16,6 +16,8 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 
+from sklearn.preprocessing import StandardScaler
+
 from utils.logging_manager import get_logger
 from model.DriverGenePredictor import ContrastiveDriverGenePredictor, compute_ndcg
 from model.support_models import WarmupScheduler, EarlyStopping, RankingLoss, EMA
@@ -478,7 +480,54 @@ def train_single_fold(
             f"Train mask size ({len(train_mask_original)}) doesn't match "
             f"original graph nodes ({num_original_nodes})"
         )
-    
+
+    # ============================================================================
+    # PER-FOLD FEATURE NORMALIZATION
+    # Fit scaler on THIS fold's training data only to prevent data leakage.
+    # ============================================================================
+    raw_features = original.get('x_raw', features)
+    if isinstance(raw_features, torch.Tensor):
+        raw_features_np = raw_features.cpu().numpy()
+    else:
+        raw_features_np = np.array(raw_features)
+
+    train_mask_np = (train_mask_original.cpu().numpy()
+                     if isinstance(train_mask_original, torch.Tensor)
+                     else train_mask_original)
+
+    logger.info(f"Fold {fold_idx}: Fitting StandardScaler on {train_mask_np.sum()} training nodes")
+    fold_scaler = StandardScaler()
+    fold_scaler.fit(raw_features_np[train_mask_np])
+
+    # Guard against zero-variance features
+    zero_var = fold_scaler.scale_ == 0
+    if zero_var.any():
+        logger.warning(f"Found {zero_var.sum()} zero-variance features, setting scale to 1.0")
+        fold_scaler.scale_[zero_var] = 1.0
+
+    # Normalize original graph features
+    normalized_np = fold_scaler.transform(raw_features_np)
+    normalized_np = np.nan_to_num(normalized_np, nan=0.0, posinf=1.0, neginf=-1.0)
+    features = torch.tensor(normalized_np, dtype=torch.float32)
+
+    # Normalize augmented view features (shallow-copy each view so the
+    # original raw data remains untouched for the next fold).
+    logger.info(f"Normalizing {len(augmented_views)} augmented views for fold {fold_idx}...")
+    fold_augmented_views = []
+    for view in augmented_views:
+        raw_x = view.get('x_raw', view['x'])
+        if isinstance(raw_x, torch.Tensor):
+            raw_x_np = raw_x.cpu().numpy()
+        else:
+            raw_x_np = np.array(raw_x)
+        norm_x_np = fold_scaler.transform(raw_x_np)
+        norm_x_np = np.nan_to_num(norm_x_np, nan=0.0, posinf=1.0, neginf=-1.0)
+        fold_augmented_views.append({**view, 'x': torch.tensor(norm_x_np, dtype=torch.float32)})
+    augmented_views = fold_augmented_views
+
+    logger.info(f"✓ Fold {fold_idx}: Per-fold normalization complete")
+    # ============================================================================
+
     # Analyze class distribution
     train_labels = labels[train_mask_original]
     num_pos = (train_labels == 1).sum().item()

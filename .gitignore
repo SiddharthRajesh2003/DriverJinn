@@ -14,3 +14,4 @@ model_results/
 .claude/
 search.tar.gz
 hyperparam_results/
+CLAUDE.md
