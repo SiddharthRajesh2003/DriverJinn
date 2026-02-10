@@ -330,6 +330,233 @@ def create_cancer_driver_model(
     
     return model
 
+
+def reconstruct_node_mapping(augmented_views, num_nodes):
+    """Reconstruct full node_id_to_name mapping by cross-validating across all views.
+
+    Each view's remaining + eliminated nodes should reconstruct the same full mapping.
+    Validates consistency across all views to catch metadata corruption.
+
+    Returns:
+        node_names: np.array of gene names ordered by node ID
+        node_id_to_name_full: dict mapping node ID -> gene name
+    """
+    if not augmented_views or len(augmented_views) == 0:
+        logger.warning("No augmented_views found, using placeholder names")
+        return np.array([f"Gene_{i}" for i in range(num_nodes)]), {}
+
+    reference_mapping = None
+
+    for view_idx, view in enumerate(augmented_views):
+        metadata = view.get('metadata', {})
+        remaining = metadata.get('node_id_to_name', {})
+        eliminated = metadata.get('eliminated_node_id_to_name', {})
+
+        if not remaining and not eliminated:
+            logger.warning(f"View {view_idx}: both node_id_to_name and eliminated_node_id_to_name are empty")
+            continue
+
+        full_mapping = {**remaining, **eliminated}
+
+        # Check for overlap (a node shouldn't be both remaining and eliminated)
+        overlap = set(remaining.keys()) & set(eliminated.keys())
+        if overlap:
+            logger.error(f"View {view_idx}: {len(overlap)} nodes appear in both remaining and eliminated: "
+                        f"{list(overlap)[:5]}")
+
+        if reference_mapping is None:
+            reference_mapping = full_mapping
+            logger.info(f"View {view_idx}: {len(remaining)} remaining + {len(eliminated)} eliminated "
+                       f"= {len(full_mapping)} total nodes")
+        else:
+            # Cross-validate against reference
+            if full_mapping != reference_mapping:
+                missing = set(reference_mapping.keys()) - set(full_mapping.keys())
+                extra = set(full_mapping.keys()) - set(reference_mapping.keys())
+                mismatched = {k for k in set(reference_mapping.keys()) & set(full_mapping.keys())
+                             if reference_mapping[k] != full_mapping[k]}
+                logger.error(f"View {view_idx} mapping DISAGREES with view 0: "
+                           f"{len(missing)} missing, {len(extra)} extra, {len(mismatched)} name mismatches")
+            else:
+                logger.info(f"View {view_idx}: mapping consistent with view 0 "
+                           f"({len(remaining)} remaining + {len(eliminated)} eliminated)")
+
+    if reference_mapping is None:
+        logger.warning("No valid mappings found in any view, using placeholder names")
+        return np.array([f"Gene_{i}" for i in range(num_nodes)]), {}
+
+    node_names = np.array([str(reference_mapping.get(i, f"Gene_{i}")) for i in range(num_nodes)])
+    return node_names, reference_mapping
+
+
+def align_and_verify_labels(node_id_to_name_full, original_labels, num_nodes):
+    """Align labels using the full node mapping and verify known drivers are correct.
+
+    Returns:
+        labels: aligned label tensor
+    """
+    aligned_labels = torch.zeros(num_nodes, dtype=original_labels.dtype)
+    missing_count = 0
+
+    for i in range(num_nodes):
+        if i in node_id_to_name_full:
+            aligned_labels[i] = original_labels[i]
+        else:
+            missing_count += 1
+            aligned_labels[i] = 0
+
+    if missing_count > 0:
+        logger.warning(f"{missing_count} nodes not found in node_id_to_name_full mapping")
+
+    logger.info(f"Aligned labels using node_id_to_name_full mapping")
+
+    # Verify known driver genes
+    node_names = np.array([str(node_id_to_name_full.get(i, f"Gene_{i}")) for i in range(num_nodes)])
+    known_drivers = ['TP53', 'KRAS', 'EGFR', 'PIK3CA', 'BRAF', 'PTEN']
+    all_correct = True
+
+    for gene in known_drivers:
+        if gene in node_names:
+            idx = np.where(node_names == gene)[0][0]
+            label = aligned_labels[idx].item()
+            if label == 1:
+                logger.info(f"  {gene} (index {idx}): label=1 (driver)")
+            else:
+                logger.error(f"  {gene} (index {idx}): label={label} (INCORRECT!)")
+                all_correct = False
+
+    if not all_correct:
+        logger.error("Label alignment verification FAILED - some known drivers are mislabeled")
+    else:
+        logger.info("All checked known drivers are correctly labeled")
+
+    return aligned_labels
+
+
+def normalize_features_per_fold(features, augmented_views, train_mask, fold_idx):
+    """Fit StandardScaler on this fold's training data and normalize all features.
+
+    Prevents data leakage by fitting only on training nodes for the current fold.
+
+    Args:
+        features: Original feature tensor (or raw features)
+        augmented_views: List of augmented view dicts
+        train_mask: Boolean training mask for this fold
+        fold_idx: Current fold index (for logging)
+
+    Returns:
+        features: Normalized original feature tensor
+        augmented_views: Shallow-copied views with normalized features
+    """
+    raw_features = features
+    if isinstance(raw_features, torch.Tensor):
+        raw_features_np = raw_features.cpu().numpy()
+    else:
+        raw_features_np = np.array(raw_features)
+
+    train_mask_np = (train_mask.cpu().numpy()
+                    if isinstance(train_mask, torch.Tensor)
+                    else train_mask)
+
+    logger.info(f"Fold {fold_idx}: Fitting StandardScaler on {train_mask_np.sum()} training nodes")
+    fold_scaler = StandardScaler()
+    fold_scaler.fit(raw_features_np[train_mask_np])
+
+    # Guard against zero-variance features
+    zero_var = fold_scaler.scale_ == 0
+    if zero_var.any():
+        logger.warning(f"Found {zero_var.sum()} zero-variance features, setting scale to 1.0")
+        fold_scaler.scale_[zero_var] = 1.0
+
+    # Normalize original graph features
+    normalized_np = fold_scaler.transform(raw_features_np)
+    normalized_np = np.nan_to_num(normalized_np, nan=0.0, posinf=1.0, neginf=-1.0)
+    features = torch.tensor(normalized_np, dtype=torch.float32)
+
+    # Normalize augmented view features (shallow-copy so raw data stays untouched for next fold)
+    logger.info(f"Normalizing {len(augmented_views)} augmented views for fold {fold_idx}...")
+    fold_augmented_views = []
+    for view in augmented_views:
+        raw_x = view.get('x_raw', view['x'])
+        if isinstance(raw_x, torch.Tensor):
+            raw_x_np = raw_x.cpu().numpy()
+        else:
+            raw_x_np = np.array(raw_x)
+        norm_x_np = fold_scaler.transform(raw_x_np)
+        norm_x_np = np.nan_to_num(norm_x_np, nan=0.0, posinf=1.0, neginf=-1.0)
+        fold_augmented_views.append({**view, 'x': torch.tensor(norm_x_np, dtype=torch.float32)})
+
+    logger.info(f"Fold {fold_idx}: Per-fold normalization complete")
+    return features, fold_augmented_views
+
+
+def precompute_contrastive_alignment(augmented_views, labels, train_mask):
+    """Precompute label mappings and contrastive alignment indices for all views.
+
+    For each view, maps original node indices to augmented indices and builds
+    label/mask tensors. For each view pair, finds common nodes and builds
+    aligned index tensors for contrastive loss.
+
+    Args:
+        augmented_views: List of augmented view dicts with metadata
+        labels: Original label tensor
+        train_mask: Boolean training mask
+
+    Returns:
+        precomputed_mappings: List of dicts with aug_labels, aug_mask, orig_to_aug per view
+        contrastive_alignment: Dict mapping (i, j) -> (idx_i, idx_j) index tensors
+    """
+    num_original = labels.shape[0]
+    precomputed_mappings = []
+
+    for _, view in enumerate(augmented_views):
+        eliminated_ids = set(view['metadata']['eliminated_node_ids'])
+        aug_size = view['x'].shape[0]
+
+        orig_to_aug = {}
+        aug_idx = 0
+        for orig_idx in range(num_original):
+            if orig_idx not in eliminated_ids:
+                orig_to_aug[orig_idx] = aug_idx
+                aug_idx += 1
+
+        aug_labels_cpu = torch.full((aug_size,), -100, dtype=torch.long)
+        aug_mask_cpu = torch.zeros(aug_size, dtype=torch.bool)
+
+        for orig_idx in range(num_original):
+            if orig_idx in orig_to_aug:
+                aug_idx = orig_to_aug[orig_idx]
+                if aug_idx < aug_size:
+                    aug_labels_cpu[aug_idx] = labels.cpu()[orig_idx]
+                    aug_mask_cpu[aug_idx] = train_mask.cpu()[orig_idx]
+
+        precomputed_mappings.append({
+            'aug_labels': aug_labels_cpu,
+            'aug_mask': aug_mask_cpu,
+            'aug_size': aug_size,
+            'orig_to_aug': orig_to_aug
+        })
+
+    logger.info(f"Precomputed mappings for {len(augmented_views)} views")
+
+    # Precompute aligned index tensors for all view pairs
+    contrastive_alignment = {}
+    for i in range(len(augmented_views)):
+        for j in range(len(augmented_views)):
+            if i == j:
+                continue
+            orig_to_aug_i = precomputed_mappings[i]['orig_to_aug']
+            orig_to_aug_j = precomputed_mappings[j]['orig_to_aug']
+            common_orig_ids = sorted(set(orig_to_aug_i.keys()) & set(orig_to_aug_j.keys()))
+            idx_i = torch.tensor([orig_to_aug_i[oid] for oid in common_orig_ids], dtype=torch.long)
+            idx_j = torch.tensor([orig_to_aug_j[oid] for oid in common_orig_ids], dtype=torch.long)
+            contrastive_alignment[(i, j)] = (idx_i, idx_j)
+            logger.info(f"  View pair ({i},{j}): {len(common_orig_ids)} common nodes for contrastive loss")
+
+    logger.info(f"Precomputed contrastive alignment for {len(contrastive_alignment)} view pairs")
+    return precomputed_mappings, contrastive_alignment
+
+
 def train_single_fold(
     fold_idx: int,
     fold_data: Dict,
@@ -385,94 +612,17 @@ def train_single_fold(
     if features is None:
         raise ValueError("No 'feature' or 'x' key found in original data")
     
-    # Extract node names using node_id_to_name mapping from augmented_views
+    # Reconstruct node mapping (cross-validated across all views)
     num_nodes = features.shape[0]
-    
-    # Get node_id_to_name mapping from first augmented view
-    if augmented_views and len(augmented_views) > 0 and 'metadata' in augmented_views[0]:
-        node_id_to_name_aug = augmented_views[0]['metadata'].get('node_id_to_name', {})
-        eliminated_node_id_to_name = augmented_views[0]['metadata'].get('eliminated_node_id_to_name', {})
-        
-        if node_id_to_name_aug or eliminated_node_id_to_name:
-            # Combine augmented and eliminated mappings to reconstruct original full mapping
-            node_id_to_name_full = {**node_id_to_name_aug, **eliminated_node_id_to_name}
-            
-            # Create array of names in order of node IDs
-            node_names = np.array([str(node_id_to_name_full.get(i, f"Gene_{i}")) for i in range(num_nodes)])
-            
-            logger.info(f"Reconstructed full node mapping: {len(node_id_to_name_aug)} remaining + "
-                    f"{len(eliminated_node_id_to_name)} eliminated = {len(node_id_to_name_full)} total")
-            
-            # ============================================================================
-            # EXTRACT LABELS USING THE SAME INDICES
-            # ============================================================================
-            # The keys in node_id_to_name_full are the ORIGINAL indices
-            # We can use these to get the correct labels from original['label']
-            
-            original_labels_full = original['label']  # Full original labels tensor
-            
-            # Create aligned labels array
-            aligned_labels = torch.zeros(num_nodes, dtype=original_labels_full.dtype)
-            
-            for i in range(num_nodes):
-                if i in node_id_to_name_full:
-                    # This node exists in the mapping, use its original label
-                    aligned_labels[i] = original_labels_full[i]
-                else:
-                    # This shouldn't happen if reconstruction is correct
-                    logger.warning(f"Node {i} not found in node_id_to_name_full mapping")
-                    aligned_labels[i] = 0  # Default to non-driver
-            
-            # OVERRIDE the labels variable with aligned labels
-            labels = aligned_labels
-            logger.info(f"✓ Aligned labels using node_id_to_name_full mapping")
-            
-            # ============================================================================
-            # VERIFY ALIGNMENT WITH KNOWN DRIVERS
-            # ============================================================================
-            known_drivers_to_check = ['TP53', 'KRAS', 'EGFR', 'PIK3CA', 'BRAF', 'PTEN']
-            logger.info(f"\nVerifying label alignment with known driver genes...")
-            
-            all_correct = True
-            for gene in known_drivers_to_check:
-                if gene in node_names:
-                    idx = np.where(node_names == gene)[0][0]
-                    label = labels[idx].item()
-                    
-                    if label == 1:
-                        logger.info(f"  ✓ {gene} (index {idx}): label=1 (driver)")
-                    else:
-                        logger.error(f"  ❌ {gene} (index {idx}): label={label} (INCORRECT!)")
-                        all_correct = False
-            
-            if not all_correct:
-                logger.error("❌ Label alignment verification FAILED!")
-                logger.error("Some known driver genes are not labeled as drivers.")
-            else:
-                logger.info(f"✓ All checked known drivers are correctly labeled")
-            
-            # Log eliminated nodes information
-            if eliminated_node_id_to_name:
-                logger.info(f"\nEliminated nodes during augmentation:")
-                sample_eliminated = list(eliminated_node_id_to_name.items())[:5]
-                for node_id, gene_name in sample_eliminated:
-                    original_label = original_labels_full[node_id].item()
-                    logger.info(f"  Node {node_id}: {gene_name} (original label={original_label})")
-                if len(eliminated_node_id_to_name) > 5:
-                    logger.info(f"  ... and {len(eliminated_node_id_to_name) - 5} more")
-            
-        else:
-            logger.warning("Both node_id_to_name and eliminated_node_id_to_name mappings are empty")
-            node_names = np.array([f"Gene_{i}" for i in range(num_nodes)])
-    else:
-        logger.warning("No augmented_views metadata found")
-        node_names = np.array([f"Gene_{i}" for i in range(num_nodes)])
+    node_names, node_id_to_name_full = reconstruct_node_mapping(augmented_views, num_nodes)
 
-    # Final validation
+    # Align labels using the validated mapping
+    if node_id_to_name_full:
+        labels = align_and_verify_labels(node_id_to_name_full, original['label'], num_nodes)
+
     if len(node_names) != len(labels):
         raise ValueError(f"FATAL: After alignment, {len(node_names)} names vs {len(labels)} labels")
-
-    logger.info(f"\n✓ Node names and labels are aligned: {len(node_names)} genes")
+    logger.info(f"Node names and labels are aligned: {len(node_names)} genes")
     
     num_original_nodes = features.shape[0]
     if len(train_mask_original) != num_original_nodes:
@@ -481,52 +631,11 @@ def train_single_fold(
             f"original graph nodes ({num_original_nodes})"
         )
 
-    # ============================================================================
-    # PER-FOLD FEATURE NORMALIZATION
-    # Fit scaler on THIS fold's training data only to prevent data leakage.
-    # ============================================================================
+    # Per-fold normalization: fit scaler on this fold's training data only
     raw_features = original.get('x_raw', features)
-    if isinstance(raw_features, torch.Tensor):
-        raw_features_np = raw_features.cpu().numpy()
-    else:
-        raw_features_np = np.array(raw_features)
-
-    train_mask_np = (train_mask_original.cpu().numpy()
-                     if isinstance(train_mask_original, torch.Tensor)
-                     else train_mask_original)
-
-    logger.info(f"Fold {fold_idx}: Fitting StandardScaler on {train_mask_np.sum()} training nodes")
-    fold_scaler = StandardScaler()
-    fold_scaler.fit(raw_features_np[train_mask_np])
-
-    # Guard against zero-variance features
-    zero_var = fold_scaler.scale_ == 0
-    if zero_var.any():
-        logger.warning(f"Found {zero_var.sum()} zero-variance features, setting scale to 1.0")
-        fold_scaler.scale_[zero_var] = 1.0
-
-    # Normalize original graph features
-    normalized_np = fold_scaler.transform(raw_features_np)
-    normalized_np = np.nan_to_num(normalized_np, nan=0.0, posinf=1.0, neginf=-1.0)
-    features = torch.tensor(normalized_np, dtype=torch.float32)
-
-    # Normalize augmented view features (shallow-copy each view so the
-    # original raw data remains untouched for the next fold).
-    logger.info(f"Normalizing {len(augmented_views)} augmented views for fold {fold_idx}...")
-    fold_augmented_views = []
-    for view in augmented_views:
-        raw_x = view.get('x_raw', view['x'])
-        if isinstance(raw_x, torch.Tensor):
-            raw_x_np = raw_x.cpu().numpy()
-        else:
-            raw_x_np = np.array(raw_x)
-        norm_x_np = fold_scaler.transform(raw_x_np)
-        norm_x_np = np.nan_to_num(norm_x_np, nan=0.0, posinf=1.0, neginf=-1.0)
-        fold_augmented_views.append({**view, 'x': torch.tensor(norm_x_np, dtype=torch.float32)})
-    augmented_views = fold_augmented_views
-
-    logger.info(f"✓ Fold {fold_idx}: Per-fold normalization complete")
-    # ============================================================================
+    features, augmented_views = normalize_features_per_fold(
+        raw_features, augmented_views, train_mask_original, fold_idx
+    )
 
     # Analyze class distribution
     train_labels = labels[train_mask_original]
@@ -677,44 +786,10 @@ def train_single_fold(
     print(f"Attention mode: {attention_mode}")
     print(f"{'='*80}\n")
 
-    # ============================================================================
-    # PRECOMPUTE LABEL MAPPINGS FOR ALL VIEWS (Memory Optimization)
-    # ============================================================================
-    logger.info("Precomputing label mappings for all augmented views...")
-    num_original = labels.shape[0]
-    precomputed_mappings = []
-
-    for _, view in enumerate(augmented_views):
-        eliminated_ids = set(view['metadata']['eliminated_node_ids'])
-        aug_size = view['x'].shape[0]
-
-        # Create mapping dictionary
-        orig_to_aug = {}
-        aug_idx = 0
-        for orig_idx in range(num_original):
-            if orig_idx not in eliminated_ids:
-                orig_to_aug[orig_idx] = aug_idx
-                aug_idx += 1
-
-        # Precompute augmented labels and mask tensors
-        aug_labels_cpu = torch.full((aug_size,), -100, dtype=torch.long)
-        aug_mask_cpu = torch.zeros(aug_size, dtype=torch.bool)
-
-        for orig_idx in range(num_original):
-            if orig_idx in orig_to_aug:
-                aug_idx = orig_to_aug[orig_idx]
-                if aug_idx < aug_size:
-                    aug_labels_cpu[aug_idx] = labels.cpu()[orig_idx]
-                    aug_mask_cpu[aug_idx] = train_mask_original.cpu()[orig_idx]
-
-        precomputed_mappings.append({
-            'aug_labels': aug_labels_cpu,
-            'aug_mask': aug_mask_cpu,
-            'aug_size': aug_size
-        })
-
-    logger.info(f"✓ Precomputed mappings for {len(augmented_views)} views")
-    # ============================================================================
+    # Precompute label mappings and contrastive alignment for all view pairs
+    precomputed_mappings, contrastive_alignment = precompute_contrastive_alignment(
+        augmented_views, labels, train_mask_original
+    )
 
     for epoch in range(num_epochs):
         # Clear cache at start of epoch
@@ -832,10 +907,18 @@ def train_single_fold(
                         z1 = F.normalize(actual_model.projection(h1), dim=-1)
                         z2 = F.normalize(actual_model.projection(h2), dim=-1)
 
-                        # Find common nodes between views for contrastive loss
-                        min_nodes = min(z1.size(0), z2.size(0))
-                        z1_common = z1[:min_nodes]
-                        z2_common = z2[:min_nodes]
+                        # Align common nodes between views for contrastive loss
+                        if view1_idx != view2_idx and (view1_idx, view2_idx) in contrastive_alignment:
+                            align_idx1, align_idx2 = contrastive_alignment[(view1_idx, view2_idx)]
+                            align_idx1 = align_idx1.to(device)
+                            align_idx2 = align_idx2.to(device)
+                            z1_common = z1[align_idx1]
+                            z2_common = z2[align_idx2]
+                        else:
+                            # Same view used for both (single view fallback)
+                            min_nodes = min(z1.size(0), z2.size(0))
+                            z1_common = z1[:min_nodes]
+                            z2_common = z2[:min_nodes]
 
                         contrastive_loss = actual_model.compute_contrastive_loss(z1_common, z2_common)
 
@@ -876,9 +959,18 @@ def train_single_fold(
                     z1 = F.normalize(actual_model.projection(h1), dim=-1)
                     z2 = F.normalize(actual_model.projection(h2), dim=-1)
 
-                    min_nodes = min(z1.size(0), z2.size(0))
-                    z1_common = z1[:min_nodes]
-                    z2_common = z2[:min_nodes]
+                    # Align common nodes between views for contrastive loss
+                    if view1_idx != view2_idx and (view1_idx, view2_idx) in contrastive_alignment:
+                        align_idx1, align_idx2 = contrastive_alignment[(view1_idx, view2_idx)]
+                        align_idx1 = align_idx1.to(device)
+                        align_idx2 = align_idx2.to(device)
+                        z1_common = z1[align_idx1]
+                        z2_common = z2[align_idx2]
+                    else:
+                        # Same view used for both (single view fallback)
+                        min_nodes = min(z1.size(0), z2.size(0))
+                        z1_common = z1[:min_nodes]
+                        z2_common = z2[:min_nodes]
 
                     contrastive_loss = actual_model.compute_contrastive_loss(z1_common, z2_common)
 
@@ -888,7 +980,7 @@ def train_single_fold(
 
                     # Combined Loss with Ranking Scaling
                     # Scale ranking loss to match magnitude of contrastive loss
-                    scaled_ranking_loss = ranking_loss * 10.0
+                    scaled_ranking_loss = ranking_loss * ranking_loss_scale
                     loss = (contrastive_weight * contrastive_loss +
                             (1 - contrastive_weight) * scaled_ranking_loss)
 
@@ -907,21 +999,6 @@ def train_single_fold(
                 accumulated_contrastive_loss += contrastive_loss.item()
                 accumulated_ranking_loss += ranking_loss.item()
                 successful_steps += 1
-
-                # Compute training NDCG periodically
-                if successful_steps > 0 and epoch % validation_frequency == 0:
-                    with torch.no_grad():
-                        train_scores, _ = model.forward(
-                            original_device['x'],
-                            original_device['edge_index'],
-                            original_device['ollivier_curvature'],
-                            return_all_layers=return_all_layers
-                        )
-                        train_ndcg = compute_ndcg(train_scores[train_mask_original],
-                                                labels[train_mask_original], k=50)
-                    accumulated_metrics['train_ndcg'] = train_ndcg
-                elif successful_steps > 0:
-                    accumulated_metrics['train_ndcg'] = history['train_ndcg'][-1] if history['train_ndcg'] else 0.0
 
                 # Clean up immediately (CRITICAL for OOM)
                 del view1_x, view1_edge_index, view1_curvature
@@ -977,7 +1054,24 @@ def train_single_fold(
         
         optimizer.zero_grad()
         torch.cuda.empty_cache()
-        
+
+        # Compute training NDCG on the updated model (after optimizer step)
+        if epoch % validation_frequency == 0 or epoch == num_epochs - 1:
+            with torch.no_grad():
+                train_scores, _ = model.forward(
+                    original_device['x'],
+                    original_device['edge_index'],
+                    original_device['ollivier_curvature'],
+                    return_all_layers=return_all_layers
+                )
+                accumulated_metrics['train_ndcg'] = compute_ndcg(
+                    train_scores[train_mask_original],
+                    labels[train_mask_original], k=50
+                )
+            torch.cuda.empty_cache()
+        else:
+            accumulated_metrics['train_ndcg'] = history['train_ndcg'][-1] if history['train_ndcg'] else 0.0
+
         # Validation (Memory Optimization: configurable frequency to save time and memory)
         if epoch % validation_frequency == 0 or epoch == num_epochs - 1:
             

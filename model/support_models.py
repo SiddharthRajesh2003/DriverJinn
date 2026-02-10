@@ -376,15 +376,29 @@ class RankingLoss(nn.Module):
         driver_scores: torch.Tensor,
         non_driver_scores: torch.Tensor
     ) -> torch.Tensor:
-        """Bayesian Personalized Ranking loss - smooth and stable."""
+        """Bayesian Personalized Ranking loss with hard negative mining."""
         n_drivers = len(driver_scores)
         n_non_drivers = len(non_driver_scores)
 
-        # Sample pairs
         n_pairs = min(self.num_samples, n_drivers * n_non_drivers)
+        n_hard = n_pairs // 2
+        n_random = n_pairs - n_hard
 
+        # Hard negatives: sample from top-scoring non-drivers
+        if n_non_drivers > n_hard:
+            candidate_size = min(n_non_drivers, n_hard * 4)
+            candidate_idx = torch.randint(0, n_non_drivers, (candidate_size,), device=non_driver_scores.device)
+            candidate_scores = non_driver_scores[candidate_idx]
+            _, top_indices = torch.topk(candidate_scores, k=n_hard)
+            hard_neg_idx = candidate_idx[top_indices]
+        else:
+            hard_neg_idx = torch.randint(0, n_non_drivers, (n_hard,), device=non_driver_scores.device)
+
+        # Random negatives for stability
+        random_neg_idx = torch.randint(0, n_non_drivers, (n_random,), device=non_driver_scores.device)
+
+        non_driver_idx = torch.cat([hard_neg_idx, random_neg_idx])
         driver_idx = torch.randint(0, n_drivers, (n_pairs,), device=driver_scores.device)
-        non_driver_idx = torch.randint(0, n_non_drivers, (n_pairs,), device=driver_scores.device)
 
         diff = driver_scores[driver_idx] - non_driver_scores[non_driver_idx]
 

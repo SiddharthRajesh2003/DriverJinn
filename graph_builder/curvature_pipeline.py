@@ -1489,7 +1489,7 @@ class CurvaturePipeline:
             else:
                 graph_name = 'network_graph_with_curvatures'
         
-        self.network.save_graph(graph_name, output_path)
+        # self.network.save_graph(graph_name, output_path)
         logger.info(f"Network saved as {graph_name} in {output_path}")
     
     def save_contrastive_dataset(self, contrastive_dataset, output_dir):
@@ -1662,6 +1662,8 @@ class CurvaturePipeline:
             elif create_split and use_kfold:
                 logger.info(f"{n_folds}-fold cross-validation splits created")
                 logger.info(f"All folds use shared normalization (fitted on Fold 1)")
+            elif create_split and use_kfold and stratify:
+                logger.info(f"{n_folds}-fold cross-validation splits created")
             
             logger.info(f"Outputs saved in: {output_dir}")
             
