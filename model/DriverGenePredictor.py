@@ -14,7 +14,7 @@ from statsmodels.stats.multitest import multipletests
 
 
 from utils.logging_manager import get_logger
-from model.support_models import ProjectionHead, BinaryClassifier
+from model.support_models import ProjectionHead
 from model.curvature_aware_gnn import CurvatureAwareGNN
 from model.multi_layer_attention import HybridAggregator
 

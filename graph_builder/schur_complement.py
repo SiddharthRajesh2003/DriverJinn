@@ -373,7 +373,7 @@ class SchurComplementAugmentation:
             'avg_clique_size': np.mean(clique_sizes) if clique_sizes else 0,
             'eliminated_node_ids': eliminated_nodes,
             'eliminated_node_id_to_name': eliminated_node_id_to_name,
-            'strategy': 'priority',
+            'strategy': 'random',
             'node_id_to_name': node_id_to_name_aug,
             'augmented_node_names': augmented_node_names,
             'augmented_labels': augmented_labels
@@ -598,7 +598,7 @@ class SchurComplementAugmentation:
                     del degree_pq[deg]
                 break
         
-        if current_deg is not None and current_deg > 1:
+        if current_deg is not None and current_deg > 0:
             new_deg = current_deg - 1
             if new_deg not in degree_pq:
                 degree_pq[new_deg] = []

@@ -580,6 +580,7 @@ def train_single_fold(
     concat_heads: bool = True,
     scheduler_patience: int = 50,
     early_stopping_patience: int = 50,
+    ranking_loss_samples: int = 256,
     aggregation: str = 'add',
     ranking_loss_type: str = 'bpr',
     ranking_loss_scale: float = 10.0,
@@ -812,6 +813,7 @@ def train_single_fold(
         ranking_criterion = RankingLoss(
             margin=ranking_margin,
             loss_type=ranking_loss_type,
+            num_samples=ranking_loss_samples,
             focal_gamma=focal_gamma,
             use_focal=use_focal
         )
@@ -1055,8 +1057,9 @@ def train_single_fold(
         optimizer.zero_grad()
         torch.cuda.empty_cache()
 
-        # Compute training NDCG on the updated model (after optimizer step)
+        # Compute training NDCG using EMA weights (matches validation evaluation)
         if epoch % validation_frequency == 0 or epoch == num_epochs - 1:
+            ema.apply_shadow(actual_model)
             with torch.no_grad():
                 train_scores, _ = model.forward(
                     original_device['x'],
@@ -1068,6 +1071,7 @@ def train_single_fold(
                     train_scores[train_mask_original],
                     labels[train_mask_original], k=50
                 )
+            ema.restore(actual_model)
             torch.cuda.empty_cache()
         else:
             accumulated_metrics['train_ndcg'] = history['train_ndcg'][-1] if history['train_ndcg'] else 0.0
@@ -1492,6 +1496,8 @@ def main():
                         help='Type of ranking loss (bpr is most stable)')
     parser.add_argument('--ranking_margin', type=float, default=0.5,
                         help='Margin for pairwise ranking loss')
+    parser.add_argument('--ranking_loss_samples', type=int, default=256,
+                        help='Number of pairs to sample for calculating ranking loss')
     parser.add_argument('--focal_gamma', type=float, default=2.0,
                         help='Focal loss gamma (higher = more focus on hard examples)')
     parser.add_argument('--use_focal', action='store_true', default=True,

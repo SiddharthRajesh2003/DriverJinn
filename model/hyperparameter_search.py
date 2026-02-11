@@ -214,7 +214,7 @@ class HyperparameterSearch:
             'aggregation': trial.suggest_categorical('aggregation', ['add', 'mean', 'max']),
 
             # Optimization
-            'gradient_accumulation_steps': trial.suggest_categorical('gradient_accumulation_steps', [8, 16, 24, 36]),
+            'gradient_accumulation_steps': trial.suggest_categorical('gradient_accumulation_steps', [8, 16, 24]),
             'use_ema': trial.suggest_categorical('use_ema', [True, False]),
             'ema_decay': trial.suggest_float('ema_decay', 0.99, 0.999),
 
@@ -502,7 +502,7 @@ class HyperparameterSearch:
 
         params = self.suggest_hyperparameters(trial)
 
-        logger.info(f"\n{'='*60}")
+        logger.info(f"{'='*60}")
         logger.info(f"Trial {trial.number}: Testing hyperparameters")
         logger.info(f"{'='*60}")
         for key, value in params.items():

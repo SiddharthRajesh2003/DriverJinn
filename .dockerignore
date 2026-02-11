@@ -14,7 +14,8 @@ logs/
 utils/__pycache__
 gnn.tar.gz
 output.tar.gz
-curvature_output/{GGNet,PPNet}_*
+curvature_output/PPNet_*
+curvature_output/GGNet_*
 .env
 model/__pycache__
 model/model_tester.py
@@ -24,3 +25,6 @@ misc/
 model_results/
 .claude/
 search.tar.gz
+GNN Architecture.jpeg
+DriverJinn Data Preprocessing.jpeg
+CLAUDE.md

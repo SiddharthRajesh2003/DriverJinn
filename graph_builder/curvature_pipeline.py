@@ -1712,7 +1712,7 @@ def main():
     parser.add_argument('--elimination_ratio', type=float, default=0.2,
                         help='Ratio of nodes to eliminate in augmentation (0.1-0.3 recommended)')
     parser.add_argument('--strategy', type=str, choices=['priority', 'random', 'coarsening'],
-                        default='priority', help='Elimination strategy for augmentation')
+                        default='random', help='Elimination strategy for augmentation')
     parser.add_argument('--no_aug_curvature', action='store_true',
                         help='Skip curvature calculation for augmented graphs')
     
