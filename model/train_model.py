@@ -15,7 +15,6 @@ import argparse
 import matplotlib.pyplot as plt
 import seaborn as sns
 from torch.utils.checkpoint import checkpoint as gradient_checkpoint
-
 from sklearn.preprocessing import StandardScaler
 
 from utils.logging_manager import get_logger
@@ -796,16 +795,19 @@ def train_single_fold(
         # Clear cache at start of epoch
         torch.cuda.empty_cache()
         gc.collect()
-        
+
+        # Ensure model is in training mode (validation sets eval mode)
+        model.train()
+
         if epoch < 10:
             warmup_scheduler.step()
-        
+
         # Zero gradients once
         optimizer.zero_grad()
         
         accumulated_loss = 0.0
         accumulated_contrastive_loss = 0.0
-        accumulated_ranking_loss = 0.0
+        accumulated_orig_ranking_loss = 0.0
         accumulated_metrics = {'train_ndcg': 0.0}
         successful_steps = 0
 
@@ -872,17 +874,6 @@ def train_single_fold(
                     view2_edge_index, view2_curvature, f"View2_Step{accum_step}"
                 )
 
-                # Use precomputed labels/masks for view1 (for ranking loss)
-                mapping1 = precomputed_mappings[view1_idx]
-                aug_labels = mapping1['aug_labels'].to(device)
-                aug_mask = mapping1['aug_mask'].to(device)
-
-                if aug_mask.sum() == 0:
-                    logger.warning(f"Step {accum_step}: No training samples after mapping")
-                    del view1_x, view1_edge_index, view1_curvature
-                    del view2_x, view2_edge_index, view2_curvature
-                    continue
-
                 # Forward pass with mixed precision
                 if scaler:
                     with torch.amp.autocast('cuda'):
@@ -924,20 +915,9 @@ def train_single_fold(
 
                         contrastive_loss = actual_model.compute_contrastive_loss(z1_common, z2_common)
 
-                        # === Ranking Loss (on view1) ===
-                        scores = actual_model.ranking_head(h1).squeeze(-1)
-                        ranking_loss = ranking_criterion(scores, aug_labels, aug_mask)
-
-                        # === Combined Loss with Ranking Scaling ===
-                        # Scale ranking loss to match magnitude of contrastive loss
-                        scaled_ranking_loss = ranking_loss * ranking_loss_scale
-                        loss = (contrastive_weight * contrastive_loss +
-                                (1 - contrastive_weight) * scaled_ranking_loss)
-
-                        # Clip loss to prevent extreme spikes
+                        # Contrastive-only loss (ranking is on original graph)
+                        loss = contrastive_weight * contrastive_loss
                         loss = torch.clamp(loss, max=10.0)
-
-                        # Scale for accumulation
                         loss = loss / gradient_accumulation_steps
                 else:
                     # No mixed precision - same logic
@@ -976,19 +956,9 @@ def train_single_fold(
 
                     contrastive_loss = actual_model.compute_contrastive_loss(z1_common, z2_common)
 
-                    # Ranking Loss
-                    scores = actual_model.ranking_head(h1).squeeze(-1)
-                    ranking_loss = ranking_criterion(scores, aug_labels, aug_mask)
-
-                    # Combined Loss with Ranking Scaling
-                    # Scale ranking loss to match magnitude of contrastive loss
-                    scaled_ranking_loss = ranking_loss * ranking_loss_scale
-                    loss = (contrastive_weight * contrastive_loss +
-                            (1 - contrastive_weight) * scaled_ranking_loss)
-
-                    # Clip loss to prevent extreme spikes
+                    # Contrastive-only loss (ranking is on original graph)
+                    loss = contrastive_weight * contrastive_loss
                     loss = torch.clamp(loss, max=10.0)
-
                     loss = loss / gradient_accumulation_steps
 
                 # Backward
@@ -999,15 +969,14 @@ def train_single_fold(
 
                 accumulated_loss += loss.item() * gradient_accumulation_steps
                 accumulated_contrastive_loss += contrastive_loss.item()
-                accumulated_ranking_loss += ranking_loss.item()
                 successful_steps += 1
 
                 # Clean up immediately (CRITICAL for OOM)
                 del view1_x, view1_edge_index, view1_curvature
                 del view2_x, view2_edge_index, view2_curvature
                 del embeddings1, embeddings2, h1, h2, z1, z2
-                del aug_labels, aug_mask, scores, loss, contrastive_loss, ranking_loss
-                del view1, view2, z1_common, z2_common  # Delete view references
+                del loss, contrastive_loss
+                del view1, view2, z1_common, z2_common
 
                 # Aggressive CUDA cache clearing
                 if torch.cuda.is_available():
@@ -1023,6 +992,45 @@ def train_single_fold(
                 else:
                     raise e
         
+        # === Ranking loss on original graph ===
+        # Bridge train-evaluate gap: train ranking on the full graph used for evaluation
+        try:
+            if scaler:
+                with torch.amp.autocast('cuda'):
+                    orig_scores, _ = model.forward(
+                        original_device['x'],
+                        original_device['edge_index'],
+                        original_device['ollivier_curvature'],
+                        return_all_layers=return_all_layers
+                    )
+                    orig_ranking_loss = ranking_criterion(orig_scores, labels, train_mask_original)
+                    orig_loss = (1 - contrastive_weight) * ranking_loss_scale * orig_ranking_loss
+                scaler.scale(orig_loss).backward()
+            else:
+                orig_scores, _ = model.forward(
+                    original_device['x'],
+                    original_device['edge_index'],
+                    original_device['ollivier_curvature'],
+                    return_all_layers=return_all_layers
+                )
+                orig_ranking_loss = ranking_criterion(orig_scores, labels, train_mask_original)
+                orig_loss = (1 - contrastive_weight) * ranking_loss_scale * orig_ranking_loss
+                orig_loss.backward()
+
+            accumulated_orig_ranking_loss += orig_ranking_loss.item()
+
+            del orig_scores, orig_ranking_loss, orig_loss
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+        except RuntimeError as e:
+            if "out of memory" in str(e):
+                logger.warning(f"OOM during original graph ranking at epoch {epoch}")
+                torch.cuda.empty_cache()
+                gc.collect()
+            else:
+                raise e
+
         # Check if we had any successful steps
         if successful_steps == 0:
             logger.error(f"Epoch {epoch}: All steps failed with OOM. Skipping epoch.")
@@ -1152,11 +1160,9 @@ def train_single_fold(
         # Logging
         if epoch % 10 == 0:
             avg_contrastive = accumulated_contrastive_loss / max(successful_steps, 1)
-            avg_ranking = accumulated_ranking_loss / max(successful_steps, 1)
-            avg_ranking_scaled = avg_ranking * 10.0  # Show scaled value used in optimization
             print(
                 f"Epoch {epoch:3d} | "
-                f"Loss: {avg_loss:.4f} (C:{avg_contrastive:.3f} R:{avg_ranking:.3f}→{avg_ranking_scaled:.2f}) | "
+                f"Loss: {avg_loss:.4f} (C:{avg_contrastive:.3f} R_orig:{accumulated_orig_ranking_loss:.3f}) | "
                 f"Steps: {successful_steps}/{gradient_accumulation_steps} | "
                 f"NDCG@50: {val_metrics.get('ndcg@50', 0):.4f} (smooth: {smoothed_ndcg:.4f}) | "
                 f"LR: {optimizer.param_groups[0]['lr']:.6f}"
@@ -1179,10 +1185,9 @@ def train_single_fold(
             torch.cuda.empty_cache()
             gc.collect()
 
-        # Early stopping (using smoothed NDCG)
-        if early_stopping(smoothed_ndcg):
-            logger.info(f"Early stopping at epoch {epoch}")
-            break
+        # Note: early stopping is checked inside the validation block above (line 1161).
+        # Do NOT check again here — it would double-increment the counter on
+        # validation epochs and increment on stale metrics for non-validation epochs.
     
     # Load best model
     checkpoint = actual_model.load_checkpoint(str(model_path), optimizer, device)

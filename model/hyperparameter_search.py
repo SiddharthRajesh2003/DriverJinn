@@ -175,7 +175,48 @@ class HyperparameterSearch:
         for i, view in enumerate(self.augmented_views):
             self.augmented_views[i] = preprocess_curvature_data(view, curvature_type='ollivier')
 
+        # Precompute label mappings and contrastive alignment for augmented views
+        self._precompute_view_mappings()
+
         logger.info("✓ Data preprocessing complete")
+
+    def _precompute_view_mappings(self):
+        """Precompute orig-to-aug mappings and contrastive alignment for all views."""
+        num_original = self.labels.shape[0]
+        self.precomputed_mappings = []
+
+        for view in self.augmented_views:
+            eliminated_ids = set(view['metadata']['eliminated_node_ids'])
+            feature_key = 'feature' if 'feature' in view else 'x'
+            aug_size = view[feature_key].shape[0]
+
+            orig_to_aug = {}
+            aug_idx = 0
+            for orig_idx in range(num_original):
+                if orig_idx not in eliminated_ids:
+                    orig_to_aug[orig_idx] = aug_idx
+                    aug_idx += 1
+
+            self.precomputed_mappings.append({
+                'aug_size': aug_size,
+                'orig_to_aug': orig_to_aug
+            })
+
+        # Precompute contrastive alignment for all view pairs
+        self.contrastive_alignment = {}
+        for i in range(len(self.augmented_views)):
+            for j in range(len(self.augmented_views)):
+                if i == j:
+                    continue
+                orig_to_aug_i = self.precomputed_mappings[i]['orig_to_aug']
+                orig_to_aug_j = self.precomputed_mappings[j]['orig_to_aug']
+                common_orig_ids = sorted(set(orig_to_aug_i.keys()) & set(orig_to_aug_j.keys()))
+                idx_i = torch.tensor([orig_to_aug_i[oid] for oid in common_orig_ids], dtype=torch.long)
+                idx_j = torch.tensor([orig_to_aug_j[oid] for oid in common_orig_ids], dtype=torch.long)
+                self.contrastive_alignment[(i, j)] = (idx_i, idx_j)
+
+        logger.info(f"Precomputed mappings for {len(self.augmented_views)} views, "
+                    f"{len(self.contrastive_alignment)} view pairs")
 
     def suggest_hyperparameters(self, trial: optuna.Trial) -> Dict:
         """
@@ -340,12 +381,16 @@ class HyperparameterSearch:
                     view2_edge_index = view2['edge_index'].to(self.device)
                     view2_curvature = view2['ollivier_curvature'].to(self.device)
 
-                    # Get labels for views
-                    aug_labels = view1.get('label', labels[:view1_x.shape[0]])
-                    if isinstance(aug_labels, np.ndarray):
-                        aug_labels = torch.from_numpy(aug_labels)
-                    aug_labels = aug_labels.to(self.device)
-                    aug_mask = torch.ones(view1_x.shape[0], dtype=torch.bool, device=self.device)
+                    # Map labels to augmented view using precomputed mapping
+                    mapping1 = self.precomputed_mappings[view1_idx]
+                    orig_to_aug1 = mapping1['orig_to_aug']
+                    aug_size1 = mapping1['aug_size']
+                    aug_labels = torch.full((aug_size1,), -100, dtype=torch.long, device=self.device)
+                    aug_mask = torch.zeros(aug_size1, dtype=torch.bool, device=self.device)
+                    for orig_idx, aug_idx in orig_to_aug1.items():
+                        if aug_idx < aug_size1:
+                            aug_labels[aug_idx] = labels[orig_idx]
+                            aug_mask[aug_idx] = train_mask[orig_idx]
 
                     with torch.amp.autocast('cuda', enabled=scaler is not None):
                         # Forward pass - encode both views
@@ -364,10 +409,17 @@ class HyperparameterSearch:
                         z1 = F.normalize(model.projection(h1), dim=-1)
                         z2 = F.normalize(model.projection(h2), dim=-1)
 
-                        # Contrastive loss
-                        min_nodes = min(z1.shape[0], z2.shape[0])
-                        z1_common = z1[:min_nodes]
-                        z2_common = z2[:min_nodes]
+                        # Contrastive loss with proper node alignment
+                        if view1_idx != view2_idx and (view1_idx, view2_idx) in self.contrastive_alignment:
+                            align_idx1, align_idx2 = self.contrastive_alignment[(view1_idx, view2_idx)]
+                            align_idx1 = align_idx1.to(self.device)
+                            align_idx2 = align_idx2.to(self.device)
+                            z1_common = z1[align_idx1]
+                            z2_common = z2[align_idx2]
+                        else:
+                            min_nodes = min(z1.shape[0], z2.shape[0])
+                            z1_common = z1[:min_nodes]
+                            z2_common = z2[:min_nodes]
                         contrastive_loss = model.compute_contrastive_loss(z1_common, z2_common)
 
                         # Ranking loss
