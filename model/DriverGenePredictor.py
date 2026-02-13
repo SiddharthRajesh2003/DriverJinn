@@ -655,7 +655,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         }
         
         torch.save(checkpoint, path)
-        logger.info(f"Saved checkpoint to {path} (epoch {epoch}, F1: {metrics.get('f1', 'N/A')})")
+        logger.info(f"Saved checkpoint to {path} (epoch {epoch}, NDCG@50: {metrics.get('ndcg@50', 'N/A')})")
 
     def load_checkpoint(
         self,

@@ -395,12 +395,19 @@ class CurvaturePipeline:
             
             logger.info(f"Fold {fold_idx + 1}: Train={len(train_idx)}, Val={len(val_idx)}")
         
+        # Store split config for reproducibility
+        self.kfold_config = {
+            'n_splits': n_splits,
+            'stratify': stratify,
+            'random_seed': random_seed
+        }
+
         # Store in whichever dict is available
         if self.enhanced_data_dict is not None:
             self.enhanced_data_dict['kfold_splits'] = fold_data
         else:
             self.data_dict['kfold_splits'] = fold_data
-        
+
         return fold_data
 
     def build_network(self):
@@ -1259,9 +1266,12 @@ class CurvaturePipeline:
                 'original_test_size': len(self.split_data['test_idx'])
             }
         elif has_kfold:
+            kfold_config = getattr(self, 'kfold_config', {})
             contrastive_dataset['split_info'] = {
                 'split_type': 'kfold',
                 'n_folds': len(self.enhanced_data_dict['kfold_splits']),
+                'stratify': kfold_config.get('stratify', None),
+                'random_seed': kfold_config.get('random_seed', None),
                 'total_nodes': self.enhanced_data_dict['feature'].shape[0]
             }
         
@@ -1512,12 +1522,28 @@ class CurvaturePipeline:
         else:
             dataset_name = 'network'
         
-        # Create filename with dataset name and augmentation config
+        # Create filename with dataset name, augmentation config, and split strategy
         strategy = contrastive_dataset['augmentation_config']['strategy']
         num_views = contrastive_dataset['num_views']
         ratio = contrastive_dataset['augmentation_config']['elimination_ratio']
-        
-        filename = f'{dataset_name}_contrastive_v{num_views}_{strategy}_r{ratio}.pkl'
+
+        # Build split suffix for filename
+        split_info = contrastive_dataset.get('split_info', {})
+        if split_info.get('split_type') == 'kfold':
+            n_folds = split_info.get('n_folds', '?')
+            stratified = 'stratified' if split_info.get('stratify') else ''
+            split_suffix = f'_{stratified}{n_folds}CV'
+        elif split_info.get('split_type') == 'regular':
+            split_config = split_info.get('split_config', {})
+            test_pct = int(split_config.get('test_size', 0) * 100)
+            val_pct = int(split_config.get('val_size', 0) * 100)
+            train_pct = 100 - test_pct - val_pct
+            stratified = 'stratified_' if split_config.get('stratify') else ''
+            split_suffix = f'_{stratified}train{train_pct}_val{val_pct}_test{test_pct}'
+        else:
+            split_suffix = ''
+
+        filename = f'{dataset_name}_contrastive_v{num_views}_{strategy}_r{ratio}_{split_suffix}.pkl'
         output_path = os.path.join(output_dir, filename)
         
         with open(output_path, 'wb') as f:
@@ -1529,7 +1555,7 @@ class CurvaturePipeline:
         logger.info(f"  - Strategy: {strategy}, Elimination ratio: {ratio}")
     
         return output_path
-        
+
     def run_pipeline(self, 
                     output_dir='./output', 
                     method='both', 
