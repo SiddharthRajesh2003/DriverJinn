@@ -226,8 +226,8 @@ class HyperparameterSearch:
         """
         params = {
             # Model architecture
-            'hidden_channels': trial.suggest_categorical('hidden_channels', [64, 96, 128, 144]),
-            'projection_dim': trial.suggest_categorical('projection_dim', [32, 64, 72, 96]),
+            'hidden_channels': trial.suggest_categorical('hidden_channels', [128, 144]),
+            'projection_dim': trial.suggest_categorical('projection_dim', [72, 96]),
             'num_gnn_layers': trial.suggest_int('num_gnn_layers', 2, 4),
             'num_attention_heads': trial.suggest_categorical('num_attention_heads', [1, 2, 4]),
             'attention_mode': trial.suggest_categorical('attention_mode', ['gated', 'hybrid', 'standard', 'edge_feature', 'bias']),
@@ -255,7 +255,7 @@ class HyperparameterSearch:
             'aggregation': trial.suggest_categorical('aggregation', ['add', 'mean', 'max']),
 
             # Optimization
-            'gradient_accumulation_steps': trial.suggest_categorical('gradient_accumulation_steps', [8, 16, 24]),
+            'gradient_accumulation_steps': trial.suggest_categorical('gradient_accumulation_steps', [8, 12, 16]),
             'use_ema': trial.suggest_categorical('use_ema', [True, False]),
             'ema_decay': trial.suggest_float('ema_decay', 0.99, 0.999),
 
@@ -381,20 +381,8 @@ class HyperparameterSearch:
                     view2_edge_index = view2['edge_index'].to(self.device)
                     view2_curvature = view2['ollivier_curvature'].to(self.device)
 
-                    # Map labels to augmented view using precomputed mapping
-                    mapping1 = self.precomputed_mappings[view1_idx]
-                    orig_to_aug1 = mapping1['orig_to_aug']
-                    aug_size1 = mapping1['aug_size']
-                    aug_labels = torch.full((aug_size1,), -100, dtype=torch.long, device=self.device)
-                    aug_mask = torch.zeros(aug_size1, dtype=torch.bool, device=self.device)
-                    for orig_idx, aug_idx in orig_to_aug1.items():
-                        if aug_idx < aug_size1:
-                            aug_labels[aug_idx] = labels[orig_idx]
-                            aug_mask[aug_idx] = train_mask[orig_idx]
-
                     with torch.amp.autocast('cuda', enabled=scaler is not None):
                         # Forward pass - encode both views
-                        # encode() already returns aggregated embeddings
                         h1, _ = model.encode(
                             view1_x, view1_edge_index, view1_curvature,
                             return_attention=False, return_all_layers=True
@@ -422,15 +410,8 @@ class HyperparameterSearch:
                             z2_common = z2[:min_nodes]
                         contrastive_loss = model.compute_contrastive_loss(z1_common, z2_common)
 
-                        # Ranking loss
-                        scores = model.ranking_head(h1).squeeze(-1)
-                        ranking_loss = ranking_criterion(scores, aug_labels, aug_mask)
-
-                        # Combined loss with scaling
-                        scaled_ranking_loss = ranking_loss * ranking_loss_scale
-                        loss = (contrastive_weight * contrastive_loss +
-                                (1 - contrastive_weight) * scaled_ranking_loss)
-
+                        # Contrastive-only loss (ranking is on original graph below)
+                        loss = contrastive_weight * contrastive_loss
                         loss = torch.clamp(loss, max=10.0)
                         loss = loss / gradient_accumulation_steps
 
@@ -447,7 +428,7 @@ class HyperparameterSearch:
                     del view1_x, view1_edge_index, view1_curvature
                     del view2_x, view2_edge_index, view2_curvature
                     del h1, h2, z1, z2
-                    del scores, loss, contrastive_loss, ranking_loss
+                    del loss, contrastive_loss
 
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
@@ -464,6 +445,37 @@ class HyperparameterSearch:
             if successful_steps == 0:
                 logger.error(f"All steps failed with OOM at epoch {epoch}")
                 continue
+
+            # === Ranking loss on original graph ===
+            try:
+                train_mask_device = train_mask.to(self.device)
+                with torch.amp.autocast('cuda', enabled=scaler is not None):
+                    orig_scores, _ = model.forward(
+                        original_device['x'],
+                        original_device['edge_index'],
+                        original_device['ollivier_curvature'],
+                        return_all_layers=True
+                    )
+                    orig_ranking_loss = ranking_criterion(orig_scores, labels, train_mask_device)
+                    orig_loss = (1 - contrastive_weight) * ranking_loss_scale * orig_ranking_loss
+                    orig_loss = orig_loss / gradient_accumulation_steps
+
+                if scaler:
+                    scaler.scale(orig_loss).backward()
+                else:
+                    orig_loss.backward()
+
+                del orig_scores, orig_ranking_loss, orig_loss, train_mask_device
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+            except RuntimeError as e:
+                if "out of memory" in str(e):
+                    logger.warning(f"OOM during original graph ranking at epoch {epoch}")
+                    torch.cuda.empty_cache()
+                    gc.collect()
+                else:
+                    raise e
 
             # Optimizer step
             if scaler:

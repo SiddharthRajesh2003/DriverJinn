@@ -1543,7 +1543,7 @@ class CurvaturePipeline:
         else:
             split_suffix = ''
 
-        filename = f'{dataset_name}_contrastive_v{num_views}_{strategy}_r{ratio}_{split_suffix}.pkl'
+        filename = f'{dataset_name}_contrastive_v{num_views}_{strategy}_r{ratio}{split_suffix}.pkl'
         output_path = os.path.join(output_dir, filename)
         
         with open(output_path, 'wb') as f:
