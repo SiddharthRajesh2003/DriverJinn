@@ -458,7 +458,6 @@ class HyperparameterSearch:
                     )
                     orig_ranking_loss = ranking_criterion(orig_scores, labels, train_mask_device)
                     orig_loss = (1 - contrastive_weight) * ranking_loss_scale * orig_ranking_loss
-                    orig_loss = orig_loss / gradient_accumulation_steps
 
                 if scaler:
                     scaler.scale(orig_loss).backward()
