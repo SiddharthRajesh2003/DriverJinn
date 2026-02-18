@@ -10,8 +10,8 @@ model/model_tester.py
 all_model_results/
 results.tar.gz
 misc/
-model_results/
+model_results_*/
 .claude/
 search.tar.gz
-hyperparam_results/
+hyperparam_results_*/
 CLAUDE.md

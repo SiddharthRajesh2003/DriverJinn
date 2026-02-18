@@ -1038,8 +1038,10 @@ def train_single_fold(
             torch.cuda.empty_cache()
             continue
         
-        # Average loss
-        avg_loss = accumulated_loss / successful_steps
+        # Average loss (combined contrastive + ranking for accurate reporting)
+        avg_contrastive_raw = accumulated_contrastive_loss / max(successful_steps, 1)
+        avg_loss = (contrastive_weight * avg_contrastive_raw +
+                    (1 - contrastive_weight) * ranking_loss_scale * accumulated_orig_ranking_loss)
         
         # Check for NaN
         if math.isnan(avg_loss):
@@ -1159,10 +1161,9 @@ def train_single_fold(
         
         # Logging
         if epoch % 10 == 0:
-            avg_contrastive = accumulated_contrastive_loss / max(successful_steps, 1)
             print(
                 f"Epoch {epoch:3d} | "
-                f"Loss: {avg_loss:.4f} (C:{avg_contrastive:.3f} R_orig:{accumulated_orig_ranking_loss:.3f}) | "
+                f"Loss: {avg_loss:.4f} (C:{avg_contrastive_raw:.3f} R_orig:{accumulated_orig_ranking_loss:.3f}) | "
                 f"Steps: {successful_steps}/{gradient_accumulation_steps} | "
                 f"NDCG@50: {val_metrics.get('ndcg@50', 0):.4f} (smooth: {smoothed_ndcg:.4f}) | "
                 f"LR: {optimizer.param_groups[0]['lr']:.6f}"
