@@ -92,8 +92,7 @@ class LoggingManager:
             finally:
                 del frame
             
-            omop_server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            log_dir = os.path.join(omop_server_dir, 'logs')
+            log_dir = os.environ.get('LOG_DIR') or os.path.join(os.getcwd(), 'logs')
             self.setup_logging(
                 log_dir=log_dir,
                 log_filename='application.log',
@@ -128,8 +127,7 @@ class LoggingManager:
         """
         # Set up log directory
         if log_dir is None:
-            omop_server_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-            self.log_dir = os.path.join(omop_server_dir, 'logs')
+            self.log_dir = os.environ.get('LOG_DIR') or os.path.join(os.getcwd(), 'logs')
         else:
             self.log_dir = log_dir
         

@@ -26,25 +26,34 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 echo "Running fold ${SLURM_ARRAY_TASK_ID} on $(hostname)"
 
 python -m model.train_model \
-    --dataset_file curvature_output/GGNet_contrastive_v2_random_r0.1.pkl \
-    --num_epochs 800 \
+    --dataset_file curvature_output/GGNet_contrastive_v2_random_r0.2.pkl \
+    --num_epochs 1000 \
     --hidden_channels 144 \
-    --projection_dim 72 \
-    --num_layers 3 \
-    --num_heads 4 \
+    --projection_dim 96 \
+    --num_layers 2 \
+    --num_heads 2 \
     --num_folds 5 \
+    --train_metrics_dir model_results_$(date +%F) \
     --specific_folds ${SLURM_ARRAY_TASK_ID} \
     --model_out_prefix GGNet_random_r0.2_fold${SLURM_ARRAY_TASK_ID} \
-    --temperature 0.7 \
+    --temperature 0.3 \
+    --dropout 0.25 \
     --attention_mode hybrid \
     --pathway_aggregator hierarchical \
+    --aggregation max \
+    --negative_slope 0.232 \
     --attention_chunk_size 1000 \
-    --gradient_accumulation_steps 36 \
+    --gradient_accumulation_steps 8 \
     --mixed_precision \
-    --scheduler_patience 60 \
-    --early_stopping_patience 100 \
+    --scheduler_patience 100 \
+    --scheduler_factor 0.8 \
+    --early_stopping_patience 150 \
+    --validation_frequency 20 \
     --concat_heads \
     --ranking_loss_type bpr \
+    --ranking_loss_scale 5 \
+    --ranking_loss_samples 512 \
     --focal_gamma 2.0 \
-    --use_focal \
-    --contrastive_weight 0.3
+    --contrastive_weight 0.5 \
+    --learning_rate 5e-4 \
+    --weight_decay 1.5e-5
