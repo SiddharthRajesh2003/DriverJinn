@@ -169,21 +169,25 @@ class EarlyStopping:
         self.counter = 0
         self.best_score = None
         self.early_stop = False
+        self.best_epoch = 0
         
-    def __call__(self, score):
+    def __call__(self, score, epoch):
         if self.best_score is None:
             self.best_score = score
+            self.best_epoch = epoch
             return False
         
         if self.mode == 'max':
             if score > self.best_score + self.min_delta:
                 self.best_score = score
+                self.best_epoch = epoch
                 self.counter = 0
             else:
                 self.counter += 1
         else:
             if score < self.best_score - self.min_delta:
                 self.best_score = score
+                self.best_epoch = epoch
                 self.counter = 0
             else:
                 self.counter += 1
@@ -276,13 +280,15 @@ class RankingLoss(nn.Module):
         self,
         scores: torch.Tensor,
         labels: torch.Tensor,
-        mask: torch.Tensor
+        mask: torch.Tensor,
+        progress: float = 0.0
     ) -> torch.Tensor:
         """
         Args:
             scores: [num_nodes] driver likelihood scores
             labels: [num_nodes] binary labels (1=driver, 0=non-driver)
             mask: [num_nodes] training mask
+            progress: training progress in [0, 1] for curriculum scheduling
         """
 
         scores = scores[mask]
@@ -314,7 +320,7 @@ class RankingLoss(nn.Module):
 
         elif self.loss_type == 'bpr':
             # Bayesian Personalized Ranking - more stable than standard pairwise
-            return self._bpr_loss(driver_scores, non_driver_scores)
+            return self._bpr_loss(driver_scores, non_driver_scores, progress=progress)
 
         else:
             raise ValueError(f"Unknown loss type: {self.loss_type}")
@@ -374,23 +380,28 @@ class RankingLoss(nn.Module):
     def _bpr_loss(
         self,
         driver_scores: torch.Tensor,
-        non_driver_scores: torch.Tensor
+        non_driver_scores: torch.Tensor,
+        progress: float = 0.0
     ) -> torch.Tensor:
-        """Bayesian Personalized Ranking loss with hard negative mining."""
+        """Bayesian Personalized Ranking loss with curriculum hard negative mining and focal weighting.
+
+        hard_frac ramps from 0.25 → 0.75 over training so early epochs use
+        easier negatives for stability and later epochs use harder ones for refinement.
+        """
         n_drivers = len(driver_scores)
         n_non_drivers = len(non_driver_scores)
 
         n_pairs = min(self.num_samples, n_drivers * n_non_drivers)
-        n_hard = n_pairs // 2
+
+        # Curriculum: linearly ramp hard fraction from 25% → 75% over training
+        hard_frac = 0.25 + 0.5 * progress
+        n_hard = int(n_pairs * hard_frac)
         n_random = n_pairs - n_hard
 
-        # Hard negatives: sample from top-scoring non-drivers
+        # Hard negatives: globally top-scoring non-drivers (most informative gradient)
         if n_non_drivers > n_hard:
-            candidate_size = min(n_non_drivers, n_hard * 4)
-            candidate_idx = torch.randint(0, n_non_drivers, (candidate_size,), device=non_driver_scores.device)
-            candidate_scores = non_driver_scores[candidate_idx]
-            _, top_indices = torch.topk(candidate_scores, k=n_hard)
-            hard_neg_idx = candidate_idx[top_indices]
+            _, top_indices = torch.topk(non_driver_scores, k=n_hard)
+            hard_neg_idx = top_indices
         else:
             hard_neg_idx = torch.randint(0, n_non_drivers, (n_hard,), device=non_driver_scores.device)
 
@@ -404,6 +415,12 @@ class RankingLoss(nn.Module):
 
         # BPR loss: -log(sigmoid(x_ui - x_uj))
         loss = -F.logsigmoid(diff)
+
+        # Focal weighting: down-weight easy pairs, focus on hard ones
+        if self.use_focal:
+            prob_correct = torch.sigmoid(diff)
+            focal_weight = (1 - prob_correct) ** self.focal_gamma
+            loss = focal_weight * loss
 
         return loss.mean()
 
