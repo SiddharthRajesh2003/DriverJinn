@@ -6,11 +6,115 @@ This model is currently being trained on NVIDIA H100 GPU.
 
 A Graph Neural Network framework for cancer driver gene prediction using curvature-enhanced graph representations and contrastive learning.
 
-## Data Preprocessing Pipeline
-[![Data Preprocessing Pipeline](DriverJinn%20Data%20Preprocessing.jpeg)](DriverJinn%20Data%20Preprocessing.jpeg)
+---
 
-## Model Architecture
-[![Model Architecture](GNN%20Architecture.jpeg)](GNN%20Architecture.jpeg)
+## End-to-End Pipeline
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STEP 1 — Preprocessing (curvature_pipeline.py)                             │
+│                                                                             │
+│  data/*.pkl  ──►  Load data (features, edge_index, labels, node_names)      │
+│                 ↓                                                           │
+│             Build NetworkX graph  (build_network.py)                        │
+│                 ↓                                                           │
+│             Compute curvatures   (curvature_calculator.py)                  │
+│               • Ollivier Ricci (discrete)                                   │
+│               • Forman (combinatorial)                                      │
+│                 ↓                                                           │
+│             Integrate features   (curvature_integration.py)                 │
+│               • 58 original dims + 12 curvature dims + 3 summary dims       │
+│               • = 27 total feature dimensions per node                      │
+│                 ↓                                                           │
+│             Create 5-fold stratified splits (seed=42)                       │
+│                 ↓                                                           │
+│             Generate augmented views  (schur_complement.py)                 │
+│               • Eliminates ~20% of nodes, adds fill-in edges                │
+│               • Produces 2 augmented graph variants                         │
+│                 ↓                                                           │
+│  Output: curvature_output/GGNet_contrastive_v2_random_r0.2.pkl              │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STEP 2 — Hyperparameter Search  [optional]  (hyperparameter_search.py)     │
+│                                                                             │
+│  • Optuna Bayesian optimization (TPE sampler, Hyperband pruning)            │
+│  • 50 trials, 1 fold, optimizes val NDCG@50                                 │
+│  • Search space: LR, hidden_channels, num_layers, num_heads,                │
+│    contrastive_weight, dropout, cosine_T0, weight_decay, focal_gamma        │
+│  Output: best_params_*.json                                                 │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STEP 3 — Model Training  (train_model.py)                                  │
+│                                                                             │
+│  FOR each fold k = 1 … 5:                                                   │
+│    ├── Load preprocessed data + augmented views                             │
+│    ├── Fit StandardScaler on fold k's training nodes only (no leakage)      │
+│    ├── Instantiate ContrastiveDriverGenePredictor  (DriverGenePredictor.py) │
+│    │     • CurvatureAwareGNN encoder (dual-pathway: pos/neg curvature)      │
+│    │     • Multi-head attention aggregator                                  │
+│    │     • Projection head (contrastive)                                    │
+│    │     • Ranking head (scoring)                                           │
+│    │                                                                        │
+│    └── Training loop (up to num_epochs):                                    │
+│          ┌──────────────────────────────────────────────────────────┐       │
+│          │  Augmented view 1  ──►  encoder  ──►  projector          │       │
+│          │  Augmented view 2  ──►  encoder  ──►  projector   ──►    │       │
+│          │                        NT-Xent / InfoNCE loss (L_c)      │       │
+│          │                                                          │       │
+│          │  Original graph   ──►  encoder  ──►  ranking head ──►    |       │
+│          │                        BPR ranking loss  (L_r)           │       │
+│          │                          • Curriculum hard negatives     │       │
+│          │                          • Focal weighting               │       │
+│          │                          • hard_frac: 25%→75% over time  │       │
+│          │                                                          │       │
+│          │  Total loss = α·L_c + (1-α)·L_r                          │       │
+│          └──────────────────────────────────────────────────────────┘       │
+│                                                                             │
+│          Optimizations:                                                     │
+│            • Cosine Annealing Warm Restarts (T_0=200, T_mult=2)             │
+│            • Linear warmup (10 epochs)                                      │
+│            • Gradient accumulation (8 steps)                                │
+│            • Mixed precision (FP16)                                         │
+│            • EMA (decay=0.999)                                              │
+│            • Gradient checkpointing                                         │
+│                                                                             │
+│          Validation every val_freq epochs:                                  │
+│            • Metrics: NDCG@50, AUROC, AUPRC, MRR, P@50                      │
+│            • Early stopping on smoothed NDCG@50 (EMA α=0.3)                 │
+│            • Best checkpoint saved at peak val NDCG@50                      │
+│                                                                             │
+│  Output per fold:                                                           │
+│    • trained_models/.../fold_k_best_model.pt                                │
+│    • model_results/.../fold_k_metrics.csv                                   │
+│    • model_results/.../fold_k_all_genes_scored.csv                          │
+│    • model_results/.../fold_k_training_history.csv                          │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STEP 4 — Aggregation  (aggregate_fold_results.py)                          │
+│                                                                             │
+│  • Aggregate per-fold gene scores:                                          │
+│      - Mean score, std, median score                                        │
+│      - Median rank (Borda count)                                            │
+│      - Significance count (# folds where gene is significant)               │
+│      - consensus_significant: significant in ≥50% of folds                  │
+│  • Aggregate metrics: mean ± std NDCG@50, AUROC, AUPRC across folds         │
+│  • Novel predictions only: filters to true_labels == 0                      │
+│    (excludes known drivers from ranked output)                              │
+│                                                                             │
+│  Output:                                                                    │
+│    • model_results/.../aggregated_all_genes.csv                             │
+│    • model_results/.../aggregated_metrics_summary.csv                       │
+│    • model_results/.../aggregated_training_curves.png                       │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
 
 ---
 
@@ -217,6 +321,48 @@ python -m model.hyperparameter_search \
 | | `scheduler_factor` | 0.5-0.8 |
 
 **Output:** Best parameters JSON, all trial results CSV, and optimization plots in `hyperparam_results/`.
+
+---
+
+## Model Architecture (DriverGenePredictor.py)
+
+```
+Input: Node features (73 dims) + edge_index + curvature edge attributes
+    │
+    ▼
+CurvatureAwareGNN  (curvature_aware_gnn.py)
+    • Dual-pathway: positive curvature edges / negative curvature edges
+    • Multi-hop: 1-hop + 2-hop neighborhoods
+    • Graph Attention Networks (GAT) with hybrid attention modes
+    ↓ gradient checkpointed
+HybridAggregator  (multi_layer_attention.py)
+    • Multi-pathway attention-based aggregation
+    ↓
+  ┌────────────────────────┐
+  │                        │
+ProjectionHead         RankingHead
+(contrastive loss)     (BPR ranking loss)
+  │                        │
+  ▼                        ▼
+NT-Xent / InfoNCE     Scalar gene score
+(aligns views)        (driver likelihood)
+```
+
+---
+
+## Loss Function
+
+```
+Total Loss = α · L_contrastive + (1 - α) · L_ranking
+
+L_contrastive = NT-Xent (InfoNCE) between augmented view pairs
+                temperature τ = 0.3–0.4
+
+L_ranking = BPR (Bayesian Personalized Ranking)
+            - Curriculum hard negatives: hard_frac ramps 25%→75% over training
+            - Global hard mining: torch.topk over all non-driver nodes
+            - Focal weighting: (1 - sigmoid(diff))^γ down-weights easy pairs
+```
 
 ---
 
