@@ -52,10 +52,13 @@ def load_fold_histories(results_dir: Path, prefix: str, num_folds: int) -> Dict:
             print(f"Warning: {history_file} not found, skipping fold {fold}")
             continue
 
-        with open(history_file, 'rb') as f:
-            history = pickle.load(f)
-        all_histories[fold] = history
-        print(f"Loaded training history for fold {fold}")
+        try:
+            with open(history_file, 'rb') as f:
+                history = pickle.load(f)
+            all_histories[fold] = history
+            print(f"Loaded training history for fold {fold}")
+        except (EOFError, pickle.UnpicklingError) as e:
+            print(f"Warning: training history for fold {fold} is corrupted ({e}), skipping")
 
     return all_histories
 

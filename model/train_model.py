@@ -577,8 +577,7 @@ def train_single_fold(
     dropout: float = 0.2,
     return_all_layers: float = False,
     concat_heads: bool = True,
-    cosine_T0: int = 200,
-    cosine_T_mult: int = 2,
+    scheduler_patience: int = 50,
     early_stopping_patience: int = 50,
     ranking_loss_samples: int = 256,
     aggregation: str = 'add',
@@ -595,7 +594,8 @@ def train_single_fold(
     decay: float = 0.999,
     learning_rate: float = 1e-3,
     weight_decay: float = 1e-5,
-    negative_slope: float = 0.2
+    negative_slope: float = 0.2,
+    scheduler_factor: float = 0.7
 ) -> Tuple[ContrastiveDriverGenePredictor, Dict, Dict]:
     
     """Train model on a single fold with ranking objective"""
@@ -710,14 +710,13 @@ def train_single_fold(
         betas=(0.9, 0.999)
     )
 
-    # Cosine annealing with warm restarts: LR follows cosine curve and
-    # periodically resets, helping escape local optima after early convergence.
-    # T_0=cosine_T0 epochs for first cycle, doubles each restart (T_mult).
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+    # Learning rate scheduler (maximize NDCG) - Less aggressive for stability
+    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
-        T_0=cosine_T0,
-        T_mult=cosine_T_mult,
-        eta_min=1e-6
+        mode='max',
+        factor=scheduler_factor,
+        patience=scheduler_patience,  # Increased from 20 (more patience)
+        min_lr=1e-6
     )
 
     # Warmup scheduler
@@ -802,8 +801,6 @@ def train_single_fold(
 
         if epoch < 10:
             warmup_scheduler.step()
-        else:
-            scheduler.step(epoch - 10)
 
         # Zero gradients once
         optimizer.zero_grad()
@@ -1006,7 +1003,7 @@ def train_single_fold(
                         original_device['ollivier_curvature'],
                         return_all_layers=return_all_layers
                     )
-                    orig_ranking_loss = ranking_criterion(orig_scores, labels, train_mask_original, progress=epoch / num_epochs)
+                    orig_ranking_loss = ranking_criterion(orig_scores, labels, train_mask_original)
                     orig_loss = (1 - contrastive_weight) * ranking_loss_scale * orig_ranking_loss
                 scaler.scale(orig_loss).backward()
             else:
@@ -1016,7 +1013,7 @@ def train_single_fold(
                     original_device['ollivier_curvature'],
                     return_all_layers=return_all_layers
                 )
-                orig_ranking_loss = ranking_criterion(orig_scores, labels, train_mask_original, progress=epoch / num_epochs)
+                orig_ranking_loss = ranking_criterion(orig_scores, labels, train_mask_original)
                 orig_loss = (1 - contrastive_weight) * ranking_loss_scale * orig_ranking_loss
                 orig_loss.backward()
 
@@ -1126,6 +1123,10 @@ def train_single_fold(
             else:
                 smoothed_ndcg = metric_ema_alpha * current_ndcg + (1 - metric_ema_alpha) * smoothed_ndcg
 
+            # Use smoothed NDCG for scheduler and early stopping decisions
+            if epoch >= 10:
+                scheduler.step(smoothed_ndcg)
+
             if early_stopping(smoothed_ndcg, epoch):
                 logger.info(f"Early stopping triggered at epoch {epoch}")
                 logger.info(f"Best smoothed NDCG@50: {early_stopping.best_score:.4f} at epoch {early_stopping.best_epoch}")
@@ -1145,7 +1146,7 @@ def train_single_fold(
             else:
                 val_metrics = {'ndcg@50': 0, 'auroc': 0, 'auprc': 0, 'f1': 0, 'precision@50': 0, 'mrr': 0}
             
-            # DO NOT check early stopping on reused metrics
+
         
         # Store history
         history['train_loss'].append(avg_loss)
@@ -1509,10 +1510,8 @@ def main():
                         help='Use focal weighting in ranking loss')
     parser.add_argument('--contrastive_weight', type=float, default=0.1,
                         help='Weight for contrastive loss (0-1, reduced to 0.1 for better balance). Ranking weight = 1 - contrastive_weight')
-    parser.add_argument('--cosine_T0', type=int, default=200,
-                        help='Epochs for first cosine annealing cycle (doubles each restart)')
-    parser.add_argument('--cosine_T_mult', type=int, default=2,
-                        help='Cycle length multiplier for cosine warm restarts')
+    parser.add_argument('--scheduler_patience', type=int, default=50,
+                        help = 'Patience for scheduler to stop training on learning rate plateau')
     parser.add_argument('--early_stopping_patience', type=int, default=50,
                         help='Early stopping patience')
     parser.add_argument('--ranking_loss_scale', type=float, default=10.0,
@@ -1542,6 +1541,8 @@ def main():
                         help='Validate every N epochs (default: 10, lower saves memory)')
     parser.add_argument('--negative_slope', type=float, default=0.2,
                         help='Negative slope for LeakyReLU in GNN layers')
+    parser.add_argument('--scheduler_factor', type=float, default=0.7,
+                        help='Factor by which LR is reduced on plateau')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for reproducibility')
     args = parser.parse_args()
@@ -1668,8 +1669,7 @@ def main():
             gradient_accumulation_steps=args.gradient_accumulation_steps,
             num_heads=args.num_heads,
             num_layers=args.num_layers,
-            cosine_T0=args.cosine_T0,
-            cosine_T_mult=args.cosine_T_mult,
+            scheduler_patience=args.scheduler_patience,
             early_stopping_patience=args.early_stopping_patience,
             projection_dim=args.projection_dim,
             hidden_channels=args.hidden_channels,
@@ -1688,7 +1688,8 @@ def main():
             dropout=args.dropout,
             temperature=args.temperature,
             pathway_aggregator=args.pathway_aggregator,
-            negative_slope=args.negative_slope
+            negative_slope=args.negative_slope,
+            scheduler_factor=args.scheduler_factor
         )
         
         all_fold_metrics.append(best_metrics)

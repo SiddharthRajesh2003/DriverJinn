@@ -259,8 +259,9 @@ class HyperparameterSearch:
             'use_ema': trial.suggest_categorical('use_ema', [True, False]),
             'ema_decay': trial.suggest_float('ema_decay', 0.99, 0.999),
 
-            # Cosine annealing
-            'cosine_T0': trial.suggest_int('cosine_T0', 50, 200),
+            # Scheduler
+            'scheduler_patience': trial.suggest_int('scheduler_patience', 20, 150),
+            'scheduler_factor': trial.suggest_float('scheduler_factor', 0.5, 0.8),
         }
 
         return params
@@ -317,12 +318,13 @@ class HyperparameterSearch:
             weight_decay=params['weight_decay']
         )
 
-        # Cosine annealing with warm restarts (T_mult=2 fixed, T0 searched)
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingWarmRestarts(
+        # Scheduler
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
             optimizer,
-            T_0=params['cosine_T0'],
-            T_mult=2,
-            eta_min=1e-6
+            mode='max',
+            factor=params['scheduler_factor'],
+            patience=params['scheduler_patience'],
+            min_lr=1e-6
         )
 
         # Ranking loss
@@ -353,7 +355,6 @@ class HyperparameterSearch:
 
         for epoch in range(self.epochs_per_trial):
             model.train()
-            scheduler.step(epoch)
             optimizer.zero_grad()
 
             accumulated_loss = 0.0
@@ -455,7 +456,7 @@ class HyperparameterSearch:
                         original_device['ollivier_curvature'],
                         return_all_layers=True
                     )
-                    orig_ranking_loss = ranking_criterion(orig_scores, labels, train_mask_device, progress=epoch / self.epochs_per_trial)
+                    orig_ranking_loss = ranking_criterion(orig_scores, labels, train_mask_device)
                     orig_loss = (1 - contrastive_weight) * ranking_loss_scale * orig_ranking_loss
 
                 if scaler:
@@ -520,6 +521,8 @@ class HyperparameterSearch:
                 else:
                     smoothed_ndcg = metric_ema_alpha * val_ndcg + (1 - metric_ema_alpha) * smoothed_ndcg
 
+                # Use smoothed NDCG for scheduler
+                scheduler.step(smoothed_ndcg)
 
                 # Track best (using raw NDCG for best model selection)
                 if val_ndcg > best_val_ndcg:

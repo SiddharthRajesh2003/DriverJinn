@@ -116,8 +116,6 @@ A Graph Neural Network framework for cancer driver gene prediction using curvatu
 
 ---
 
----
-
 ## Table of Contents
 
 - [Installation](#installation)
