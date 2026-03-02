@@ -837,6 +837,11 @@ def train_single_fold(
                 # === Load View 1 ===
                 view1 = augmented_views[view1_idx]
                 view1_x = view1['x'].to(device)
+                
+                # Adding Gaussian noise to reduce learning rate
+                if model.training:
+                    view1_x = view1_x + torch.randn_like(view1_x) * 0.01
+                
                 view1_edge_index = view1['edge_index'].to(device)
                 view1_curvature = view1.get('ollivier_curvature')
 
@@ -857,6 +862,11 @@ def train_single_fold(
                 # === Load View 2 ===
                 view2 = augmented_views[view2_idx]
                 view2_x = view2['x'].to(device)
+                
+                # Adding Gaussian noise to reduce the learning rate
+                if model.training:
+                    view2_x = view2_x + torch.randn_like(view2_x) * 0.01
+                
                 view2_edge_index = view2['edge_index'].to(device)
                 view2_curvature = view2.get('ollivier_curvature')
 
@@ -997,8 +1007,12 @@ def train_single_fold(
         try:
             if scaler:
                 with torch.amp.autocast('cuda'):
+                    
+                    # Adding gaussian noise to the feature matrix
+                    noisy_x = original_device['x'] + torch.randn_like(original_device['x']) * 0.01
+                    
                     orig_scores, _ = model.forward(
-                        original_device['x'],
+                        noisy_x,
                         original_device['edge_index'],
                         original_device['ollivier_curvature'],
                         return_all_layers=return_all_layers
@@ -1007,8 +1021,12 @@ def train_single_fold(
                     orig_loss = (1 - contrastive_weight) * ranking_loss_scale * orig_ranking_loss
                 scaler.scale(orig_loss).backward()
             else:
+                
+                # Adding gaussian noise to the feature matrix
+                noisy_x = original_device['x'] + torch.randn_like(original_device['x']) * 0.01
+                
                 orig_scores, _ = model.forward(
-                    original_device['x'],
+                    noisy_x,
                     original_device['edge_index'],
                     original_device['ollivier_curvature'],
                     return_all_layers=return_all_layers
@@ -1506,7 +1524,7 @@ def main():
                         help='Number of pairs to sample for calculating ranking loss')
     parser.add_argument('--focal_gamma', type=float, default=2.0,
                         help='Focal loss gamma (higher = more focus on hard examples)')
-    parser.add_argument('--use_focal', action='store_true', default=True,
+    parser.add_argument('--use_focal', action='store_true', default=False,
                         help='Use focal weighting in ranking loss')
     parser.add_argument('--contrastive_weight', type=float, default=0.1,
                         help='Weight for contrastive loss (0-1, reduced to 0.1 for better balance). Ranking weight = 1 - contrastive_weight')
