@@ -176,7 +176,7 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
         
         # Transform node features - KEEP IN 2D for propagate()
         h = self.lin(x)  # [num_nodes, heads * out_channels]
-        h = F.dropout(h, p=self.dropout, training=self.training)
+        h = F.dropout(h, p=self.dropout, training=self.training)    # Drops some of the nodes
         
         # Filter edges if using standard attention mode
         if self.attention_mode == 'standard' and self.curvature_type != 'both':

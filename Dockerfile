@@ -46,5 +46,4 @@ COPY . .
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-# Default command - start interactive shell
 CMD ["/bin/bash"]

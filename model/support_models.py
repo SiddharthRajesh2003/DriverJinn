@@ -37,7 +37,7 @@ class ProjectionHead(nn.Module):
         >>> x = torch.randn(32, 256)  # batch_size=32, features=256
         >>> out = proj(x)  # Shape: (32, 64)
     """
-    
+
     def __init__(
         self,
         input_dim: int,
@@ -384,7 +384,6 @@ class RankingLoss(nn.Module):
         progress: float = 0.0
     ) -> torch.Tensor:
         """Bayesian Personalized Ranking loss with curriculum hard negative mining and focal weighting.
-
         hard_frac ramps from 0.25 → 0.75 over training so early epochs use
         easier negatives for stability and later epochs use harder ones for refinement.
         """
@@ -441,20 +440,47 @@ class RankingLoss(nn.Module):
         scores: torch.Tensor,
         labels: torch.Tensor
     ) -> torch.Tensor:
-        """Approximate NDCG loss using soft sorting."""
-        sorted_indices = torch.argsort(scores, descending=True)
-        sorted_labels = labels[sorted_indices].float()
+        """Approximate NDCG loss using differentiable soft ranking.
 
-        gains = sorted_labels
-        ranks = torch.arange(1, len(gains) + 1, device=gains.device).float()
-        discounts = 1.0 / torch.log2(ranks + 1)
+        Soft rank: rank[i] ≈ 1 + Σ_j sigmoid((s_j - s_i) / τ)
+        As s_i increases, soft_rank[i] decreases (moves toward rank 1).
+        Gradient flows through scores via the sigmoid pairwise differences.
 
-        dcg = (gains * discounts).sum()
-        ideal_gains = torch.sort(sorted_labels, descending=True)[0]
-        idcg = (ideal_gains * discounts).sum()
+        Stratified sampling: always include ALL driver genes + sample num_samples
+        non-drivers. This ensures NDCG is optimized over the full driver set,
+        matching how validation NDCG is computed globally.
+        """
+        driver_mask = (labels == 1)
+        nondriver_mask = ~driver_mask
 
-        ndcg = dcg / (idcg + 1e-10)
-        loss = 1.0 - ndcg
+        driver_idx = driver_mask.nonzero(as_tuple=True)[0]
+        nondriver_pool = nondriver_mask.nonzero(as_tuple=True)[0]
+
+        # Sample non-drivers; always keep all drivers
+        n_sample = min(self.num_samples, len(nondriver_pool))
+        perm = torch.randperm(len(nondriver_pool), device=scores.device)[:n_sample]
+        nondriver_idx = nondriver_pool[perm]
+
+        idx = torch.cat([driver_idx, nondriver_idx])
+        scores = scores[idx]
+        labels = labels[idx]
+
+        tau = 0.1  # sharper soft ranks → stronger gradient signal
+        # [N, N]: s_j - s_i; sigmoid shrinks as s_i grows → lower soft rank
+        pair_diff = scores.unsqueeze(0) - scores.unsqueeze(1)
+        soft_rank = torch.sigmoid(pair_diff / tau).sum(dim=0) + 1.0  # [N]
+
+        discount = 1.0 / torch.log2(soft_rank + 1.0)
+        gains = labels.float()
+        dcg = (gains * discount).sum()
+
+        # idcg is a constant normalizer — no gradient needed
+        with torch.no_grad():
+            ideal_ranks = torch.arange(1, len(gains) + 1, device=scores.device).float()
+            ideal_gains = torch.sort(gains, descending=True)[0]
+            idcg = (ideal_gains / torch.log2(ideal_ranks + 1.0)).sum()
+
+        loss = 1.0 - dcg / (idcg + 1e-10)
         return loss
 
 class EMA:
