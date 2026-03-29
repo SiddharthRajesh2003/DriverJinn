@@ -16,7 +16,7 @@
 #SBATCH -A r00750
 #SBATCH --array=1-5
 
-base=/N/project/Krolab/Siddharth/DriverGenePred
+base=your/base/dir/DriverJinn/
 cd $base
 
 module load conda
@@ -28,7 +28,7 @@ echo "Running fold ${SLURM_ARRAY_TASK_ID} on $(hostname)"
 python -m model.train_model \
     --dataset_file curvature_output/GGNet_contrastive_v2_random_r0.2.pkl \
     --num_epochs 1000 \
-    --hidden_channels 144 \
+    --hidden_channels 128 \
     --projection_dim 96 \
     --num_layers 2 \
     --num_heads 2 \
@@ -37,23 +37,22 @@ python -m model.train_model \
     --specific_folds ${SLURM_ARRAY_TASK_ID} \
     --model_out_prefix GGNet_random_r0.2_fold${SLURM_ARRAY_TASK_ID} \
     --temperature 0.3 \
-    --dropout 0.25 \
+    --dropout 0.3 \
     --attention_mode hybrid \
     --pathway_aggregator hierarchical \
     --aggregation max \
-    --negative_slope 0.232 \
+    --negative_slope 0.25 \
     --attention_chunk_size 1000 \
     --gradient_accumulation_steps 8 \
     --mixed_precision \
-    --scheduler_patience 100 \
-    --scheduler_factor 0.8 \
-    --early_stopping_patience 150 \
+    --early_stopping_patience 15 \
     --validation_frequency 20 \
+    --scheduler_patience 5 \
+    --scheduler_factor 0.5 \
     --concat_heads \
     --ranking_loss_type bpr \
     --ranking_loss_scale 5 \
     --ranking_loss_samples 512 \
-    --focal_gamma 2.0 \
-    --contrastive_weight 0.5 \
+    --contrastive_weight 0.2 \
     --learning_rate 5e-4 \
-    --weight_decay 1.5e-5
+    --weight_decay 5e-4

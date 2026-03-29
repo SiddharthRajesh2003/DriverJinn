@@ -1,0 +1,823 @@
+---
+title: "DriverJinn — Downstream Analysis & Poster Plots"
+format:
+  html:
+    code-fold: true
+    self-contained: true
+    theme: cosmo
+jupyter: python3
+---
+
+## Setup
+
+```{python}
+#| label: setup
+#| include: false
+
+import pickle
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import matplotlib.ticker as ticker
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch
+import seaborn as sns
+import networkx as nx
+from pathlib import Path
+from functools import reduce
+from scipy.stats import fisher_exact, spearmanr
+from statsmodels.stats.multitest import multipletests
+
+sns.set_theme(style="whitegrid", font_scale=1.15)
+
+# ── Paths ──────────────────────────────────────────────────────────────────────
+RESULTS_DIR    = Path("../model_results_2026-03-14/GGNet_random_r0.2_aggregated")
+FOLDS_DIR      = Path("../model_results_2026-03-14")
+CGC_PATH       = Path("cosmic/Cosmic_CancerGeneCensus_v103_GRCh38.tsv")
+HALLMARKS_PATH = Path("cosmic/Cosmic_CancerGeneCensusHallmarksOfCancer_v103_GRCh38.tsv")
+PREFIX         = "GGNet_random_r0.2"
+NUM_FOLDS      = 5
+PLOTS_DIR      = Path("plots")
+PLOTS_DIR.mkdir(exist_ok=True)
+
+# ── Colour palettes ────────────────────────────────────────────────────────────
+COLORS      = {"T1": "#E74C3C", "T2": "#E8A838", "non-CGC": "#95A5A6", "main": "#4A90D9"}
+tier_colors = {"Tier 1": "#ca301f", "Tier 2": "#E8A838", "Novel": "#4A90D9"}
+FOLD_COLORS = ["#4C72B0", "#DD8452", "#55A868", "#C44E52", "#8172B2"]
+
+# ── Gene rankings ──────────────────────────────────────────────────────────────
+genes = pd.read_csv(RESULTS_DIR / "GGNet_random_r0.2_aggregated_all_genes.csv")
+genes = genes.sort_values("aggregate_rank").reset_index(drop=True)
+
+# ── CGC ────────────────────────────────────────────────────────────────────────
+cgc = pd.read_csv(CGC_PATH, sep="\t")
+cgc_t1 = cgc_tier1 = set(cgc.loc[cgc["TIER"] == 1, "GENE_SYMBOL"])
+cgc_t2 = cgc_tier2 = set(cgc.loc[cgc["TIER"] == 2, "GENE_SYMBOL"])
+
+# Tier columns used by poster plots (T1 / T2 / non-CGC encoding)
+genes["cgc_tier"] = "non-CGC"
+genes.loc[genes["gene_name"].isin(cgc_t2), "cgc_tier"] = "T2"
+genes.loc[genes["gene_name"].isin(cgc_t1), "cgc_tier"] = "T1"
+
+# Boolean columns + "Tier 1/2/Novel" string used by downstream analysis
+genes["cgc_tier1"] = genes["gene_name"].isin(cgc_tier1)
+genes["cgc_tier2"] = genes["gene_name"].isin(cgc_tier2)
+genes["cgc_any"]   = genes["cgc_tier1"] | genes["cgc_tier2"]
+genes["cgc_label"] = genes.apply(
+    lambda r: "Tier 1" if r["cgc_tier1"] else ("Tier 2" if r["cgc_tier2"] else "Novel"), axis=1
+)
+
+# Alias used by downstream-analysis sections
+ranked_genes = genes.copy()
+
+# ── Hallmarks ──────────────────────────────────────────────────────────────────
+hallmarks_raw = pd.read_csv(HALLMARKS_PATH, sep="\t")
+
+# ── Training histories ─────────────────────────────────────────────────────────
+def load_histories(results_dir: Path, prefix: str, num_folds: int) -> dict:
+    histories = {}
+    for fold in range(1, num_folds + 1):
+        pkl = results_dir / f"{prefix}_fold{fold}" / f"{prefix}_fold{fold}_training_history.pkl"
+        if not pkl.exists():
+            print(f"Missing: {pkl.name}")
+            continue
+        with open(pkl, "rb") as f:
+            data = pickle.load(f)
+        histories[fold] = data[0] if isinstance(data, list) else data
+    return histories
+
+histories = load_histories(FOLDS_DIR, PREFIX, NUM_FOLDS)
+
+# ── Per-fold metrics ───────────────────────────────────────────────────────────
+metrics       = pd.read_csv(RESULTS_DIR / "GGNet_random_r0.2_combined_metrics.csv")
+metrics_folds = metrics[metrics["Fold"].astype(str).str.match(r"^\d+$")].copy()
+metrics_folds["Fold"] = metrics_folds["Fold"].astype(int)
+
+# ── Per-fold scored gene lists ─────────────────────────────────────────────────
+fold_dfs = {}
+for fold in range(1, NUM_FOLDS + 1):
+    path = (FOLDS_DIR / f"{PREFIX}_fold{fold}" /
+            f"{PREFIX}_fold{fold}_fold_1_all_genes_scored.csv")
+    df = pd.read_csv(path)
+    df["fold"] = fold
+    fold_dfs[fold] = df
+
+# ── PPI graph (curvature pkl — NetworkX, integer nodes with name attribute) ────
+with open("../curvature_output/GGNet_graph_with_curvatures.pkl", "rb") as f:
+    G_full = pickle.load(f)
+
+name_to_id  = {data["name"]: nid for nid, data in G_full.nodes(data=True) if "name" in data}
+id_to_name  = {nid: data["name"] for nid, data in G_full.nodes(data=True) if "name" in data}
+name_to_idx = name_to_id   # alias for downstream-analysis sections
+degree_map  = dict(G_full.degree())
+
+print(f"Genes loaded     : {len(genes)}")
+print(f"Training folds   : {len(histories)}")
+print(f"PPI graph        : {G_full.number_of_nodes():,} nodes, {G_full.number_of_edges():,} edges")
+print(f"CGC T1={genes['cgc_tier1'].sum()}  T2={genes['cgc_tier2'].sum()}  "
+      f"Novel={(~genes['cgc_any']).sum()}")
+```
+
+------------------------------------------------------------------------
+
+## Training Curves
+
+```{python}
+#| label: val-ndcg
+#| fig-cap: "Validation NDCG@50 across folds."
+
+KEY = "val_ndcg@50"
+fig, ax = plt.subplots(figsize=(8, 6))
+for fold, history in sorted(histories.items()):
+    if KEY not in history or len(history[KEY]) == 0:
+        continue
+    y = np.array(history[KEY])
+    ax.plot(np.arange(1, len(y) + 1), y,
+            label=f"Fold {fold}", color=FOLD_COLORS[fold - 1], alpha=0.85, linewidth=1.5)
+ax.set_xlabel("Epoch", fontsize=12)
+ax.set_ylabel("NDCG@50", fontsize=12)
+ax.set_title("Validation NDCG@50 Across Folds", fontsize=14, fontweight="bold")
+ax.legend(loc="best", fontsize=10)
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: val-auroc
+#| fig-cap: "Validation AUROC across folds."
+
+KEY = "val_auroc"
+fig, ax = plt.subplots(figsize=(8, 6))
+for fold, history in sorted(histories.items()):
+    if KEY not in history or len(history[KEY]) == 0:
+        continue
+    y = np.array(history[KEY])
+    ax.plot(np.arange(1, len(y) + 1), y,
+            label=f"Fold {fold}", color=FOLD_COLORS[fold - 1], alpha=0.85, linewidth=1.5)
+ax.set_xlabel("Epoch", fontsize=12)
+ax.set_ylabel("AUROC", fontsize=12)
+ax.set_title("Validation AUROC Across Folds", fontsize=14, fontweight="bold")
+ax.legend(loc="lower right", fontsize=10)
+ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
+ax.grid(True, alpha=0.3)
+plt.tight_layout()
+plt.show()
+```
+
+```{python}
+#| label: training-summary-table
+
+rows = []
+for fold, history in sorted(histories.items()):
+    ndcg  = history.get("val_ndcg@50", [])
+    auroc = history.get("val_auroc", [])
+    rows.append({
+        "Fold":         fold,
+        "Peak NDCG@50": round(max(ndcg),  4) if ndcg  else None,
+        "Peak AUROC":   round(max(auroc), 4) if auroc else None,
+        "Epochs":       len(ndcg),
+    })
+df_summary = pd.DataFrame(rows)
+mean_row = {"Fold": "Mean",
+            "Peak NDCG@50": round(df_summary["Peak NDCG@50"].mean(), 4),
+            "Peak AUROC":   round(df_summary["Peak AUROC"].mean(),   4),
+            "Epochs":       "—"}
+df_summary = pd.concat([df_summary, pd.DataFrame([mean_row])], ignore_index=True)
+df_summary.style.set_caption("Per-fold peak validation metrics")
+```
+
+------------------------------------------------------------------------
+
+## Enrichment Curve (Cumulative CGC Precision)
+
+*How quickly DriverJinn recovers known cancer driver genes as you move down the ranked list.*
+
+```{python}
+#| label: enrichment-curve
+
+fig, ax = plt.subplots(figsize=(7, 5))
+ks = np.arange(1, len(genes) + 1)
+cumulative_t1  = np.cumsum(genes["cgc_tier"] == "T1")  / ks
+cumulative_any = np.cumsum(genes["cgc_tier"] != "non-CGC") / ks
+baseline_t1  = (genes["cgc_tier"] == "T1").sum()  / len(genes)
+baseline_any = (genes["cgc_tier"] != "non-CGC").sum() / len(genes)
+
+ax.axhline(baseline_t1,  color=COLORS["T1"], linestyle="--", linewidth=1.2,
+           alpha=0.5, label=f"T1 random baseline ({baseline_t1:.3f})")
+ax.axhline(baseline_any, color=COLORS["T2"], linestyle="--", linewidth=1.2,
+           alpha=0.5, label=f"Any-CGC random baseline ({baseline_any:.3f})")
+ax.plot(ks, cumulative_t1,  color=COLORS["T1"], linewidth=2.2, label="CGC Tier 1 precision")
+ax.plot(ks, cumulative_any, color=COLORS["T2"], linewidth=2.2, label="Any CGC precision")
+for k in [10, 50, 100, 200]:
+    if k <= len(genes):
+        ax.axvline(k, color="#CCCCCC", linewidth=0.8, linestyle=":")
+ax.set_xlim(1, 500)
+ax.set_xlabel("Rank cutoff (K)", fontsize=12)
+ax.set_ylabel("Cumulative Precision@K", fontsize=12)
+ax.set_title("DriverJinn — Enrichment Curve (GGNet, ρ=0.2)", fontsize=13, fontweight="bold")
+ax.legend(fontsize=10)
+sns.despine()
+plt.tight_layout()
+plt.savefig(PLOTS_DIR / "poster_enrichment_curve.pdf", dpi=300, bbox_inches="tight")
+plt.show()
+```
+
+------------------------------------------------------------------------
+
+## Score Distribution by CGC Tier
+
+*Separation of DriverJinn scores across CGC Tier 1, Tier 2, and non-CGC genes.*
+
+```{python}
+#| label: violin-scores
+
+fig, ax = plt.subplots(figsize=(6, 5))
+order   = ["T1", "T2", "non-CGC"]
+palette = {k: COLORS[k] for k in order}
+sns.violinplot(data=genes, x="cgc_tier", y="mean_score",
+               order=order, palette=palette, inner="box", linewidth=1.2, ax=ax)
+for tier, color in [("T1", COLORS["T1"]), ("T2", COLORS["T2"])]:
+    sub = genes[genes["cgc_tier"] == tier]
+    ax.scatter([order.index(tier)] * len(sub), sub["mean_score"],
+               color="white", edgecolors=color, s=18, zorder=5, linewidth=0.8)
+for i, tier in enumerate(order):
+    med = genes.loc[genes["cgc_tier"] == tier, "mean_score"].median()
+    ax.text(i, med + 0.005, f"{med:.3f}", ha="center", va="bottom",
+            fontsize=9, fontweight="bold", color="black")
+ax.set_xlabel("Gene category", fontsize=12)
+ax.set_ylabel("DriverJinn mean score", fontsize=12)
+ax.set_title("Score Distribution by CGC Status\n(GGNet, ρ=0.2)", fontsize=13, fontweight="bold")
+ax.set_xticklabels(["CGC Tier 1", "CGC Tier 2", "Non-CGC"])
+sns.despine()
+plt.tight_layout()
+plt.savefig(PLOTS_DIR / "poster_score_violin.pdf", dpi=300, bbox_inches="tight")
+plt.show()
+```
+
+------------------------------------------------------------------------
+
+## Precision@K Across Folds
+
+*Per-fold and mean Precision at multiple rank cutoffs, with error bars.*
+
+```{python}
+#| label: precision-at-k
+
+ks   = [10, 20, 50, 100, 200]
+rows = []
+for fold, df in fold_dfs.items():
+    df = df.sort_values("rank").reset_index(drop=True)
+    df["cgc_t1"]  = df["gene_name"].isin(cgc_t1)
+    df["cgc_any"] = df["gene_name"].isin(cgc_t1 | cgc_t2)
+    for k in ks:
+        top_k = df.head(k)
+        rows.append({"fold": fold, "K": k,
+                     "Precision@K (T1)":      top_k["cgc_t1"].mean(),
+                     "Precision@K (Any CGC)": top_k["cgc_any"].mean()})
+prec_df = pd.DataFrame(rows)
+summary = (prec_df.groupby("K")[["Precision@K (T1)", "Precision@K (Any CGC)"]]
+           .agg(["mean", "std"]).reset_index())
+summary.columns = ["K", "t1_mean", "t1_std", "any_mean", "any_std"]
+
+fig, ax = plt.subplots(figsize=(7, 5))
+width, xs = 0.35, np.arange(len(ks))
+ax.bar(xs - width/2, summary["t1_mean"],  width, yerr=summary["t1_std"],
+       color=COLORS["T1"], alpha=0.85, capsize=4, label="CGC Tier 1",
+       error_kw={"linewidth": 1.2})
+ax.bar(xs + width/2, summary["any_mean"], width, yerr=summary["any_std"],
+       color=COLORS["T2"], alpha=0.85, capsize=4, label="Any CGC",
+       error_kw={"linewidth": 1.2})
+baseline_t1_v  = len(cgc_t1 & set(genes["gene_name"])) / len(genes)
+baseline_any_v = len((cgc_t1 | cgc_t2) & set(genes["gene_name"])) / len(genes)
+ax.axhline(baseline_t1_v,  color=COLORS["T1"], linestyle="--", linewidth=1, alpha=0.5)
+ax.axhline(baseline_any_v, color=COLORS["T2"], linestyle="--", linewidth=1, alpha=0.5)
+ax.set_xticks(xs)
+ax.set_xticklabels([f"@{k}" for k in ks])
+ax.set_xlabel("Rank cutoff K", fontsize=12)
+ax.set_ylabel("Precision@K  (mean ± std, 5 folds)", fontsize=12)
+ax.set_title("DriverJinn — Precision@K Across Folds\n(GGNet, ρ=0.2)", fontsize=13, fontweight="bold")
+ax.legend(fontsize=10)
+sns.despine()
+plt.tight_layout()
+plt.savefig(PLOTS_DIR / "poster_precision_at_k.pdf", dpi=300, bbox_inches="tight")
+plt.show()
+```
+
+------------------------------------------------------------------------
+
+## Rank Stability Heatmap
+
+*For the consensus top-30 genes, how consistent is their rank across all 5 folds?*
+
+```{python}
+#| label: rank-stability
+
+TOP_N     = 30
+top_genes = genes.head(TOP_N)["gene_name"].tolist()
+rank_matrix = pd.DataFrame(index=top_genes)
+for fold, df in fold_dfs.items():
+    df = df.sort_values("rank")
+    name_to_rank = dict(zip(df["gene_name"], df["rank"]))
+    rank_matrix[f"Fold {fold}"] = [name_to_rank.get(g, np.nan) for g in top_genes]
+
+cgc_array = np.array([[
+    0 if g in cgc_t1 else 1 if g in cgc_t2 else 2
+    for g in top_genes
+]]).T
+
+fig, axes = plt.subplots(1, 2, figsize=(11, 9),
+                          gridspec_kw={"width_ratios": [0.04, 1]})
+axes[0].imshow(cgc_array, aspect="auto",
+               cmap=plt.cm.colors.ListedColormap([COLORS["T1"], COLORS["T2"], COLORS["non-CGC"]]))
+axes[0].set_xticks([])
+axes[0].set_yticks(range(TOP_N))
+axes[0].set_yticklabels(top_genes, fontsize=8)
+axes[0].set_title("CGC", fontsize=8, pad=4)
+sns.heatmap(rank_matrix, ax=axes[1], cmap="YlOrRd_r", annot=True, fmt=".0f",
+            annot_kws={"size": 7}, linewidths=0.3,
+            cbar_kws={"label": "Rank within fold", "shrink": 0.6})
+axes[1].set_yticks([])
+axes[1].set_xlabel("Fold", fontsize=11)
+axes[1].set_title("Rank Stability Across 5 Folds — Top 30 Consensus Genes\n(GGNet, ρ=0.2)",
+                   fontsize=12, fontweight="bold")
+axes[1].legend(handles=[
+    mpatches.Patch(color=COLORS["T1"],      label="CGC Tier 1"),
+    mpatches.Patch(color=COLORS["T2"],      label="CGC Tier 2"),
+    mpatches.Patch(color=COLORS["non-CGC"], label="Non-CGC"),
+], loc="lower right", fontsize=8, framealpha=0.9)
+plt.tight_layout()
+plt.savefig(PLOTS_DIR / "poster_rank_stability.pdf", dpi=300, bbox_inches="tight")
+plt.show()
+```
+
+------------------------------------------------------------------------
+
+## Per-Fold Metrics Summary
+
+*Overview of NDCG@50, AUROC, AUPRC, Precision@50 across all 5 folds.*
+
+```{python}
+#| label: per-fold-metrics
+
+metric_cols = ["NDCG@50", "AUROC", "AUPRC", "Precision@50"]
+fold_data   = metrics_folds[["Fold"] + metric_cols].set_index("Fold")
+mean_row    = metrics[metrics["Fold"] == "Mean"][metric_cols].values[0]
+std_row     = metrics[metrics["Fold"] == "Std"][metric_cols].values[0]
+
+fig, ax = plt.subplots(figsize=(8, 5))
+fold_palette = sns.color_palette("husl", 5)
+xs    = np.arange(len(metric_cols))
+width = 0.13
+for i, (fold, row) in enumerate(fold_data.iterrows()):
+    ax.bar(xs + (i - 2) * width, row[metric_cols],
+           width, alpha=0.65, color=fold_palette[i], label=f"Fold {fold}")
+ax.errorbar(xs, mean_row, yerr=std_row, fmt="D", color="black",
+            markersize=6, linewidth=1.8, capsize=5, zorder=10, label="Mean ± std")
+ax.set_xticks(xs)
+ax.set_xticklabels(metric_cols, fontsize=11)
+ax.set_ylabel("Score", fontsize=12)
+ax.set_ylim(0, 1)
+ax.set_title("DriverJinn — Per-Fold Validation Metrics\n(GGNet, ρ=0.2)",
+             fontsize=13, fontweight="bold")
+ax.legend(fontsize=9, ncol=3, loc="upper right")
+sns.despine()
+plt.tight_layout()
+plt.savefig(PLOTS_DIR / "poster_metrics_summary.pdf", dpi=300, bbox_inches="tight")
+plt.show()
+```
+
+------------------------------------------------------------------------
+
+## Hallmark Enrichment (ORA via Fisher's Exact Test)
+
+```{python}
+#| label: hallmark-ora-setup
+
+def run_ora(gene_list, universe, hallmark_sets, min_gs_size=5, p_adj_method="fdr_bh"):
+    gene_set = set(gene_list) & universe
+    n_uni, n_query = len(universe), len(gene_set)
+    rows = []
+    for hallmark, gs in hallmark_sets.items():
+        gs_in_uni = gs & universe
+        if len(gs_in_uni) < min_gs_size:
+            continue
+        overlap_genes = gene_set & gs_in_uni
+        a = len(overlap_genes)
+        b = n_query - a
+        c = len(gs_in_uni) - a
+        d = n_uni - a - b - c
+        _, pval = fisher_exact([[a, b], [c, d]], alternative="greater")
+        rows.append({"Hallmark": hallmark, "Overlap": a,
+                     "GS Size": len(gs_in_uni), "p-value": pval,
+                     "Overlap Genes": ", ".join(sorted(overlap_genes))})
+    if not rows:
+        return pd.DataFrame()
+    df = pd.DataFrame(rows)
+    _, padj, _, _ = multipletests(df["p-value"], method=p_adj_method)
+    df["p.adj"] = padj
+    return df.sort_values("p-value").reset_index(drop=True)
+
+hallmark_sets = (
+    hallmarks_raw.dropna(subset=["HALLMARK"])
+    .query("HALLMARK != ''")
+    .groupby("HALLMARK")["GENE_SYMBOL"].apply(set).to_dict()
+)
+universe  = set(ranked_genes["gene_name"])
+top100    = set(ranked_genes.head(100)["gene_name"])
+consensus = set(ranked_genes.loc[ranked_genes["consensus_significant"], "gene_name"]) \
+            if "consensus_significant" in ranked_genes.columns else top100
+```
+
+### Top 100 Predicted Drivers
+
+```{python}
+#| label: hallmark-top100
+
+ora_top100 = run_ora(top100, universe, hallmark_sets)
+if ora_top100.empty or (ora_top100["p.adj"] >= 0.05).all():
+    print("No significant hallmark enrichment at p.adj < 0.05 for top 100")
+else:
+    sig = ora_top100[ora_top100["p.adj"] < 0.05].copy()
+    sig["-log10(p.adj)"] = -np.log10(sig["p.adj"])
+    fig, ax = plt.subplots(figsize=(7, max(3, len(sig) * 0.45)))
+    sns.barplot(data=sig, x="-log10(p.adj)", y="Hallmark", palette="Blues_r", ax=ax)
+    ax.axvline(-np.log10(0.05), color="red", linestyle="--", lw=1, label="p.adj = 0.05")
+    ax.set_title("Hallmark Enrichment — Top 100 Predicted Drivers")
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+    display(sig[["Hallmark", "Overlap", "GS Size", "p-value", "p.adj"]]
+            .style.format({"p-value": "{:.3e}", "p.adj": "{:.3e}"}))
+```
+
+------------------------------------------------------------------------
+
+## KEGG Pathway Enrichment
+
+*Requires `gseapy` (`pip install gseapy`) and internet access for Enrichr API.*
+
+```{python}
+#| label: kegg-enrichment
+
+try:
+    import gseapy as gp
+    top50_genes = genes.head(50)["gene_name"].tolist()
+    enr = gp.enrichr(gene_list=top50_genes, gene_sets=["KEGG_2021_Human"],
+                     organism="human", outdir=None, cutoff=0.05)
+    results = (enr.results[enr.results["Adjusted P-value"] < 0.05]
+               .sort_values("Combined Score", ascending=False).head(15))
+    if results.empty:
+        results = enr.results.sort_values("Adjusted P-value").head(15)
+    fig, ax = plt.subplots(figsize=(8, 6))
+    colors = plt.cm.RdYlGn_r(np.linspace(0.1, 0.9, len(results)))
+    ax.barh(results["Term"].str.replace(r" \(.*\)", "", regex=True),
+            results["Combined Score"], color=colors)
+    sm = plt.cm.ScalarMappable(cmap="RdYlGn_r",
+         norm=plt.Normalize(results["Adjusted P-value"].min(),
+                            results["Adjusted P-value"].max()))
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax, shrink=0.6).set_label("Adjusted P-value", fontsize=10)
+    ax.set_xlabel("Combined Score", fontsize=12)
+    ax.set_title("KEGG Pathway Enrichment — Top-50 DriverJinn Predictions\n(GGNet, ρ=0.2)",
+                 fontsize=12, fontweight="bold")
+    ax.invert_yaxis()
+    sns.despine()
+    plt.tight_layout()
+    plt.savefig(PLOTS_DIR / "poster_kegg_enrichment.pdf", dpi=300, bbox_inches="tight")
+    plt.show()
+except ImportError:
+    print("gseapy not installed — run: pip install gseapy")
+```
+
+------------------------------------------------------------------------
+
+## Novel Candidate Genes
+
+Top consensus-significant predictions not in any CGC tier:
+
+```{python}
+#| label: novel-candidates
+
+if "consensus_significant" in ranked_genes.columns:
+    novel_df = (
+        ranked_genes
+        .loc[ranked_genes["consensus_significant"] & ~ranked_genes["cgc_any"]]
+        [["aggregate_rank", "gene_name", "mean_score", "folds_significant", "total_folds"]]
+        .head(20)
+    )
+    display(novel_df.style.format({"mean_score": "{:.4f}"}).hide(axis="index"))
+else:
+    print("consensus_significant column not found — skipping novel candidate table")
+```
+
+------------------------------------------------------------------------
+
+## Cross-Model Consensus
+
+Combining ranked lists from 6 augmentation strategies to identify genes consistently predicted across strategies.
+
+```{python}
+#| label: cross-model-load
+
+MODEL_LISTS = {
+    "random_r0.1"    : "../model_results_2026-03-14/GGNet_random_r0.1_aggregated/GGNet_random_r0.1_aggregated_all_genes.csv",
+    "random_r0.2"    : "../model_results_2026-03-14/GGNet_random_r0.2_aggregated/GGNet_random_r0.2_aggregated_all_genes.csv",
+    "coarsening_r0.1": "../model_results_2026-03-15/GGNet_coarsening_r0.1_aggregated/GGNet_coarsening_r0.1_aggregated_all_genes.csv",
+    "coarsening_r0.2": "../model_results_2026-03-15/GGNet_coarsening_r0.2_aggregated/GGNet_coarsening_r0.2_aggregated_all_genes.csv",
+    "priority_r0.1"  : "../model_results_2026-03-15/GGNet_priority_r0.1_aggregated/GGNet_priority_r0.1_aggregated_all_genes.csv",
+    "priority_r0.2"  : "../model_results_2026-03-15/GGNet_priority_r0.2_aggregated/GGNet_priority_r0.2_aggregated_all_genes.csv",
+}
+
+dfs = {}
+for model, path in MODEL_LISTS.items():
+    df = pd.read_csv(path)[["gene_name", "aggregate_rank", "mean_score", "consensus_significant"]]
+    df = df.rename(columns={"aggregate_rank": f"rank_{model}",
+                             "mean_score": f"score_{model}",
+                             "consensus_significant": f"consensus_{model}"})
+    dfs[model] = df
+
+merged_models = reduce(lambda l, r: pd.merge(l, r, on="gene_name", how="outer"), dfs.values())
+
+rank_cols  = [f"rank_{m}"      for m in MODEL_LISTS]
+score_cols = [f"score_{m}"     for m in MODEL_LISTS]
+cons_cols  = [f"consensus_{m}" for m in MODEL_LISTS]
+
+merged_models["mean_rank"]        = merged_models[rank_cols].mean(axis=1)
+merged_models["mean_score_all"]   = merged_models[score_cols].mean(axis=1)
+merged_models["models_consensus"] = merged_models[cons_cols].sum(axis=1).astype(int)
+merged_models["cgc_tier"] = merged_models["gene_name"].map(
+    lambda g: "Tier 1" if g in cgc_tier1 else ("Tier 2" if g in cgc_tier2 else "Novel")
+)
+cross_consensus = merged_models.sort_values("mean_rank").reset_index(drop=True)
+
+print(f"Total genes across all models : {len(cross_consensus)}")
+print(f"Consensus in ≥3/6 models      : {(cross_consensus['models_consensus'] >= 3).sum()}")
+print(f"Consensus in ≥4/6 models      : {(cross_consensus['models_consensus'] >= 4).sum()}")
+print(f"Consensus in all 6 models     : {(cross_consensus['models_consensus'] == 6).sum()}")
+```
+
+### Rank Heatmap — Top 50 by Mean Rank
+
+```{python}
+#| label: rank-heatmap
+
+top_n   = 50
+top_ids = cross_consensus.head(top_n)["gene_name"].tolist()
+heat_df = cross_consensus.set_index("gene_name").loc[top_ids, rank_cols].copy()
+heat_df.columns = list(MODEL_LISTS.keys())
+fig, ax = plt.subplots(figsize=(10, max(6, top_n * 0.28)))
+sns.heatmap(heat_df, cmap="RdYlGn_r", ax=ax, linewidths=0.3, linecolor="white",
+            cbar_kws={"label": "Aggregate Rank", "shrink": 0.6})
+ax.set_xlabel("Augmentation Strategy")
+ax.set_title(f"Rank Heatmap — Top {top_n} Genes by Mean Rank Across All Models")
+ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha="right")
+plt.tight_layout()
+plt.show()
+```
+
+### Top Cross-Model Consensus Genes (≥4/6 models)
+
+```{python}
+#| label: cross-model-top
+
+cols_display = ["gene_name", "mean_rank", "mean_score_all", "models_consensus", "cgc_tier"] + rank_cols
+fmt = {"mean_rank": "{:.1f}", "mean_score_all": "{:.4f}"}
+fmt.update({c: "{:.0f}" for c in rank_cols})
+strong_4 = cross_consensus[cross_consensus["models_consensus"] >= 4][cols_display].reset_index(drop=True)
+strong_4.index += 1
+strong_4.style.format(fmt).background_gradient(subset=rank_cols, cmap="RdYlGn_r", axis=None)
+```
+
+------------------------------------------------------------------------
+
+## PPI Network Analysis
+
+### Degree Centrality vs Model Score
+
+```{python}
+#| label: degree-vs-score
+
+ranked_genes["degree"] = ranked_genes["gene_name"].map(
+    lambda g: degree_map.get(name_to_idx.get(g), np.nan)
+)
+
+fig, ax = plt.subplots(figsize=(7, 5))
+for tier, grp in ranked_genes.dropna(subset=["degree"]).groupby("cgc_label"):
+    ax.scatter(grp["degree"], grp["mean_score"], alpha=0.35, s=12,
+               color=tier_colors[tier], label=tier, rasterized=True)
+ax.set_xlabel("Node Degree (PPI)")
+ax.set_ylabel("Mean Model Score")
+ax.set_title("Model Score vs Network Degree")
+ax.legend(title="CGC Tier")
+plt.tight_layout()
+plt.show()
+
+valid = ranked_genes.dropna(subset=["degree"])
+rho, pval = spearmanr(valid["degree"], valid["mean_score"])
+print(f"Spearman rho (degree vs score): {rho:.3f}  p={pval:.2e}")
+```
+
+### Degree Distribution: Top-100 vs CGC vs All Genes
+
+```{python}
+#| label: degree-distribution
+
+all_degrees    = [degree_map.get(name_to_idx.get(g), 0) for g in ranked_genes["gene_name"] if g in name_to_idx]
+top100_degrees = [degree_map.get(name_to_idx.get(g), 0) for g in ranked_genes.head(100)["gene_name"] if g in name_to_idx]
+cgc1_degrees   = [degree_map.get(name_to_idx.get(g), 0) for g in ranked_genes[ranked_genes["cgc_tier1"]]["gene_name"] if g in name_to_idx]
+
+fig, ax = plt.subplots(figsize=(7, 4))
+bins = np.linspace(0, max(all_degrees), 60)
+ax.hist(all_degrees,    bins=bins, alpha=0.4, label=f"All genes (n={len(all_degrees)})",            density=True, color="grey")
+ax.hist(cgc1_degrees,   bins=bins, alpha=0.6, label=f"CGC Tier 1 (n={len(cgc1_degrees)})",         density=True, color="#d62728")
+ax.hist(top100_degrees, bins=bins, alpha=0.7, label=f"Top-100 predicted (n={len(top100_degrees)})", density=True, color="#2C7BB6")
+ax.set_xlabel("Node Degree")
+ax.set_ylabel("Density")
+ax.set_title("Degree Distribution Comparison")
+ax.legend()
+plt.tight_layout()
+plt.show()
+print(f"Median degree — All: {np.median(all_degrees):.0f} | "
+      f"CGC Tier 1: {np.median(cgc1_degrees):.0f} | "
+      f"Top-100: {np.median(top100_degrees):.0f}")
+```
+
+### PPI Subnetwork of Top-50 Predicted Genes
+
+```{python}
+#| label: ppi-subnetwork-top50
+
+top50_nodes = [name_to_idx[g] for g in genes.head(50)["gene_name"] if g in name_to_idx]
+G_sub = G_full.subgraph(top50_nodes).copy()
+G_named = nx.relabel_nodes(G_sub, id_to_name)
+
+score_map_50  = genes.set_index("gene_name")["mean_score"].to_dict()
+tier_map_50   = genes.set_index("gene_name")["cgc_label"].to_dict()
+node_colors50 = [tier_colors.get(tier_map_50.get(n, "Novel"), "#1f77b4") for n in G_named.nodes()]
+node_sizes50  = [score_map_50.get(n, 0.5) * 800 for n in G_named.nodes()]
+
+pos = nx.spring_layout(G_named, seed=42, k=1.5)
+fig, ax = plt.subplots(figsize=(12, 10))
+nx.draw_networkx_edges(G_named, pos, ax=ax, alpha=0.3, edge_color="grey", width=0.8)
+nx.draw_networkx_nodes(G_named, pos, ax=ax, node_color=node_colors50,
+                       node_size=node_sizes50, edgecolors="white", linewidths=0.8)
+nx.draw_networkx_labels(G_named, pos, ax=ax, font_size=7.5, font_weight="bold")
+ax.legend(handles=[Patch(color=c, label=t) for t, c in tier_colors.items()],
+          title="CGC Tier", loc="upper left")
+ax.set_title("PPI Subnetwork — Top 50 Predicted Driver Genes\n"
+             "(node size = model score, color = CGC tier)", pad=12)
+ax.axis("off")
+plt.tight_layout()
+plt.show()
+print(f"Subgraph density: {nx.density(G_named):.4f}")
+connected = list(nx.connected_components(G_named))
+print(f"Connected components: {len(connected)} (largest: {max(len(c) for c in connected)} nodes)")
+```
+
+------------------------------------------------------------------------
+
+## Cross-Network Consensus Table
+
+*Top 20 genes ranked consistently across GGNet, PathNet, and PPNet.*
+
+```{python}
+#| label: cross-network-table
+
+ggnet   = pd.read_csv("../model_results_2026-03-14/GGNet_random_r0.2_aggregated/"
+                      "GGNet_random_r0.2_aggregated_all_genes.csv")
+pathnet = pd.read_csv("../model_results_2026-03-20/PathNet_random_r0.2_aggregated/"
+                      "PathNet_random_r0.2_aggregated_all_genes.csv")
+ppnet   = pd.read_csv("../model_results_2026-03-20/PPNet_random_r0.2_aggregated/"
+                      "PPNet_random_r0.2_aggregated_all_genes.csv")
+
+def cgc_label(gene):
+    if gene in cgc_tier1: return "Tier 1"
+    if gene in cgc_tier2: return "Tier 2"
+    return "Novel"
+
+merged_net = (
+    ggnet[["gene_name", "aggregate_rank", "mean_score"]]
+    .rename(columns={"aggregate_rank": "GGNet_rank", "mean_score": "GGNet_score"})
+    .merge(pathnet[["gene_name", "aggregate_rank", "mean_score"]]
+           .rename(columns={"aggregate_rank": "PathNet_rank", "mean_score": "PathNet_score"}),
+           on="gene_name", how="inner")
+    .merge(ppnet[["gene_name", "aggregate_rank", "mean_score"]]
+           .rename(columns={"aggregate_rank": "PPNet_rank", "mean_score": "PPNet_score"}),
+           on="gene_name", how="inner")
+)
+merged_net["CGC"] = merged_net["gene_name"].apply(cgc_label)
+merged_net["consensus_rank"] = merged_net[["GGNet_rank", "PathNet_rank", "PPNet_rank"]].mean(axis=1)
+merged_net = merged_net.sort_values("consensus_rank")
+
+top20 = merged_net.head(20).copy()
+top20.insert(0, "Consensus Rank", range(1, 21))
+top20 = top20.rename(columns={"gene_name": "Gene", "GGNet_rank": "GGNet",
+                               "PathNet_rank": "PathNet", "PPNet_rank": "PPNet",
+                               "CGC": "CGC Status"})
+display_cols = ["Consensus Rank", "Gene", "GGNet", "PathNet", "PPNet", "CGC Status"]
+
+ggnet_scores = ggnet.set_index("gene_name")["mean_score"].to_dict()
+
+def style_row(row):
+    if row["CGC Status"] == "Novel":  return ["background-color: #FFF3CD; font-weight: bold"] * len(row)
+    if row["CGC Status"] == "Tier 1": return ["background-color: #FDECEA"] * len(row)
+    return [""] * len(row)
+
+styled = (
+    top20[display_cols].style
+    .apply(style_row, axis=1)
+    .format({"GGNet": "{:.0f}", "PathNet": "{:.0f}", "PPNet": "{:.0f}"})
+    .set_caption("Top 20 Consensus Cancer Driver Gene Predictions Across Networks "
+                 "(DriverJinn, ρ=0.2) — Novel candidates highlighted in gold")
+    .set_table_styles([
+        {"selector": "caption", "props": [("font-size","13px"),("font-weight","bold"),
+                                          ("text-align","left"),("padding-bottom","8px")]},
+        {"selector": "th",      "props": [("background-color","#2C3E50"),("color","white"),
+                                          ("font-size","11px"),("text-align","center"),
+                                          ("padding","6px 10px")]},
+        {"selector": "td",      "props": [("font-size","11px"),("text-align","center"),
+                                          ("padding","5px 10px")]},
+        {"selector": "tr:hover td", "props": [("background-color","#EBF5FB")]},
+    ])
+)
+
+novel_top20 = top20[top20["CGC Status"] == "Novel"]["Gene"].tolist()
+print(f"Novel candidates in top 20: {novel_top20}")
+display(styled)
+
+import dataframe_image as dffi
+dffi.export(styled, str(PLOTS_DIR / "novel.png"), table_conversion="matplotlib", dpi=200)
+```
+
+------------------------------------------------------------------------
+
+## PPI Neighborhood Subgraph (Consensus Top 20)
+
+*Top 20 consensus genes + bridge neighbors connecting ≥6 of them.*
+
+```{python}
+#| label: consensus-subnetwork
+
+target_genes = top20["Gene"].tolist()
+target_ids   = [name_to_id[g] for g in target_genes if g in name_to_id]
+found_genes  = [g for g in target_genes if g in name_to_id]
+target_id_set = set(target_ids)
+
+# 1-hop neighbors connecting ≥6 target genes
+neighbor_target_count = {}
+for nid in target_ids:
+    for nb in G_full.neighbors(nid):
+        if nb not in target_id_set:
+            neighbor_target_count[nb] = neighbor_target_count.get(nb, 0) + 1
+filtered_neighbors = {nb for nb, cnt in neighbor_target_count.items() if cnt >= 6}
+neighbor_ids = target_id_set | filtered_neighbors
+
+H_raw = G_full.subgraph(neighbor_ids).copy()
+H     = nx.relabel_nodes(H_raw, id_to_name)
+
+target_set    = set(found_genes)
+cgc_color_map = {"Tier 1": "#ca301f", "Tier 2": "#E8A838", "Novel": "#4A90D9"}
+cgc_lookup    = top20.set_index("Gene")["CGC Status"].to_dict()
+
+# Edges
+target_edges  = [(u, v) for u, v in H.edges() if u in target_set and v in target_set]
+spoke_edges   = [(u, v) for u, v in H.edges() if (u in target_set) != (v in target_set)]
+
+fig, ax = plt.subplots(figsize=(16, 12))
+pos = nx.spring_layout(H, seed=42, k=1.5)
+
+nx.draw_networkx_edges(H, pos, edgelist=spoke_edges,  ax=ax, alpha=0.10, edge_color="#AAAAAA", width=0.7)
+nx.draw_networkx_edges(H, pos, edgelist=target_edges, ax=ax, alpha=0.60, edge_color="#555555", width=2.0)
+
+neighbor_nodes = [g for g in H.nodes() if g not in target_set]
+nx.draw_networkx_nodes(H, pos, nodelist=neighbor_nodes, ax=ax,
+                       node_color="#D5D8DC", node_size=120,
+                       edgecolors="#AAAAAA", linewidths=0.8, alpha=0.55)
+target_in_H = list(target_set & set(H.nodes()))
+nx.draw_networkx_nodes(H, pos, nodelist=target_in_H, ax=ax,
+                       node_color=[cgc_color_map.get(cgc_lookup.get(g, "Novel"), "#4A90D9")
+                                   for g in target_in_H],
+                       node_size=[max(ggnet_scores.get(g, 0.5), 0.1) * 2500 for g in target_in_H],
+                       edgecolors="white", linewidths=2.0, alpha=0.95)
+nx.draw_networkx_labels(H, pos, labels={g: g for g in target_set if g in H.nodes()},
+                        ax=ax, font_size=8, font_weight="bold", font_color="#1A1A1A")
+
+patches = [mpatches.Patch(color=c, label=l) for l, c in cgc_color_map.items()]
+patches.append(mpatches.Patch(color="#D5D8DC", label="PPI Neighbor"))
+ax.legend(handles=patches, title="CGC Tier", fontsize=11, title_fontsize=11,
+          loc="upper left", framealpha=0.9)
+ax.set_title(f"PPI Neighborhood — Top 20 Consensus Driver Genes + Bridge Neighbors\n"
+             f"(node size = GGNet score, color = CGC tier, "
+             f"n={H.number_of_nodes()} nodes, {H.number_of_edges()} edges)",
+             fontsize=13, fontweight="bold", pad=14)
+ax.axis("off")
+plt.tight_layout()
+plt.savefig(PLOTS_DIR / "consensus_subnetwork.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "consensus_subnetwork.png", dpi=200, bbox_inches="tight")
+plt.show()
+print(f"Target genes in graph : {sorted(target_set & set(H.nodes()))}")
+print(f"Total nodes           : {H.number_of_nodes()}")
+print(f"Total edges           : {H.number_of_edges()}")
+```
