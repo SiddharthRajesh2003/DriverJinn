@@ -580,3 +580,9 @@ Located in `hyperparam_results/`:
 | `<study>_results.csv` | All trial results |
 | `<study>_all_results.json` | Detailed trial results with fold scores |
 | `<study>_plots.png` | Optimization history and parameter importance |
+
+> **Experimental Implementation Notice**
+> This repository is an experimental research prototype and is still under active development. Results, architectures, and interfaces are subject to change without notice. This implementation should not be used for clinical or diagnostic purposes.
+
+> **AI Assistance Disclosure**
+> Portions of this codebase — including visualization scripts, downstream analysis notebooks, and documentation — were developed with assistance from Claude (Anthropic) via Claude Code. All scientific design decisions, model architecture choices, experimental methodology, and biological interpretation remain the work of the author. AI assistance was used as a development accelerator, not as a source of research contributions.
