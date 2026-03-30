@@ -821,3 +821,415 @@ print(f"Target genes in graph : {sorted(target_set & set(H.nodes()))}")
 print(f"Total nodes           : {H.number_of_nodes()}")
 print(f"Total edges           : {H.number_of_edges()}")
 ```
+
+------------------------------------------------------------------------
+
+## Chromatin Remodeling Cluster — Deep Dive
+
+```{python}
+#| label: cluster-setup
+
+# ── Cluster definition ────────────────────────────────────────────────────────
+CLUSTER_GENES = ["SIN3A", "HDAC1", "HDAC2", "SMARCC1", "SMARCC2", "RBBP4", "KMT2E"]
+
+COMPLEX_MAP = {
+    "SIN3A":  "SIN3/HDAC",
+    "HDAC1":  "SIN3/HDAC",
+    "HDAC2":  "SIN3/HDAC",
+    "RBBP4":  "NuRD/PRC2",
+    "SMARCC1": "SWI/SNF",
+    "SMARCC2": "SWI/SNF",
+    "KMT2E":  "KMT",
+}
+
+COMPLEX_COLORS = {
+    "SIN3/HDAC": "#E74C3C",
+    "NuRD/PRC2": "#9B59B6",
+    "SWI/SNF":   "#27AE60",
+    "KMT":       "#2980B9",
+}
+
+cluster_ids  = [name_to_id[g] for g in CLUSTER_GENES if g in name_to_id]
+cluster_set  = set(CLUSTER_GENES)
+
+print("Cluster genes found in graph:",
+      [g for g in CLUSTER_GENES if g in name_to_id])
+```
+
+### Analysis 1 — Curvature-Annotated Cluster Subgraph
+
+```{python}
+#| label: cluster-curvature-subgraph
+
+# ── 1-hop neighbors shared between ≥4 cluster genes ─────────────────────────
+nb_count = {}
+for nid in cluster_ids:
+    for nb in G_full.neighbors(nid):
+        if nb not in set(cluster_ids):
+            nb_count[nb] = nb_count.get(nb, 0) + 1
+bridge_ids = {nb for nb, cnt in nb_count.items() if cnt >= 4}
+subgraph_ids = set(cluster_ids) | bridge_ids
+
+C_raw  = G_full.subgraph(subgraph_ids).copy()
+C      = nx.relabel_nodes(C_raw, id_to_name)
+
+# ── Extract ORC values from edge attributes ───────────────────────────────────
+orc_values = []
+for u, v, data in C.edges(data=True):
+    orc = data.get("ricciCurvature", data.get("OllivierRicci", np.nan))
+    orc_values.append(orc)
+
+has_orc = not all(np.isnan(v) if isinstance(v, float) else False for v in orc_values)
+
+# ── Layout ────────────────────────────────────────────────────────────────────
+fig, ax = plt.subplots(figsize=(14, 10))
+pos = nx.spring_layout(C, seed=7, k=2.0)
+
+# Edge coloring by ORC (blue = negative/bottleneck, white = neutral, red = positive)
+if has_orc:
+    edge_list = list(C.edges())
+    edge_orc  = [C[u][v].get("ricciCurvature",
+                  C[u][v].get("OllivierRicci", 0)) for u, v in edge_list]
+    vmin, vmax = min(edge_orc), max(edge_orc)
+    norm    = plt.Normalize(vmin=vmin, vmax=vmax)
+    cmap    = plt.cm.RdYlBu
+    e_colors = [cmap(norm(v)) for v in edge_orc]
+
+    # Cluster edges thicker
+    e_widths = [2.5 if (u in cluster_set and v in cluster_set) else 1.0
+                for u, v in edge_list]
+    e_alphas = [0.85 if (u in cluster_set and v in cluster_set) else 0.40
+                for u, v in edge_list]
+
+    for (u, v), color, width, alpha in zip(edge_list, e_colors, e_widths, e_alphas):
+        nx.draw_networkx_edges(C, pos, edgelist=[(u, v)], ax=ax,
+                               edge_color=[color], width=width, alpha=alpha)
+
+    sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
+    sm.set_array([])
+    plt.colorbar(sm, ax=ax, shrink=0.5, pad=0.01,
+                 label="Ollivier-Ricci Curvature")
+else:
+    # Fallback: grey edges
+    cluster_edges = [(u, v) for u, v in C.edges()
+                     if u in cluster_set and v in cluster_set]
+    bridge_edges  = [(u, v) for u, v in C.edges()
+                     if u not in cluster_set or v not in cluster_set]
+    nx.draw_networkx_edges(C, pos, edgelist=cluster_edges, ax=ax,
+                           edge_color="#555555", width=2.2, alpha=0.8)
+    nx.draw_networkx_edges(C, pos, edgelist=bridge_edges,  ax=ax,
+                           edge_color="#BBBBBB", width=0.9, alpha=0.35)
+
+# ── Nodes ─────────────────────────────────────────────────────────────────────
+bridge_nodes  = [g for g in C.nodes() if g not in cluster_set]
+cluster_nodes = [g for g in C.nodes() if g in cluster_set]
+
+nx.draw_networkx_nodes(C, pos, nodelist=bridge_nodes, ax=ax,
+                       node_color="#D5D8DC", node_size=180,
+                       edgecolors="#AAAAAA", linewidths=0.8, alpha=0.6)
+nx.draw_networkx_nodes(C, pos, nodelist=cluster_nodes, ax=ax,
+                       node_color=[COMPLEX_COLORS[COMPLEX_MAP[g]] for g in cluster_nodes],
+                       node_size=900, edgecolors="white", linewidths=2.5, alpha=0.95)
+nx.draw_networkx_labels(C, pos,
+                        labels={g: g for g in cluster_nodes},
+                        ax=ax, font_size=9, font_weight="bold")
+
+# Legend: complex membership
+legend_patches = [mpatches.Patch(color=c, label=l)
+                  for l, c in COMPLEX_COLORS.items()]
+legend_patches.append(mpatches.Patch(color="#D5D8DC", label="Bridge neighbor"))
+ax.legend(handles=legend_patches, title="Complex", fontsize=10,
+          title_fontsize=10, loc="upper left", framealpha=0.9)
+
+ax.set_title("Chromatin Remodeling Cluster — PPI Subgraph\n"
+             "Node color = complex membership  |  Edge color = ORC (if available)",
+             fontsize=13, fontweight="bold", pad=12)
+ax.axis("off")
+plt.tight_layout()
+plt.savefig(PLOTS_DIR / "cluster_curvature_subgraph.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "cluster_curvature_subgraph.png", dpi=200, bbox_inches="tight")
+plt.show()
+print(f"Cluster subgraph: {C.number_of_nodes()} nodes, {C.number_of_edges()} edges")
+print(f"ORC available on edges: {has_orc}")
+```
+
+### Analysis 2 — Cross-Network × Cross-Strategy Rank Heatmap
+
+```{python}
+#| label: cluster-rank-heatmap
+
+CONDITIONS = {
+    # (network, strategy, r) → csv path
+    "GGNet · random":      "../model_results_2026-03-14/GGNet_random_r0.2_aggregated/GGNet_random_r0.2_aggregated_all_genes.csv",
+    "GGNet · priority":    "../model_results_2026-03-15/GGNet_priority_r0.2_aggregated/GGNet_priority_r0.2_aggregated_all_genes.csv",
+    "GGNet · coarsening":  "../model_results_2026-03-15/GGNet_coarsening_r0.2_aggregated/GGNet_coarsening_r0.2_aggregated_all_genes.csv",
+    "PathNet · random":    "../model_results_2026-03-20/PathNet_random_r0.2_aggregated/PathNet_random_r0.2_aggregated_all_genes.csv",
+    "PathNet · priority":  "../model_results_2026-03-20/PathNet_priority_r0.2_aggregated/PathNet_priority_r0.2_aggregated_all_genes.csv",
+    "PathNet · coarsening":"../model_results_2026-03-20/PathNet_coarsening_r0.2_aggregated/PathNet_coarsening_r0.2_aggregated_all_genes.csv",
+    "PPNet · random":      "../model_results_2026-03-20/PPNet_random_r0.2_aggregated/PPNet_random_r0.2_aggregated_all_genes.csv",
+    "PPNet · priority":    "../model_results_2026-03-20/PPNet_priority_r0.2_aggregated/PPNet_priority_r0.2_aggregated_all_genes.csv",
+    "PPNet · coarsening":  "../model_results_2026-03-20/PPNet_coarsening_r0.2_aggregated/PPNet_coarsening_r0.2_aggregated_all_genes.csv",
+}
+
+rank_rows = {g: {} for g in CLUSTER_GENES}
+for condition, path in CONDITIONS.items():
+    try:
+        df = pd.read_csv(path).set_index("gene_name")
+        for g in CLUSTER_GENES:
+            rank_rows[g][condition] = int(df.loc[g, "aggregate_rank"]) if g in df.index else np.nan
+    except FileNotFoundError:
+        for g in CLUSTER_GENES:
+            rank_rows[g][condition] = np.nan
+
+rank_df = pd.DataFrame(rank_rows).T   # genes × conditions
+rank_df.index.name = "Gene"
+
+# Annotate rows with complex
+row_colors = [COMPLEX_COLORS[COMPLEX_MAP[g]] for g in rank_df.index]
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5),
+                          gridspec_kw={"width_ratios": [0.03, 1]})
+
+# Left: complex colour bar
+complex_ids = np.array([[list(COMPLEX_COLORS.keys()).index(COMPLEX_MAP[g])]
+                         for g in rank_df.index])
+axes[0].imshow(complex_ids, aspect="auto",
+               cmap=plt.cm.colors.ListedColormap(list(COMPLEX_COLORS.values())))
+axes[0].set_xticks([])
+axes[0].set_yticks(range(len(CLUSTER_GENES)))
+axes[0].set_yticklabels(rank_df.index, fontsize=10, fontweight="bold")
+axes[0].set_title("Complex", fontsize=9, pad=4)
+
+# Right: rank heatmap
+sns.heatmap(rank_df, ax=axes[1], cmap="RdYlGn_r",
+            annot=True, fmt=".0f", annot_kws={"size": 9},
+            linewidths=0.4, linecolor="white",
+            cbar_kws={"label": "Aggregate Rank", "shrink": 0.7})
+axes[1].set_yticks([])
+axes[1].set_xlabel("")
+axes[1].set_xticklabels(axes[1].get_xticklabels(), rotation=30, ha="right", fontsize=9)
+axes[1].set_title("Chromatin Remodeling Cluster — Aggregate Rank Across\n"
+                  "3 Networks × 3 Augmentation Strategies (ρ=0.2)",
+                  fontsize=12, fontweight="bold")
+
+# Complex legend
+for patch in [mpatches.Patch(color=c, label=l) for l, c in COMPLEX_COLORS.items()]:
+    pass
+axes[1].legend(handles=[mpatches.Patch(color=c, label=l)
+                         for l, c in COMPLEX_COLORS.items()],
+               title="Complex", fontsize=9, loc="lower right", framealpha=0.9)
+
+plt.tight_layout()
+plt.savefig(PLOTS_DIR / "cluster_rank_heatmap.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "cluster_rank_heatmap.png", dpi=200, bbox_inches="tight")
+plt.show()
+
+print("\nMean rank per gene across all conditions:")
+print(rank_df.mean(axis=1).sort_values().round(1))
+print(f"\nRank std (consistency — lower = more stable):")
+print(rank_df.std(axis=1).sort_values().round(1))
+```
+
+### Analysis 3 — Fold-Level Score Consistency
+
+```{python}
+#| label: cluster-fold-consistency
+
+fold_score_rows = []
+for fold, df in fold_dfs.items():
+    df_sorted = df.sort_values("rank").reset_index(drop=True)
+    for g in CLUSTER_GENES:
+        match = df_sorted[df_sorted["gene_name"] == g]
+        fold_score_rows.append({
+            "Gene":    g,
+            "Fold":    fold,
+            "Score":   float(match["driver_score"].iloc[0]) if not match.empty else np.nan,
+            "Rank":    int(match["rank"].iloc[0])          if not match.empty else np.nan,
+            "Complex": COMPLEX_MAP.get(g, "Unknown"),
+        })
+
+fold_scores = pd.DataFrame(fold_score_rows)
+
+fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+
+# Panel A: score distribution per gene
+gene_order = (fold_scores.groupby("Gene")["Score"].mean()
+              .sort_values(ascending=False).index.tolist())
+
+sns.stripplot(data=fold_scores, x="Gene", y="Score", hue="Fold",
+              order=gene_order, palette="husl", dodge=True,
+              size=8, alpha=0.85, ax=axes[0])
+sns.pointplot(data=fold_scores, x="Gene", y="Score",
+              order=gene_order, color="black",
+              markers="D", linestyles="--", errorbar="sd",
+              scale=0.7, ax=axes[0])
+for i, g in enumerate(gene_order):
+    axes[0].axvline(i + 0.5, color="#EEEEEE", linewidth=0.8)
+    color = COMPLEX_COLORS[COMPLEX_MAP[g]]
+    axes[0].get_xticklabels()  # ensure rendered
+axes[0].set_xlabel("")
+axes[0].set_ylabel("Predicted Score", fontsize=11)
+axes[0].set_title("Score per Fold — Chromatin Remodeling Cluster", fontsize=12, fontweight="bold")
+axes[0].legend(title="Fold", fontsize=8, ncol=2)
+# Colour x-tick labels by complex
+for tick, g in zip(axes[0].get_xticklabels(), gene_order):
+    tick.set_color(COMPLEX_COLORS[COMPLEX_MAP[g]])
+    tick.set_fontweight("bold")
+sns.despine(ax=axes[0])
+
+# Panel B: rank per gene across folds
+sns.stripplot(data=fold_scores, x="Gene", y="Rank", hue="Fold",
+              order=gene_order, palette="husl", dodge=True,
+              size=8, alpha=0.85, ax=axes[1])
+sns.pointplot(data=fold_scores, x="Gene", y="Rank",
+              order=gene_order, color="black",
+              markers="D", linestyles="--", errorbar="sd",
+              scale=0.7, ax=axes[1])
+axes[1].invert_yaxis()
+axes[1].set_xlabel("")
+axes[1].set_ylabel("Within-Fold Rank (lower = better)", fontsize=11)
+axes[1].set_title("Rank per Fold — Chromatin Remodeling Cluster", fontsize=12, fontweight="bold")
+axes[1].legend(title="Fold", fontsize=8, ncol=2)
+for tick, g in zip(axes[1].get_xticklabels(), gene_order):
+    tick.set_color(COMPLEX_COLORS[COMPLEX_MAP[g]])
+    tick.set_fontweight("bold")
+sns.despine(ax=axes[1])
+
+plt.tight_layout()
+plt.savefig(PLOTS_DIR / "cluster_fold_consistency.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "cluster_fold_consistency.png", dpi=200, bbox_inches="tight")
+plt.show()
+
+print("\nScore CV (std/mean) per gene — lower = more consistent across folds:")
+cv = fold_scores.groupby("Gene")["Score"].agg(["mean","std"])
+cv["CV"] = (cv["std"] / cv["mean"]).round(3)
+print(cv.sort_values("CV"))
+```
+
+### Analysis 4 — Score vs Known Tier 1 Drivers
+
+```{python}
+#| label: cluster-vs-tier1
+
+fig, ax = plt.subplots(figsize=(8, 5))
+
+# KDE for each CGC tier
+for tier, color, label in [("T1", COLORS["T1"], "CGC Tier 1"),
+                             ("T2", COLORS["T2"], "CGC Tier 2"),
+                             ("non-CGC", COLORS["non-CGC"], "Non-CGC")]:
+    subset = genes[genes["cgc_tier"] == tier]["mean_score"]
+    subset.plot.kde(ax=ax, color=color, linewidth=2.0, label=label, alpha=0.8)
+
+# Overlay cluster genes as vertical ticks
+ymax = ax.get_ylim()[1] if ax.get_ylim()[1] > 0 else 5
+for g in CLUSTER_GENES:
+    score_row = genes[genes["gene_name"] == g]
+    if score_row.empty:
+        continue
+    score = float(score_row["mean_score"].iloc[0])
+    color = COMPLEX_COLORS[COMPLEX_MAP[g]]
+    ax.axvline(score, color=color, linewidth=1.8, linestyle="--", alpha=0.85)
+    ax.text(score, ax.get_ylim()[1] * 0.97, g,
+            rotation=90, va="top", ha="right",
+            fontsize=7.5, fontweight="bold", color=color)
+
+ax.set_xlabel("DriverJinn Mean Score", fontsize=12)
+ax.set_ylabel("Density", fontsize=12)
+ax.set_title("Chromatin Remodeling Cluster vs CGC Score Distributions\n"
+             "(dashed lines = individual cluster gene scores)",
+             fontsize=12, fontweight="bold")
+ax.legend(fontsize=10)
+sns.despine()
+plt.tight_layout()
+plt.savefig(PLOTS_DIR / "cluster_vs_tier1_scores.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "cluster_vs_tier1_scores.png", dpi=200, bbox_inches="tight")
+plt.show()
+
+# Print where each cluster gene falls relative to Tier 1 percentiles
+t1_scores = genes[genes["cgc_tier"] == "T1"]["mean_score"]
+print(f"\nCGC Tier 1 score range: {t1_scores.min():.4f} – {t1_scores.max():.4f}")
+print(f"CGC Tier 1 median    : {t1_scores.median():.4f}\n")
+for g in CLUSTER_GENES:
+    row = genes[genes["gene_name"] == g]
+    if row.empty: continue
+    s = float(row["mean_score"].iloc[0])
+    pct = (t1_scores < s).mean() * 100
+    print(f"  {g:10s}  score={s:.4f}  above {pct:.0f}% of Tier 1 genes")
+```
+
+### Analysis 5 — Complex Membership Summary Table
+
+```{python}
+#| label: cluster-summary-table
+
+KNOWN_CANCER_ROLE = {
+    "SIN3A":  "Transcriptional co-repressor; recruits HDAC1/2. Tumour suppressor function in several cancers.",
+    "HDAC1":  "Histone deacetylase; epigenetic silencing of tumour suppressors. Overexpressed in gastric, colorectal, breast cancers.",
+    "HDAC2":  "Histone deacetylase; promotes proliferation. Overexpressed in hepatocellular and colorectal cancers.",
+    "RBBP4":  "Core subunit of NuRD, PRC2, and CAF-1 complexes. PRC2 role links it to H3K27me3-mediated silencing.",
+    "SMARCC1":"SWI/SNF ATPase subunit. SWI/SNF is mutated in ~20% of human cancers; acts as tumour suppressor complex.",
+    "SMARCC2":"SWI/SNF core subunit. Co-mutated with SMARCC1 in tumours; contributes to chromatin accessibility.",
+    "KMT2E":  "H3K4 mono-methyltransferase. Loss associated with AML; gains in solid tumours through super-enhancer regulation.",
+}
+
+CGCSTATUS = {g: cgc_label(g) for g in CLUSTER_GENES}
+
+# Rebuild rank_df if Analysis 2 cell was not run
+if "rank_df" not in globals():
+    _rank_rows = {g: {} for g in CLUSTER_GENES}
+    for condition, path in CONDITIONS.items():
+        try:
+            _df = pd.read_csv(path).set_index("gene_name")
+            for g in CLUSTER_GENES:
+                _rank_rows[g][condition] = int(_df.loc[g, "aggregate_rank"]) if g in _df.index else np.nan
+        except FileNotFoundError:
+            for g in CLUSTER_GENES:
+                _rank_rows[g][condition] = np.nan
+    rank_df = pd.DataFrame(_rank_rows).T
+
+summary_data = []
+for g in CLUSTER_GENES:
+    row = genes[genes["gene_name"] == g]
+    score  = float(row["mean_score"].iloc[0])   if not row.empty else np.nan
+    agg_r  = int(row["aggregate_rank"].iloc[0]) if not row.empty else np.nan
+    mean_r = rank_df.loc[g].mean() if g in rank_df.index else np.nan
+    std_r  = rank_df.loc[g].std()  if g in rank_df.index else np.nan
+    summary_data.append({
+        "Gene":               g,
+        "Complex":            COMPLEX_MAP[g],
+        "CGC Status":         CGCSTATUS[g],
+        "GGNet Score":        round(score, 4),
+        "GGNet Rank":         agg_r,
+        "Mean Rank (9 cond)": round(mean_r, 1),
+        "Rank Std":           round(std_r, 1),
+        "Known Cancer Role":  KNOWN_CANCER_ROLE[g],
+    })
+
+summary_df = pd.DataFrame(summary_data)
+
+def style_cluster_row(row):
+    color = COMPLEX_COLORS.get(row["Complex"], "#FFFFFF")
+    # Lighten the complex colour for background
+    return [f"background-color: {color}22"] * len(row)
+
+styled_summary = (
+    summary_df.style
+    .apply(style_cluster_row, axis=1)
+    .set_caption("Chromatin Remodeling Cluster — Gene Summary "
+                 "(DriverJinn predictions, ρ=0.2, GGNet)")
+    .set_table_styles([
+        {"selector": "caption", "props": [("font-size","13px"),("font-weight","bold"),
+                                          ("text-align","left"),("padding-bottom","8px")]},
+        {"selector": "th",      "props": [("background-color","#2C3E50"),("color","white"),
+                                          ("font-size","10px"),("text-align","center"),
+                                          ("padding","5px 8px")]},
+        {"selector": "td",      "props": [("font-size","10px"),("padding","5px 8px")]},
+    ])
+    .hide(axis="index")
+)
+display(styled_summary)
+
+import dataframe_image as dffi
+dffi.export(styled_summary, str(PLOTS_DIR / "cluster_summary_table.png"),
+            table_conversion="matplotlib", dpi=200)
+```
