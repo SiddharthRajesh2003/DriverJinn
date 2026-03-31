@@ -2284,68 +2284,68 @@ vertical-align: -.125em;
 <span id="cb3-16"><a href="#cb3-16" aria-hidden="true" tabindex="-1"></a>df_summary <span class="op">=</span> pd.concat([df_summary, pd.DataFrame([mean_row])], ignore_index<span class="op">=</span><span class="va">True</span>)</span>
 <span id="cb3-17"><a href="#cb3-17" aria-hidden="true" tabindex="-1"></a>df_summary.style.set_caption(<span class="st">&quot;Per-fold peak validation metrics&quot;</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
-<div id="training-summary-table" class="cell-output cell-output-display" data-execution_count="55">
+<div id="training-summary-table" class="cell-output cell-output-display" data-execution_count="4">
 <style type="text/css">
 </style>
 
-<div id="T_c0f01" class="quarto-float quarto-figure quarto-figure-center anchored" data-quarto-postprocess="true">
+<div id="T_99cec" class="quarto-float quarto-figure quarto-figure-center anchored" data-quarto-postprocess="true">
 <figure class="quarto-float quarto-float-tbl figure">
-<figcaption class="quarto-float-caption-top quarto-float-caption quarto-float-tbl" id="T_c0f01-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<figcaption class="quarto-float-caption-top quarto-float-caption quarto-float-tbl" id="T_99cec-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
 Table 1: Per-fold peak validation metrics
 </figcaption>
-<div aria-describedby="T_c0f01-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
-<table id="T_c0f01" class="caption-top table table-sm table-striped small" data-quarto-postprocess="true">
+<div aria-describedby="T_99cec-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<table id="T_99cec" class="caption-top table table-sm table-striped small" data-quarto-postprocess="true">
 <thead>
 <tr class="header">
 <th class="blank level0" data-quarto-table-cell-role="th"> </th>
-<th id="T_c0f01_level0_col0" class="col_heading level0 col0" data-quarto-table-cell-role="th">Fold</th>
-<th id="T_c0f01_level0_col1" class="col_heading level0 col1" data-quarto-table-cell-role="th">Peak NDCG@50</th>
-<th id="T_c0f01_level0_col2" class="col_heading level0 col2" data-quarto-table-cell-role="th">Peak AUROC</th>
-<th id="T_c0f01_level0_col3" class="col_heading level0 col3" data-quarto-table-cell-role="th">Epochs</th>
+<th id="T_99cec_level0_col0" class="col_heading level0 col0" data-quarto-table-cell-role="th">Fold</th>
+<th id="T_99cec_level0_col1" class="col_heading level0 col1" data-quarto-table-cell-role="th">Peak NDCG@50</th>
+<th id="T_99cec_level0_col2" class="col_heading level0 col2" data-quarto-table-cell-role="th">Peak AUROC</th>
+<th id="T_99cec_level0_col3" class="col_heading level0 col3" data-quarto-table-cell-role="th">Epochs</th>
 </tr>
 </thead>
 <tbody>
 <tr class="odd">
-<td id="T_c0f01_level0_row0" class="row_heading level0 row0" data-quarto-table-cell-role="th">0</td>
-<td id="T_c0f01_row0_col0" class="data row0 col0">1</td>
-<td id="T_c0f01_row0_col1" class="data row0 col1">0.399200</td>
-<td id="T_c0f01_row0_col2" class="data row0 col2">0.753400</td>
-<td id="T_c0f01_row0_col3" class="data row0 col3">1080</td>
+<td id="T_99cec_level0_row0" class="row_heading level0 row0" data-quarto-table-cell-role="th">0</td>
+<td id="T_99cec_row0_col0" class="data row0 col0">1</td>
+<td id="T_99cec_row0_col1" class="data row0 col1">0.399200</td>
+<td id="T_99cec_row0_col2" class="data row0 col2">0.753400</td>
+<td id="T_99cec_row0_col3" class="data row0 col3">1080</td>
 </tr>
 <tr class="even">
-<td id="T_c0f01_level0_row1" class="row_heading level0 row1" data-quarto-table-cell-role="th">1</td>
-<td id="T_c0f01_row1_col0" class="data row1 col0">2</td>
-<td id="T_c0f01_row1_col1" class="data row1 col1">0.502200</td>
-<td id="T_c0f01_row1_col2" class="data row1 col2">0.751900</td>
-<td id="T_c0f01_row1_col3" class="data row1 col3">680</td>
+<td id="T_99cec_level0_row1" class="row_heading level0 row1" data-quarto-table-cell-role="th">1</td>
+<td id="T_99cec_row1_col0" class="data row1 col0">2</td>
+<td id="T_99cec_row1_col1" class="data row1 col1">0.502200</td>
+<td id="T_99cec_row1_col2" class="data row1 col2">0.751900</td>
+<td id="T_99cec_row1_col3" class="data row1 col3">680</td>
 </tr>
 <tr class="odd">
-<td id="T_c0f01_level0_row2" class="row_heading level0 row2" data-quarto-table-cell-role="th">2</td>
-<td id="T_c0f01_row2_col0" class="data row2 col0">3</td>
-<td id="T_c0f01_row2_col1" class="data row2 col1">0.426200</td>
-<td id="T_c0f01_row2_col2" class="data row2 col2">0.754200</td>
-<td id="T_c0f01_row2_col3" class="data row2 col3">780</td>
+<td id="T_99cec_level0_row2" class="row_heading level0 row2" data-quarto-table-cell-role="th">2</td>
+<td id="T_99cec_row2_col0" class="data row2 col0">3</td>
+<td id="T_99cec_row2_col1" class="data row2 col1">0.426200</td>
+<td id="T_99cec_row2_col2" class="data row2 col2">0.754200</td>
+<td id="T_99cec_row2_col3" class="data row2 col3">780</td>
 </tr>
 <tr class="even">
-<td id="T_c0f01_level0_row3" class="row_heading level0 row3" data-quarto-table-cell-role="th">3</td>
-<td id="T_c0f01_row3_col0" class="data row3 col0">4</td>
-<td id="T_c0f01_row3_col1" class="data row3 col1">0.524400</td>
-<td id="T_c0f01_row3_col2" class="data row3 col2">0.814400</td>
-<td id="T_c0f01_row3_col3" class="data row3 col3">1200</td>
+<td id="T_99cec_level0_row3" class="row_heading level0 row3" data-quarto-table-cell-role="th">3</td>
+<td id="T_99cec_row3_col0" class="data row3 col0">4</td>
+<td id="T_99cec_row3_col1" class="data row3 col1">0.524400</td>
+<td id="T_99cec_row3_col2" class="data row3 col2">0.814400</td>
+<td id="T_99cec_row3_col3" class="data row3 col3">1200</td>
 </tr>
 <tr class="odd">
-<td id="T_c0f01_level0_row4" class="row_heading level0 row4" data-quarto-table-cell-role="th">4</td>
-<td id="T_c0f01_row4_col0" class="data row4 col0">5</td>
-<td id="T_c0f01_row4_col1" class="data row4 col1">0.537500</td>
-<td id="T_c0f01_row4_col2" class="data row4 col2">0.766500</td>
-<td id="T_c0f01_row4_col3" class="data row4 col3">700</td>
+<td id="T_99cec_level0_row4" class="row_heading level0 row4" data-quarto-table-cell-role="th">4</td>
+<td id="T_99cec_row4_col0" class="data row4 col0">5</td>
+<td id="T_99cec_row4_col1" class="data row4 col1">0.537500</td>
+<td id="T_99cec_row4_col2" class="data row4 col2">0.766500</td>
+<td id="T_99cec_row4_col3" class="data row4 col3">700</td>
 </tr>
 <tr class="even">
-<td id="T_c0f01_level0_row5" class="row_heading level0 row5" data-quarto-table-cell-role="th">5</td>
-<td id="T_c0f01_row5_col0" class="data row5 col0">Mean</td>
-<td id="T_c0f01_row5_col1" class="data row5 col1">0.477900</td>
-<td id="T_c0f01_row5_col2" class="data row5 col2">0.768100</td>
-<td id="T_c0f01_row5_col3" class="data row5 col3">—</td>
+<td id="T_99cec_level0_row5" class="row_heading level0 row5" data-quarto-table-cell-role="th">5</td>
+<td id="T_99cec_row5_col0" class="data row5 col0">Mean</td>
+<td id="T_99cec_row5_col1" class="data row5 col1">0.477900</td>
+<td id="T_99cec_row5_col2" class="data row5 col2">0.768100</td>
+<td id="T_99cec_row5_col3" class="data row5 col3">—</td>
 </tr>
 </tbody>
 </table>
@@ -2385,7 +2385,7 @@ Table 1: Per-fold peak validation metrics
 <span id="cb4-21"><a href="#cb4-21" aria-hidden="true" tabindex="-1"></a>ax.legend(fontsize<span class="op">=</span><span class="dv">10</span>)</span>
 <span id="cb4-22"><a href="#cb4-22" aria-hidden="true" tabindex="-1"></a>sns.despine()</span>
 <span id="cb4-23"><a href="#cb4-23" aria-hidden="true" tabindex="-1"></a>plt.tight_layout()</span>
-<span id="cb4-24"><a href="#cb4-24" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;poster_enrichment_curve.pdf&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
+<span id="cb4-24"><a href="#cb4-24" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;poster_enrichment_curve.png&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb4-25"><a href="#cb4-25" aria-hidden="true" tabindex="-1"></a>plt.show()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
 <div class="cell-output cell-output-display">
@@ -2423,16 +2423,16 @@ Table 1: Per-fold peak validation metrics
 <span id="cb5-17"><a href="#cb5-17" aria-hidden="true" tabindex="-1"></a>ax.set_xticklabels([<span class="st">&quot;CGC Tier 1&quot;</span>, <span class="st">&quot;CGC Tier 2&quot;</span>, <span class="st">&quot;Non-CGC&quot;</span>])</span>
 <span id="cb5-18"><a href="#cb5-18" aria-hidden="true" tabindex="-1"></a>sns.despine()</span>
 <span id="cb5-19"><a href="#cb5-19" aria-hidden="true" tabindex="-1"></a>plt.tight_layout()</span>
-<span id="cb5-20"><a href="#cb5-20" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;poster_score_violin.pdf&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
+<span id="cb5-20"><a href="#cb5-20" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;poster_score_violin.png&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb5-21"><a href="#cb5-21" aria-hidden="true" tabindex="-1"></a>plt.show()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
 <div class="cell-output cell-output-stderr">
-<pre><code>C:\Users\siddh\AppData\Local\Temp\ipykernel_53420\3520119420.py:4: FutureWarning: 
+<pre><code>C:\Users\siddh\AppData\Local\Temp\ipykernel_64836\746990387.py:4: FutureWarning: 
 
 Passing `palette` without assigning `hue` is deprecated and will be removed in v0.14.0. Assign the `x` variable to `hue` and set `legend=False` for the same effect.
 
   sns.violinplot(data=genes, x=&quot;cgc_tier&quot;, y=&quot;mean_score&quot;,
-C:\Users\siddh\AppData\Local\Temp\ipykernel_53420\3520119420.py:17: UserWarning: set_ticklabels() should only be used with a fixed number of ticks, i.e. after set_ticks() or using a FixedLocator.
+C:\Users\siddh\AppData\Local\Temp\ipykernel_64836\746990387.py:17: UserWarning: set_ticklabels() should only be used with a fixed number of ticks, i.e. after set_ticks() or using a FixedLocator.
   ax.set_xticklabels([&quot;CGC Tier 1&quot;, &quot;CGC Tier 2&quot;, &quot;Non-CGC&quot;])</code></pre>
 </div>
 <div class="cell-output cell-output-display">
@@ -2487,7 +2487,7 @@ C:\Users\siddh\AppData\Local\Temp\ipykernel_53420\3520119420.py:17: UserWarning:
 <span id="cb7-34"><a href="#cb7-34" aria-hidden="true" tabindex="-1"></a>ax.legend(fontsize<span class="op">=</span><span class="dv">10</span>)</span>
 <span id="cb7-35"><a href="#cb7-35" aria-hidden="true" tabindex="-1"></a>sns.despine()</span>
 <span id="cb7-36"><a href="#cb7-36" aria-hidden="true" tabindex="-1"></a>plt.tight_layout()</span>
-<span id="cb7-37"><a href="#cb7-37" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;poster_precision_at_k.pdf&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
+<span id="cb7-37"><a href="#cb7-37" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;poster_precision_at_k.png&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb7-38"><a href="#cb7-38" aria-hidden="true" tabindex="-1"></a>plt.show()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
 <div class="cell-output cell-output-display">
@@ -2540,7 +2540,7 @@ C:\Users\siddh\AppData\Local\Temp\ipykernel_53420\3520119420.py:17: UserWarning:
 <span id="cb8-32"><a href="#cb8-32" aria-hidden="true" tabindex="-1"></a>    mpatches.Patch(color<span class="op">=</span>COLORS[<span class="st">&quot;non-CGC&quot;</span>], label<span class="op">=</span><span class="st">&quot;Non-CGC&quot;</span>),</span>
 <span id="cb8-33"><a href="#cb8-33" aria-hidden="true" tabindex="-1"></a>], loc<span class="op">=</span><span class="st">&quot;lower right&quot;</span>, fontsize<span class="op">=</span><span class="dv">8</span>, framealpha<span class="op">=</span><span class="fl">0.9</span>)</span>
 <span id="cb8-34"><a href="#cb8-34" aria-hidden="true" tabindex="-1"></a>plt.tight_layout()</span>
-<span id="cb8-35"><a href="#cb8-35" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;poster_rank_stability.pdf&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
+<span id="cb8-35"><a href="#cb8-35" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;poster_rank_stability.png&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb8-36"><a href="#cb8-36" aria-hidden="true" tabindex="-1"></a>plt.show()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
 <div class="cell-output cell-output-display">
@@ -2582,7 +2582,7 @@ C:\Users\siddh\AppData\Local\Temp\ipykernel_53420\3520119420.py:17: UserWarning:
 <span id="cb9-21"><a href="#cb9-21" aria-hidden="true" tabindex="-1"></a>ax.legend(fontsize<span class="op">=</span><span class="dv">9</span>, ncol<span class="op">=</span><span class="dv">3</span>, loc<span class="op">=</span><span class="st">&quot;upper right&quot;</span>)</span>
 <span id="cb9-22"><a href="#cb9-22" aria-hidden="true" tabindex="-1"></a>sns.despine()</span>
 <span id="cb9-23"><a href="#cb9-23" aria-hidden="true" tabindex="-1"></a>plt.tight_layout()</span>
-<span id="cb9-24"><a href="#cb9-24" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;poster_metrics_summary.pdf&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
+<span id="cb9-24"><a href="#cb9-24" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;poster_metrics_summary.png&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb9-25"><a href="#cb9-25" aria-hidden="true" tabindex="-1"></a>plt.show()</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
 <div class="cell-output cell-output-display">
@@ -2657,7 +2657,7 @@ C:\Users\siddh\AppData\Local\Temp\ipykernel_53420\3520119420.py:17: UserWarning:
 <span id="cb11-15"><a href="#cb11-15" aria-hidden="true" tabindex="-1"></a>            .style.<span class="bu">format</span>({<span class="st">&quot;p-value&quot;</span>: <span class="st">&quot;</span><span class="sc">{:.3e}</span><span class="st">&quot;</span>, <span class="st">&quot;p.adj&quot;</span>: <span class="st">&quot;</span><span class="sc">{:.3e}</span><span class="st">&quot;</span>}))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
 <div class="cell-output cell-output-stderr">
-<pre><code>C:\Users\siddh\AppData\Local\Temp\ipykernel_53420\2642632014.py:8: FutureWarning: 
+<pre><code>C:\Users\siddh\AppData\Local\Temp\ipykernel_64836\2642632014.py:8: FutureWarning: 
 
 Passing `palette` without assigning `hue` is deprecated and will be removed in v0.14.0. Assign the `y` variable to `hue` and set `legend=False` for the same effect.
 
@@ -2674,185 +2674,185 @@ Passing `palette` without assigning `hue` is deprecated and will be removed in v
 <style type="text/css">
 </style>
 
-<table id="T_e60cd" class="caption-top table table-sm table-striped small" data-quarto-postprocess="true">
+<table id="T_e976a" class="caption-top table table-sm table-striped small" data-quarto-postprocess="true">
 <thead>
 <tr class="header">
 <th class="blank level0" data-quarto-table-cell-role="th"> </th>
-<th id="T_e60cd_level0_col0" class="col_heading level0 col0" data-quarto-table-cell-role="th">Hallmark</th>
-<th id="T_e60cd_level0_col1" class="col_heading level0 col1" data-quarto-table-cell-role="th">Overlap</th>
-<th id="T_e60cd_level0_col2" class="col_heading level0 col2" data-quarto-table-cell-role="th">GS Size</th>
-<th id="T_e60cd_level0_col3" class="col_heading level0 col3" data-quarto-table-cell-role="th">p-value</th>
-<th id="T_e60cd_level0_col4" class="col_heading level0 col4" data-quarto-table-cell-role="th">p.adj</th>
+<th id="T_e976a_level0_col0" class="col_heading level0 col0" data-quarto-table-cell-role="th">Hallmark</th>
+<th id="T_e976a_level0_col1" class="col_heading level0 col1" data-quarto-table-cell-role="th">Overlap</th>
+<th id="T_e976a_level0_col2" class="col_heading level0 col2" data-quarto-table-cell-role="th">GS Size</th>
+<th id="T_e976a_level0_col3" class="col_heading level0 col3" data-quarto-table-cell-role="th">p-value</th>
+<th id="T_e976a_level0_col4" class="col_heading level0 col4" data-quarto-table-cell-role="th">p.adj</th>
 </tr>
 </thead>
 <tbody>
 <tr class="odd">
-<td id="T_e60cd_level0_row0" class="row_heading level0 row0" data-quarto-table-cell-role="th">0</td>
-<td id="T_e60cd_row0_col0" class="data row0 col0">role in cancer</td>
-<td id="T_e60cd_row0_col1" class="data row0 col1">33</td>
-<td id="T_e60cd_row0_col2" class="data row0 col2">343</td>
-<td id="T_e60cd_row0_col3" class="data row0 col3">1.158e-25</td>
-<td id="T_e60cd_row0_col4" class="data row0 col4">1.401e-24</td>
+<td id="T_e976a_level0_row0" class="row_heading level0 row0" data-quarto-table-cell-role="th">0</td>
+<td id="T_e976a_row0_col0" class="data row0 col0">role in cancer</td>
+<td id="T_e976a_row0_col1" class="data row0 col1">33</td>
+<td id="T_e976a_row0_col2" class="data row0 col2">343</td>
+<td id="T_e976a_row0_col3" class="data row0 col3">1.158e-25</td>
+<td id="T_e976a_row0_col4" class="data row0 col4">1.401e-24</td>
 </tr>
 <tr class="even">
-<td id="T_e60cd_level0_row1" class="row_heading level0 row1" data-quarto-table-cell-role="th">1</td>
-<td id="T_e60cd_row1_col0" class="data row1 col0">function summary</td>
-<td id="T_e60cd_row1_col1" class="data row1 col1">33</td>
-<td id="T_e60cd_row1_col2" class="data row1 col2">344</td>
-<td id="T_e60cd_row1_col3" class="data row1 col3">1.274e-25</td>
-<td id="T_e60cd_row1_col4" class="data row1 col4">1.401e-24</td>
+<td id="T_e976a_level0_row1" class="row_heading level0 row1" data-quarto-table-cell-role="th">1</td>
+<td id="T_e976a_row1_col0" class="data row1 col0">function summary</td>
+<td id="T_e976a_row1_col1" class="data row1 col1">33</td>
+<td id="T_e976a_row1_col2" class="data row1 col2">344</td>
+<td id="T_e976a_row1_col3" class="data row1 col3">1.274e-25</td>
+<td id="T_e976a_row1_col4" class="data row1 col4">1.401e-24</td>
 </tr>
 <tr class="odd">
-<td id="T_e60cd_level0_row2" class="row_heading level0 row2" data-quarto-table-cell-role="th">2</td>
-<td id="T_e60cd_row2_col0" class="data row2 col0">escaping programmed cell death</td>
-<td id="T_e60cd_row2_col1" class="data row2 col1">24</td>
-<td id="T_e60cd_row2_col2" class="data row2 col2">218</td>
-<td id="T_e60cd_row2_col3" class="data row2 col3">5.529e-20</td>
-<td id="T_e60cd_row2_col4" class="data row2 col4">4.055e-19</td>
+<td id="T_e976a_level0_row2" class="row_heading level0 row2" data-quarto-table-cell-role="th">2</td>
+<td id="T_e976a_row2_col0" class="data row2 col0">escaping programmed cell death</td>
+<td id="T_e976a_row2_col1" class="data row2 col1">24</td>
+<td id="T_e976a_row2_col2" class="data row2 col2">218</td>
+<td id="T_e976a_row2_col3" class="data row2 col3">5.529e-20</td>
+<td id="T_e976a_row2_col4" class="data row2 col4">4.055e-19</td>
 </tr>
 <tr class="even">
-<td id="T_e60cd_level0_row3" class="row_heading level0 row3" data-quarto-table-cell-role="th">3</td>
-<td id="T_e60cd_row3_col0" class="data row3 col0">types of alteration in cancer</td>
-<td id="T_e60cd_row3_col1" class="data row3 col1">24</td>
-<td id="T_e60cd_row3_col2" class="data row3 col2">231</td>
-<td id="T_e60cd_row3_col3" class="data row3 col3">2.198e-19</td>
-<td id="T_e60cd_row3_col4" class="data row3 col4">1.209e-18</td>
+<td id="T_e976a_level0_row3" class="row_heading level0 row3" data-quarto-table-cell-role="th">3</td>
+<td id="T_e976a_row3_col0" class="data row3 col0">types of alteration in cancer</td>
+<td id="T_e976a_row3_col1" class="data row3 col1">24</td>
+<td id="T_e976a_row3_col2" class="data row3 col2">231</td>
+<td id="T_e976a_row3_col3" class="data row3 col3">2.198e-19</td>
+<td id="T_e976a_row3_col4" class="data row3 col4">1.209e-18</td>
 </tr>
 <tr class="odd">
-<td id="T_e60cd_level0_row4" class="row_heading level0 row4" data-quarto-table-cell-role="th">4</td>
-<td id="T_e60cd_row4_col0" class="data row4 col0">genome instability and mutations</td>
-<td id="T_e60cd_row4_col1" class="data row4 col1">18</td>
-<td id="T_e60cd_row4_col2" class="data row4 col2">119</td>
-<td id="T_e60cd_row4_col3" class="data row4 col3">1.211e-17</td>
-<td id="T_e60cd_row4_col4" class="data row4 col4">4.769e-17</td>
+<td id="T_e976a_level0_row4" class="row_heading level0 row4" data-quarto-table-cell-role="th">4</td>
+<td id="T_e976a_row4_col0" class="data row4 col0">genome instability and mutations</td>
+<td id="T_e976a_row4_col1" class="data row4 col1">18</td>
+<td id="T_e976a_row4_col2" class="data row4 col2">119</td>
+<td id="T_e976a_row4_col3" class="data row4 col3">1.211e-17</td>
+<td id="T_e976a_row4_col4" class="data row4 col4">4.769e-17</td>
 </tr>
 <tr class="even">
-<td id="T_e60cd_level0_row5" class="row_heading level0 row5" data-quarto-table-cell-role="th">5</td>
-<td id="T_e60cd_row5_col0" class="data row5 col0">invasion and metastasis</td>
-<td id="T_e60cd_row5_col1" class="data row5 col1">22</td>
-<td id="T_e60cd_row5_col2" class="data row5 col2">216</td>
-<td id="T_e60cd_row5_col3" class="data row5 col3">1.301e-17</td>
-<td id="T_e60cd_row5_col4" class="data row5 col4">4.769e-17</td>
+<td id="T_e976a_level0_row5" class="row_heading level0 row5" data-quarto-table-cell-role="th">5</td>
+<td id="T_e976a_row5_col0" class="data row5 col0">invasion and metastasis</td>
+<td id="T_e976a_row5_col1" class="data row5 col1">22</td>
+<td id="T_e976a_row5_col2" class="data row5 col2">216</td>
+<td id="T_e976a_row5_col3" class="data row5 col3">1.301e-17</td>
+<td id="T_e976a_row5_col4" class="data row5 col4">4.769e-17</td>
 </tr>
 <tr class="odd">
-<td id="T_e60cd_level0_row6" class="row_heading level0 row6" data-quarto-table-cell-role="th">6</td>
-<td id="T_e60cd_row6_col0" class="data row6 col0">impact of mutation on function</td>
-<td id="T_e60cd_row6_col1" class="data row6 col1">20</td>
-<td id="T_e60cd_row6_col2" class="data row6 col2">189</td>
-<td id="T_e60cd_row6_col3" class="data row6 col3">2.170e-16</td>
-<td id="T_e60cd_row6_col4" class="data row6 col4">6.821e-16</td>
+<td id="T_e976a_level0_row6" class="row_heading level0 row6" data-quarto-table-cell-role="th">6</td>
+<td id="T_e976a_row6_col0" class="data row6 col0">impact of mutation on function</td>
+<td id="T_e976a_row6_col1" class="data row6 col1">20</td>
+<td id="T_e976a_row6_col2" class="data row6 col2">189</td>
+<td id="T_e976a_row6_col3" class="data row6 col3">2.170e-16</td>
+<td id="T_e976a_row6_col4" class="data row6 col4">6.821e-16</td>
 </tr>
 <tr class="even">
-<td id="T_e60cd_level0_row7" class="row_heading level0 row7" data-quarto-table-cell-role="th">7</td>
-<td id="T_e60cd_row7_col0" class="data row7 col0">differentiation and development</td>
-<td id="T_e60cd_row7_col1" class="data row7 col1">19</td>
-<td id="T_e60cd_row7_col2" class="data row7 col2">167</td>
-<td id="T_e60cd_row7_col3" class="data row7 col3">3.377e-16</td>
-<td id="T_e60cd_row7_col4" class="data row7 col4">9.285e-16</td>
+<td id="T_e976a_level0_row7" class="row_heading level0 row7" data-quarto-table-cell-role="th">7</td>
+<td id="T_e976a_row7_col0" class="data row7 col0">differentiation and development</td>
+<td id="T_e976a_row7_col1" class="data row7 col1">19</td>
+<td id="T_e976a_row7_col2" class="data row7 col2">167</td>
+<td id="T_e976a_row7_col3" class="data row7 col3">3.377e-16</td>
+<td id="T_e976a_row7_col4" class="data row7 col4">9.285e-16</td>
 </tr>
 <tr class="odd">
-<td id="T_e60cd_level0_row8" class="row_heading level0 row8" data-quarto-table-cell-role="th">8</td>
-<td id="T_e60cd_row8_col0" class="data row8 col0">proliferative signalling</td>
-<td id="T_e60cd_row8_col1" class="data row8 col1">20</td>
-<td id="T_e60cd_row8_col2" class="data row8 col2">195</td>
-<td id="T_e60cd_row8_col3" class="data row8 col3">4.021e-16</td>
-<td id="T_e60cd_row8_col4" class="data row8 col4">9.830e-16</td>
+<td id="T_e976a_level0_row8" class="row_heading level0 row8" data-quarto-table-cell-role="th">8</td>
+<td id="T_e976a_row8_col0" class="data row8 col0">proliferative signalling</td>
+<td id="T_e976a_row8_col1" class="data row8 col1">20</td>
+<td id="T_e976a_row8_col2" class="data row8 col2">195</td>
+<td id="T_e976a_row8_col3" class="data row8 col3">4.021e-16</td>
+<td id="T_e976a_row8_col4" class="data row8 col4">9.830e-16</td>
 </tr>
 <tr class="even">
-<td id="T_e60cd_level0_row9" class="row_heading level0 row9" data-quarto-table-cell-role="th">9</td>
-<td id="T_e60cd_row9_col0" class="data row9 col0">cell division control</td>
-<td id="T_e60cd_row9_col1" class="data row9 col1">17</td>
-<td id="T_e60cd_row9_col2" class="data row9 col2">129</td>
-<td id="T_e60cd_row9_col3" class="data row9 col3">1.148e-15</td>
-<td id="T_e60cd_row9_col4" class="data row9 col4">2.526e-15</td>
+<td id="T_e976a_level0_row9" class="row_heading level0 row9" data-quarto-table-cell-role="th">9</td>
+<td id="T_e976a_row9_col0" class="data row9 col0">cell division control</td>
+<td id="T_e976a_row9_col1" class="data row9 col1">17</td>
+<td id="T_e976a_row9_col2" class="data row9 col2">129</td>
+<td id="T_e976a_row9_col3" class="data row9 col3">1.148e-15</td>
+<td id="T_e976a_row9_col4" class="data row9 col4">2.526e-15</td>
 </tr>
 <tr class="odd">
-<td id="T_e60cd_level0_row10" class="row_heading level0 row10" data-quarto-table-cell-role="th">10</td>
-<td id="T_e60cd_row10_col0" class="data row10 col0">tumour promoting inflammation</td>
-<td id="T_e60cd_row10_col1" class="data row10 col1">12</td>
-<td id="T_e60cd_row10_col2" class="data row10 col2">61</td>
-<td id="T_e60cd_row10_col3" class="data row10 col3">1.611e-13</td>
-<td id="T_e60cd_row10_col4" class="data row10 col4">3.223e-13</td>
+<td id="T_e976a_level0_row10" class="row_heading level0 row10" data-quarto-table-cell-role="th">10</td>
+<td id="T_e976a_row10_col0" class="data row10 col0">tumour promoting inflammation</td>
+<td id="T_e976a_row10_col1" class="data row10 col1">12</td>
+<td id="T_e976a_row10_col2" class="data row10 col2">61</td>
+<td id="T_e976a_row10_col3" class="data row10 col3">1.611e-13</td>
+<td id="T_e976a_row10_col4" class="data row10 col4">3.223e-13</td>
 </tr>
 <tr class="even">
-<td id="T_e60cd_level0_row11" class="row_heading level0 row11" data-quarto-table-cell-role="th">11</td>
-<td id="T_e60cd_row11_col0" class="data row11 col0">cell replicative immortality</td>
-<td id="T_e60cd_row11_col1" class="data row11 col1">10</td>
-<td id="T_e60cd_row11_col2" class="data row11 col2">51</td>
-<td id="T_e60cd_row11_col3" class="data row11 col3">1.949e-11</td>
-<td id="T_e60cd_row11_col4" class="data row11 col4">3.573e-11</td>
+<td id="T_e976a_level0_row11" class="row_heading level0 row11" data-quarto-table-cell-role="th">11</td>
+<td id="T_e976a_row11_col0" class="data row11 col0">cell replicative immortality</td>
+<td id="T_e976a_row11_col1" class="data row11 col1">10</td>
+<td id="T_e976a_row11_col2" class="data row11 col2">51</td>
+<td id="T_e976a_row11_col3" class="data row11 col3">1.949e-11</td>
+<td id="T_e976a_row11_col4" class="data row11 col4">3.573e-11</td>
 </tr>
 <tr class="odd">
-<td id="T_e60cd_level0_row12" class="row_heading level0 row12" data-quarto-table-cell-role="th">12</td>
-<td id="T_e60cd_row12_col0" class="data row12 col0">escaping immune response to cancer</td>
-<td id="T_e60cd_row12_col1" class="data row12 col1">11</td>
-<td id="T_e60cd_row12_col2" class="data row12 col2">70</td>
-<td id="T_e60cd_row12_col3" class="data row12 col3">2.331e-11</td>
-<td id="T_e60cd_row12_col4" class="data row12 col4">3.682e-11</td>
+<td id="T_e976a_level0_row12" class="row_heading level0 row12" data-quarto-table-cell-role="th">12</td>
+<td id="T_e976a_row12_col0" class="data row12 col0">escaping immune response to cancer</td>
+<td id="T_e976a_row12_col1" class="data row12 col1">11</td>
+<td id="T_e976a_row12_col2" class="data row12 col2">70</td>
+<td id="T_e976a_row12_col3" class="data row12 col3">2.331e-11</td>
+<td id="T_e976a_row12_col4" class="data row12 col4">3.682e-11</td>
 </tr>
 <tr class="even">
-<td id="T_e60cd_level0_row13" class="row_heading level0 row13" data-quarto-table-cell-role="th">13</td>
-<td id="T_e60cd_row13_col0" class="data row13 col0">angiogenesis</td>
-<td id="T_e60cd_row13_col1" class="data row13 col1">12</td>
-<td id="T_e60cd_row13_col2" class="data row13 col2">91</td>
-<td id="T_e60cd_row13_col3" class="data row13 col3">2.343e-11</td>
-<td id="T_e60cd_row13_col4" class="data row13 col4">3.682e-11</td>
+<td id="T_e976a_level0_row13" class="row_heading level0 row13" data-quarto-table-cell-role="th">13</td>
+<td id="T_e976a_row13_col0" class="data row13 col0">angiogenesis</td>
+<td id="T_e976a_row13_col1" class="data row13 col1">12</td>
+<td id="T_e976a_row13_col2" class="data row13 col2">91</td>
+<td id="T_e976a_row13_col3" class="data row13 col3">2.343e-11</td>
+<td id="T_e976a_row13_col4" class="data row13 col4">3.682e-11</td>
 </tr>
 <tr class="odd">
-<td id="T_e60cd_level0_row14" class="row_heading level0 row14" data-quarto-table-cell-role="th">14</td>
-<td id="T_e60cd_row14_col0" class="data row14 col0">senescence</td>
-<td id="T_e60cd_row14_col1" class="data row14 col1">10</td>
-<td id="T_e60cd_row14_col2" class="data row14 col2">63</td>
-<td id="T_e60cd_row14_col3" class="data row14 col3">1.785e-10</td>
-<td id="T_e60cd_row14_col4" class="data row14 col4">2.617e-10</td>
+<td id="T_e976a_level0_row14" class="row_heading level0 row14" data-quarto-table-cell-role="th">14</td>
+<td id="T_e976a_row14_col0" class="data row14 col0">senescence</td>
+<td id="T_e976a_row14_col1" class="data row14 col1">10</td>
+<td id="T_e976a_row14_col2" class="data row14 col2">63</td>
+<td id="T_e976a_row14_col3" class="data row14 col3">1.785e-10</td>
+<td id="T_e976a_row14_col4" class="data row14 col4">2.617e-10</td>
 </tr>
 <tr class="even">
-<td id="T_e60cd_level0_row15" class="row_heading level0 row15" data-quarto-table-cell-role="th">15</td>
-<td id="T_e60cd_row15_col0" class="data row15 col0">fusion partner</td>
-<td id="T_e60cd_row15_col1" class="data row15 col1">12</td>
-<td id="T_e60cd_row15_col2" class="data row15 col2">148</td>
-<td id="T_e60cd_row15_col3" class="data row15 col3">7.134e-09</td>
-<td id="T_e60cd_row15_col4" class="data row15 col4">9.809e-09</td>
+<td id="T_e976a_level0_row15" class="row_heading level0 row15" data-quarto-table-cell-role="th">15</td>
+<td id="T_e976a_row15_col0" class="data row15 col0">fusion partner</td>
+<td id="T_e976a_row15_col1" class="data row15 col1">12</td>
+<td id="T_e976a_row15_col2" class="data row15 col2">148</td>
+<td id="T_e976a_row15_col3" class="data row15 col3">7.134e-09</td>
+<td id="T_e976a_row15_col4" class="data row15 col4">9.809e-09</td>
 </tr>
 <tr class="odd">
-<td id="T_e60cd_level0_row16" class="row_heading level0 row16" data-quarto-table-cell-role="th">16</td>
-<td id="T_e60cd_row16_col0" class="data row16 col0">clinical impact</td>
-<td id="T_e60cd_row16_col1" class="data row16 col1">11</td>
-<td id="T_e60cd_row16_col2" class="data row16 col2">119</td>
-<td id="T_e60cd_row16_col3" class="data row16 col3">7.924e-09</td>
-<td id="T_e60cd_row16_col4" class="data row16 col4">1.025e-08</td>
+<td id="T_e976a_level0_row16" class="row_heading level0 row16" data-quarto-table-cell-role="th">16</td>
+<td id="T_e976a_row16_col0" class="data row16 col0">clinical impact</td>
+<td id="T_e976a_row16_col1" class="data row16 col1">11</td>
+<td id="T_e976a_row16_col2" class="data row16 col2">119</td>
+<td id="T_e976a_row16_col3" class="data row16 col3">7.924e-09</td>
+<td id="T_e976a_row16_col4" class="data row16 col4">1.025e-08</td>
 </tr>
 <tr class="even">
-<td id="T_e60cd_level0_row17" class="row_heading level0 row17" data-quarto-table-cell-role="th">17</td>
-<td id="T_e60cd_row17_col0" class="data row17 col0">global regulation of gene expression</td>
-<td id="T_e60cd_row17_col1" class="data row17 col1">9</td>
-<td id="T_e60cd_row17_col2" class="data row17 col2">72</td>
-<td id="T_e60cd_row17_col3" class="data row17 col3">1.355e-08</td>
-<td id="T_e60cd_row17_col4" class="data row17 col4">1.657e-08</td>
+<td id="T_e976a_level0_row17" class="row_heading level0 row17" data-quarto-table-cell-role="th">17</td>
+<td id="T_e976a_row17_col0" class="data row17 col0">global regulation of gene expression</td>
+<td id="T_e976a_row17_col1" class="data row17 col1">9</td>
+<td id="T_e976a_row17_col2" class="data row17 col2">72</td>
+<td id="T_e976a_row17_col3" class="data row17 col3">1.355e-08</td>
+<td id="T_e976a_row17_col4" class="data row17 col4">1.657e-08</td>
 </tr>
 <tr class="odd">
-<td id="T_e60cd_level0_row18" class="row_heading level0 row18" data-quarto-table-cell-role="th">18</td>
-<td id="T_e60cd_row18_col0" class="data row18 col0">change of cellular energetics</td>
-<td id="T_e60cd_row18_col1" class="data row18 col1">9</td>
-<td id="T_e60cd_row18_col2" class="data row18 col2">85</td>
-<td id="T_e60cd_row18_col3" class="data row18 col3">5.959e-08</td>
-<td id="T_e60cd_row18_col4" class="data row18 col4">6.900e-08</td>
+<td id="T_e976a_level0_row18" class="row_heading level0 row18" data-quarto-table-cell-role="th">18</td>
+<td id="T_e976a_row18_col0" class="data row18 col0">change of cellular energetics</td>
+<td id="T_e976a_row18_col1" class="data row18 col1">9</td>
+<td id="T_e976a_row18_col2" class="data row18 col2">85</td>
+<td id="T_e976a_row18_col3" class="data row18 col3">5.959e-08</td>
+<td id="T_e976a_row18_col4" class="data row18 col4">6.900e-08</td>
 </tr>
 <tr class="even">
-<td id="T_e60cd_level0_row19" class="row_heading level0 row19" data-quarto-table-cell-role="th">19</td>
-<td id="T_e60cd_row19_col0" class="data row19 col0">suppression of growth</td>
-<td id="T_e60cd_row19_col1" class="data row19 col1">9</td>
-<td id="T_e60cd_row19_col2" class="data row19 col2">132</td>
-<td id="T_e60cd_row19_col3" class="data row19 col3">2.598e-06</td>
-<td id="T_e60cd_row19_col4" class="data row19 col4">2.858e-06</td>
+<td id="T_e976a_level0_row19" class="row_heading level0 row19" data-quarto-table-cell-role="th">19</td>
+<td id="T_e976a_row19_col0" class="data row19 col0">suppression of growth</td>
+<td id="T_e976a_row19_col1" class="data row19 col1">9</td>
+<td id="T_e976a_row19_col2" class="data row19 col2">132</td>
+<td id="T_e976a_row19_col3" class="data row19 col3">2.598e-06</td>
+<td id="T_e976a_row19_col4" class="data row19 col4">2.858e-06</td>
 </tr>
 <tr class="odd">
-<td id="T_e60cd_level0_row20" class="row_heading level0 row20" data-quarto-table-cell-role="th">20</td>
-<td id="T_e60cd_row20_col0" class="data row20 col0">mouse model</td>
-<td id="T_e60cd_row20_col1" class="data row20 col1">6</td>
-<td id="T_e60cd_row20_col2" class="data row20 col2">87</td>
-<td id="T_e60cd_row20_col3" class="data row20 col3">1.237e-04</td>
-<td id="T_e60cd_row20_col4" class="data row20 col4">1.296e-04</td>
+<td id="T_e976a_level0_row20" class="row_heading level0 row20" data-quarto-table-cell-role="th">20</td>
+<td id="T_e976a_row20_col0" class="data row20 col0">mouse model</td>
+<td id="T_e976a_row20_col1" class="data row20 col1">6</td>
+<td id="T_e976a_row20_col2" class="data row20 col2">87</td>
+<td id="T_e976a_row20_col3" class="data row20 col3">1.237e-04</td>
+<td id="T_e976a_row20_col4" class="data row20 col4">1.296e-04</td>
 </tr>
 </tbody>
 </table>
@@ -2891,7 +2891,7 @@ Passing `palette` without assigning `hue` is deprecated and will be removed in v
 <span id="cb13-22"><a href="#cb13-22" aria-hidden="true" tabindex="-1"></a>    ax.invert_yaxis()</span>
 <span id="cb13-23"><a href="#cb13-23" aria-hidden="true" tabindex="-1"></a>    sns.despine()</span>
 <span id="cb13-24"><a href="#cb13-24" aria-hidden="true" tabindex="-1"></a>    plt.tight_layout()</span>
-<span id="cb13-25"><a href="#cb13-25" aria-hidden="true" tabindex="-1"></a>    plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;poster_kegg_enrichment.pdf&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
+<span id="cb13-25"><a href="#cb13-25" aria-hidden="true" tabindex="-1"></a>    plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;poster_kegg_enrichment.png&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb13-26"><a href="#cb13-26" aria-hidden="true" tabindex="-1"></a>    plt.show()</span>
 <span id="cb13-27"><a href="#cb13-27" aria-hidden="true" tabindex="-1"></a><span class="cf">except</span> <span class="pp">ImportError</span>:</span>
 <span id="cb13-28"><a href="#cb13-28" aria-hidden="true" tabindex="-1"></a>    <span class="bu">print</span>(<span class="st">&quot;gseapy not installed — run: pip install gseapy&quot;</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
@@ -2927,156 +2927,156 @@ Passing `palette` without assigning `hue` is deprecated and will be removed in v
 <style type="text/css">
 </style>
 
-<table id="T_a0e74" class="caption-top table table-sm table-striped small" data-quarto-postprocess="true">
+<table id="T_37599" class="caption-top table table-sm table-striped small" data-quarto-postprocess="true">
 <thead>
 <tr class="header">
-<th id="T_a0e74_level0_col0" class="col_heading level0 col0" data-quarto-table-cell-role="th">aggregate_rank</th>
-<th id="T_a0e74_level0_col1" class="col_heading level0 col1" data-quarto-table-cell-role="th">gene_name</th>
-<th id="T_a0e74_level0_col2" class="col_heading level0 col2" data-quarto-table-cell-role="th">mean_score</th>
-<th id="T_a0e74_level0_col3" class="col_heading level0 col3" data-quarto-table-cell-role="th">folds_significant</th>
-<th id="T_a0e74_level0_col4" class="col_heading level0 col4" data-quarto-table-cell-role="th">total_folds</th>
+<th id="T_37599_level0_col0" class="col_heading level0 col0" data-quarto-table-cell-role="th">aggregate_rank</th>
+<th id="T_37599_level0_col1" class="col_heading level0 col1" data-quarto-table-cell-role="th">gene_name</th>
+<th id="T_37599_level0_col2" class="col_heading level0 col2" data-quarto-table-cell-role="th">mean_score</th>
+<th id="T_37599_level0_col3" class="col_heading level0 col3" data-quarto-table-cell-role="th">folds_significant</th>
+<th id="T_37599_level0_col4" class="col_heading level0 col4" data-quarto-table-cell-role="th">total_folds</th>
 </tr>
 </thead>
 <tbody>
 <tr class="odd">
-<td id="T_a0e74_row0_col0" class="data row0 col0">42</td>
-<td id="T_a0e74_row0_col1" class="data row0 col1">MNAT1</td>
-<td id="T_a0e74_row0_col2" class="data row0 col2">1.0000</td>
-<td id="T_a0e74_row0_col3" class="data row0 col3">5</td>
-<td id="T_a0e74_row0_col4" class="data row0 col4">5</td>
+<td id="T_37599_row0_col0" class="data row0 col0">42</td>
+<td id="T_37599_row0_col1" class="data row0 col1">MNAT1</td>
+<td id="T_37599_row0_col2" class="data row0 col2">1.0000</td>
+<td id="T_37599_row0_col3" class="data row0 col3">5</td>
+<td id="T_37599_row0_col4" class="data row0 col4">5</td>
 </tr>
 <tr class="even">
-<td id="T_a0e74_row1_col0" class="data row1 col0">59</td>
-<td id="T_a0e74_row1_col1" class="data row1 col1">TRAF6</td>
-<td id="T_a0e74_row1_col2" class="data row1 col2">0.9999</td>
-<td id="T_a0e74_row1_col3" class="data row1 col3">5</td>
-<td id="T_a0e74_row1_col4" class="data row1 col4">5</td>
+<td id="T_37599_row1_col0" class="data row1 col0">59</td>
+<td id="T_37599_row1_col1" class="data row1 col1">TRAF6</td>
+<td id="T_37599_row1_col2" class="data row1 col2">0.9999</td>
+<td id="T_37599_row1_col3" class="data row1 col3">5</td>
+<td id="T_37599_row1_col4" class="data row1 col4">5</td>
 </tr>
 <tr class="odd">
-<td id="T_a0e74_row2_col0" class="data row2 col0">69</td>
-<td id="T_a0e74_row2_col1" class="data row2 col1">MRE11</td>
-<td id="T_a0e74_row2_col2" class="data row2 col2">0.9999</td>
-<td id="T_a0e74_row2_col3" class="data row2 col3">5</td>
-<td id="T_a0e74_row2_col4" class="data row2 col4">5</td>
+<td id="T_37599_row2_col0" class="data row2 col0">69</td>
+<td id="T_37599_row2_col1" class="data row2 col1">MRE11</td>
+<td id="T_37599_row2_col2" class="data row2 col2">0.9999</td>
+<td id="T_37599_row2_col3" class="data row2 col3">5</td>
+<td id="T_37599_row2_col4" class="data row2 col4">5</td>
 </tr>
 <tr class="even">
-<td id="T_a0e74_row3_col0" class="data row3 col0">84</td>
-<td id="T_a0e74_row3_col1" class="data row3 col1">GTF2H1</td>
-<td id="T_a0e74_row3_col2" class="data row3 col2">0.9999</td>
-<td id="T_a0e74_row3_col3" class="data row3 col3">5</td>
-<td id="T_a0e74_row3_col4" class="data row3 col4">5</td>
+<td id="T_37599_row3_col0" class="data row3 col0">84</td>
+<td id="T_37599_row3_col1" class="data row3 col1">GTF2H1</td>
+<td id="T_37599_row3_col2" class="data row3 col2">0.9999</td>
+<td id="T_37599_row3_col3" class="data row3 col3">5</td>
+<td id="T_37599_row3_col4" class="data row3 col4">5</td>
 </tr>
 <tr class="odd">
-<td id="T_a0e74_row4_col0" class="data row4 col0">96</td>
-<td id="T_a0e74_row4_col1" class="data row4 col1">PDS5B</td>
-<td id="T_a0e74_row4_col2" class="data row4 col2">0.9999</td>
-<td id="T_a0e74_row4_col3" class="data row4 col3">5</td>
-<td id="T_a0e74_row4_col4" class="data row4 col4">5</td>
+<td id="T_37599_row4_col0" class="data row4 col0">96</td>
+<td id="T_37599_row4_col1" class="data row4 col1">PDS5B</td>
+<td id="T_37599_row4_col2" class="data row4 col2">0.9999</td>
+<td id="T_37599_row4_col3" class="data row4 col3">5</td>
+<td id="T_37599_row4_col4" class="data row4 col4">5</td>
 </tr>
 <tr class="even">
-<td id="T_a0e74_row5_col0" class="data row5 col0">106</td>
-<td id="T_a0e74_row5_col1" class="data row5 col1">DYNC1H1</td>
-<td id="T_a0e74_row5_col2" class="data row5 col2">0.9999</td>
-<td id="T_a0e74_row5_col3" class="data row5 col3">5</td>
-<td id="T_a0e74_row5_col4" class="data row5 col4">5</td>
+<td id="T_37599_row5_col0" class="data row5 col0">106</td>
+<td id="T_37599_row5_col1" class="data row5 col1">DYNC1H1</td>
+<td id="T_37599_row5_col2" class="data row5 col2">0.9999</td>
+<td id="T_37599_row5_col3" class="data row5 col3">5</td>
+<td id="T_37599_row5_col4" class="data row5 col4">5</td>
 </tr>
 <tr class="odd">
-<td id="T_a0e74_row6_col0" class="data row6 col0">124</td>
-<td id="T_a0e74_row6_col1" class="data row6 col1">AGO3</td>
-<td id="T_a0e74_row6_col2" class="data row6 col2">0.9999</td>
-<td id="T_a0e74_row6_col3" class="data row6 col3">5</td>
-<td id="T_a0e74_row6_col4" class="data row6 col4">5</td>
+<td id="T_37599_row6_col0" class="data row6 col0">124</td>
+<td id="T_37599_row6_col1" class="data row6 col1">AGO3</td>
+<td id="T_37599_row6_col2" class="data row6 col2">0.9999</td>
+<td id="T_37599_row6_col3" class="data row6 col3">5</td>
+<td id="T_37599_row6_col4" class="data row6 col4">5</td>
 </tr>
 <tr class="even">
-<td id="T_a0e74_row7_col0" class="data row7 col0">133</td>
-<td id="T_a0e74_row7_col1" class="data row7 col1">GTF2H4</td>
-<td id="T_a0e74_row7_col2" class="data row7 col2">0.9999</td>
-<td id="T_a0e74_row7_col3" class="data row7 col3">5</td>
-<td id="T_a0e74_row7_col4" class="data row7 col4">5</td>
+<td id="T_37599_row7_col0" class="data row7 col0">133</td>
+<td id="T_37599_row7_col1" class="data row7 col1">GTF2H4</td>
+<td id="T_37599_row7_col2" class="data row7 col2">0.9999</td>
+<td id="T_37599_row7_col3" class="data row7 col3">5</td>
+<td id="T_37599_row7_col4" class="data row7 col4">5</td>
 </tr>
 <tr class="odd">
-<td id="T_a0e74_row8_col0" class="data row8 col0">147</td>
-<td id="T_a0e74_row8_col1" class="data row8 col1">RPTOR</td>
-<td id="T_a0e74_row8_col2" class="data row8 col2">0.9999</td>
-<td id="T_a0e74_row8_col3" class="data row8 col3">5</td>
-<td id="T_a0e74_row8_col4" class="data row8 col4">5</td>
+<td id="T_37599_row8_col0" class="data row8 col0">147</td>
+<td id="T_37599_row8_col1" class="data row8 col1">RPTOR</td>
+<td id="T_37599_row8_col2" class="data row8 col2">0.9999</td>
+<td id="T_37599_row8_col3" class="data row8 col3">5</td>
+<td id="T_37599_row8_col4" class="data row8 col4">5</td>
 </tr>
 <tr class="even">
-<td id="T_a0e74_row9_col0" class="data row9 col0">174</td>
-<td id="T_a0e74_row9_col1" class="data row9 col1">SYNE1</td>
-<td id="T_a0e74_row9_col2" class="data row9 col2">0.9999</td>
-<td id="T_a0e74_row9_col3" class="data row9 col3">5</td>
-<td id="T_a0e74_row9_col4" class="data row9 col4">5</td>
+<td id="T_37599_row9_col0" class="data row9 col0">174</td>
+<td id="T_37599_row9_col1" class="data row9 col1">SYNE1</td>
+<td id="T_37599_row9_col2" class="data row9 col2">0.9999</td>
+<td id="T_37599_row9_col3" class="data row9 col3">5</td>
+<td id="T_37599_row9_col4" class="data row9 col4">5</td>
 </tr>
 <tr class="odd">
-<td id="T_a0e74_row10_col0" class="data row10 col0">186</td>
-<td id="T_a0e74_row10_col1" class="data row10 col1">ARRB2</td>
-<td id="T_a0e74_row10_col2" class="data row10 col2">0.9999</td>
-<td id="T_a0e74_row10_col3" class="data row10 col3">5</td>
-<td id="T_a0e74_row10_col4" class="data row10 col4">5</td>
+<td id="T_37599_row10_col0" class="data row10 col0">186</td>
+<td id="T_37599_row10_col1" class="data row10 col1">ARRB2</td>
+<td id="T_37599_row10_col2" class="data row10 col2">0.9999</td>
+<td id="T_37599_row10_col3" class="data row10 col3">5</td>
+<td id="T_37599_row10_col4" class="data row10 col4">5</td>
 </tr>
 <tr class="even">
-<td id="T_a0e74_row11_col0" class="data row11 col0">188</td>
-<td id="T_a0e74_row11_col1" class="data row11 col1">LRP2</td>
-<td id="T_a0e74_row11_col2" class="data row11 col2">0.9999</td>
-<td id="T_a0e74_row11_col3" class="data row11 col3">5</td>
-<td id="T_a0e74_row11_col4" class="data row11 col4">5</td>
+<td id="T_37599_row11_col0" class="data row11 col0">188</td>
+<td id="T_37599_row11_col1" class="data row11 col1">LRP2</td>
+<td id="T_37599_row11_col2" class="data row11 col2">0.9999</td>
+<td id="T_37599_row11_col3" class="data row11 col3">5</td>
+<td id="T_37599_row11_col4" class="data row11 col4">5</td>
 </tr>
 <tr class="odd">
-<td id="T_a0e74_row12_col0" class="data row12 col0">210</td>
-<td id="T_a0e74_row12_col1" class="data row12 col1">YWHAB</td>
-<td id="T_a0e74_row12_col2" class="data row12 col2">0.9999</td>
-<td id="T_a0e74_row12_col3" class="data row12 col3">5</td>
-<td id="T_a0e74_row12_col4" class="data row12 col4">5</td>
+<td id="T_37599_row12_col0" class="data row12 col0">210</td>
+<td id="T_37599_row12_col1" class="data row12 col1">YWHAB</td>
+<td id="T_37599_row12_col2" class="data row12 col2">0.9999</td>
+<td id="T_37599_row12_col3" class="data row12 col3">5</td>
+<td id="T_37599_row12_col4" class="data row12 col4">5</td>
 </tr>
 <tr class="even">
-<td id="T_a0e74_row13_col0" class="data row13 col0">211</td>
-<td id="T_a0e74_row13_col1" class="data row13 col1">VCL</td>
-<td id="T_a0e74_row13_col2" class="data row13 col2">0.9999</td>
-<td id="T_a0e74_row13_col3" class="data row13 col3">5</td>
-<td id="T_a0e74_row13_col4" class="data row13 col4">5</td>
+<td id="T_37599_row13_col0" class="data row13 col0">211</td>
+<td id="T_37599_row13_col1" class="data row13 col1">VCL</td>
+<td id="T_37599_row13_col2" class="data row13 col2">0.9999</td>
+<td id="T_37599_row13_col3" class="data row13 col3">5</td>
+<td id="T_37599_row13_col4" class="data row13 col4">5</td>
 </tr>
 <tr class="odd">
-<td id="T_a0e74_row14_col0" class="data row14 col0">215</td>
-<td id="T_a0e74_row14_col1" class="data row14 col1">PAK1</td>
-<td id="T_a0e74_row14_col2" class="data row14 col2">0.9999</td>
-<td id="T_a0e74_row14_col3" class="data row14 col3">5</td>
-<td id="T_a0e74_row14_col4" class="data row14 col4">5</td>
+<td id="T_37599_row14_col0" class="data row14 col0">215</td>
+<td id="T_37599_row14_col1" class="data row14 col1">PAK1</td>
+<td id="T_37599_row14_col2" class="data row14 col2">0.9999</td>
+<td id="T_37599_row14_col3" class="data row14 col3">5</td>
+<td id="T_37599_row14_col4" class="data row14 col4">5</td>
 </tr>
 <tr class="even">
-<td id="T_a0e74_row15_col0" class="data row15 col0">216</td>
-<td id="T_a0e74_row15_col1" class="data row15 col1">MARK3</td>
-<td id="T_a0e74_row15_col2" class="data row15 col2">0.9999</td>
-<td id="T_a0e74_row15_col3" class="data row15 col3">5</td>
-<td id="T_a0e74_row15_col4" class="data row15 col4">5</td>
+<td id="T_37599_row15_col0" class="data row15 col0">216</td>
+<td id="T_37599_row15_col1" class="data row15 col1">MARK3</td>
+<td id="T_37599_row15_col2" class="data row15 col2">0.9999</td>
+<td id="T_37599_row15_col3" class="data row15 col3">5</td>
+<td id="T_37599_row15_col4" class="data row15 col4">5</td>
 </tr>
 <tr class="odd">
-<td id="T_a0e74_row16_col0" class="data row16 col0">221</td>
-<td id="T_a0e74_row16_col1" class="data row16 col1">BTRC</td>
-<td id="T_a0e74_row16_col2" class="data row16 col2">0.9999</td>
-<td id="T_a0e74_row16_col3" class="data row16 col3">5</td>
-<td id="T_a0e74_row16_col4" class="data row16 col4">5</td>
+<td id="T_37599_row16_col0" class="data row16 col0">221</td>
+<td id="T_37599_row16_col1" class="data row16 col1">BTRC</td>
+<td id="T_37599_row16_col2" class="data row16 col2">0.9999</td>
+<td id="T_37599_row16_col3" class="data row16 col3">5</td>
+<td id="T_37599_row16_col4" class="data row16 col4">5</td>
 </tr>
 <tr class="even">
-<td id="T_a0e74_row17_col0" class="data row17 col0">239</td>
-<td id="T_a0e74_row17_col1" class="data row17 col1">REV3L</td>
-<td id="T_a0e74_row17_col2" class="data row17 col2">0.9999</td>
-<td id="T_a0e74_row17_col3" class="data row17 col3">5</td>
-<td id="T_a0e74_row17_col4" class="data row17 col4">5</td>
+<td id="T_37599_row17_col0" class="data row17 col0">239</td>
+<td id="T_37599_row17_col1" class="data row17 col1">REV3L</td>
+<td id="T_37599_row17_col2" class="data row17 col2">0.9999</td>
+<td id="T_37599_row17_col3" class="data row17 col3">5</td>
+<td id="T_37599_row17_col4" class="data row17 col4">5</td>
 </tr>
 <tr class="odd">
-<td id="T_a0e74_row18_col0" class="data row18 col0">251</td>
-<td id="T_a0e74_row18_col1" class="data row18 col1">SNRPB</td>
-<td id="T_a0e74_row18_col2" class="data row18 col2">0.9999</td>
-<td id="T_a0e74_row18_col3" class="data row18 col3">5</td>
-<td id="T_a0e74_row18_col4" class="data row18 col4">5</td>
+<td id="T_37599_row18_col0" class="data row18 col0">251</td>
+<td id="T_37599_row18_col1" class="data row18 col1">SNRPB</td>
+<td id="T_37599_row18_col2" class="data row18 col2">0.9999</td>
+<td id="T_37599_row18_col3" class="data row18 col3">5</td>
+<td id="T_37599_row18_col4" class="data row18 col4">5</td>
 </tr>
 <tr class="even">
-<td id="T_a0e74_row19_col0" class="data row19 col0">257</td>
-<td id="T_a0e74_row19_col1" class="data row19 col1">VWF</td>
-<td id="T_a0e74_row19_col2" class="data row19 col2">0.9999</td>
-<td id="T_a0e74_row19_col3" class="data row19 col3">5</td>
-<td id="T_a0e74_row19_col4" class="data row19 col4">5</td>
+<td id="T_37599_row19_col0" class="data row19 col0">257</td>
+<td id="T_37599_row19_col1" class="data row19 col1">VWF</td>
+<td id="T_37599_row19_col2" class="data row19 col2">0.9999</td>
+<td id="T_37599_row19_col3" class="data row19 col3">5</td>
+<td id="T_37599_row19_col4" class="data row19 col4">5</td>
 </tr>
 </tbody>
 </table>
@@ -3172,231 +3172,231 @@ Consensus in all 6 models     : 0</code></pre>
 <span id="cb18-5"><a href="#cb18-5" aria-hidden="true" tabindex="-1"></a>strong_4.index <span class="op">+=</span> <span class="dv">1</span></span>
 <span id="cb18-6"><a href="#cb18-6" aria-hidden="true" tabindex="-1"></a>strong_4.style.<span class="bu">format</span>(fmt).background_gradient(subset<span class="op">=</span>rank_cols, cmap<span class="op">=</span><span class="st">&quot;RdYlGn_r&quot;</span>, axis<span class="op">=</span><span class="va">None</span>)</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
-<div id="cross-model-top" class="cell-output cell-output-display" data-execution_count="67">
+<div id="cross-model-top" class="cell-output cell-output-display" data-execution_count="16">
 <style type="text/css">
-#T_4ecb9_row0_col5 {
+#T_d9151_row0_col5 {
 background-color: #07753e;
 color: #f1f1f1;
 }
-#T_4ecb9_row0_col6, #T_4ecb9_row0_col10, #T_4ecb9_row1_col5, #T_4ecb9_row2_col8 {
+#T_d9151_row0_col6, #T_d9151_row0_col10, #T_d9151_row1_col5, #T_d9151_row2_col8 {
 background-color: #0f8446;
 color: #f1f1f1;
 }
-#T_4ecb9_row0_col7 {
+#T_d9151_row0_col7 {
 background-color: #0d8044;
 color: #f1f1f1;
 }
-#T_4ecb9_row0_col8 {
+#T_d9151_row0_col8 {
 background-color: #2aa054;
 color: #f1f1f1;
 }
-#T_4ecb9_row0_col9 {
+#T_d9151_row0_col9 {
 background-color: #097940;
 color: #f1f1f1;
 }
-#T_4ecb9_row1_col6 {
+#T_d9151_row1_col6 {
 background-color: #199750;
 color: #f1f1f1;
 }
-#T_4ecb9_row1_col7 {
+#T_d9151_row1_col7 {
 background-color: #138c4a;
 color: #f1f1f1;
 }
-#T_4ecb9_row1_col8 {
+#T_d9151_row1_col8 {
 background-color: #006837;
 color: #f1f1f1;
 }
-#T_4ecb9_row1_col9 {
+#T_d9151_row1_col9 {
 background-color: #118848;
 color: #f1f1f1;
 }
-#T_4ecb9_row1_col10 {
+#T_d9151_row1_col10 {
 background-color: #1b9950;
 color: #f1f1f1;
 }
-#T_4ecb9_row2_col5 {
+#T_d9151_row2_col5 {
 background-color: #63bc62;
 color: #f1f1f1;
 }
-#T_4ecb9_row2_col6 {
+#T_d9151_row2_col6 {
 background-color: #249d53;
 color: #f1f1f1;
 }
-#T_4ecb9_row2_col7, #T_4ecb9_row3_col9 {
+#T_d9151_row2_col7, #T_d9151_row3_col9 {
 background-color: #279f53;
 color: #f1f1f1;
 }
-#T_4ecb9_row2_col9 {
+#T_d9151_row2_col9 {
 background-color: #69be63;
 color: #f1f1f1;
 }
-#T_4ecb9_row2_col10 {
+#T_d9151_row2_col10 {
 background-color: #57b65f;
 color: #f1f1f1;
 }
-#T_4ecb9_row3_col5 {
+#T_d9151_row3_col5 {
 background-color: #39a758;
 color: #f1f1f1;
 }
-#T_4ecb9_row3_col6 {
+#T_d9151_row3_col6 {
 background-color: #54b45f;
 color: #f1f1f1;
 }
-#T_4ecb9_row3_col7 {
+#T_d9151_row3_col7 {
 background-color: #33a456;
 color: #f1f1f1;
 }
-#T_4ecb9_row3_col8 {
+#T_d9151_row3_col8 {
 background-color: #8ccd67;
 color: #000000;
 }
-#T_4ecb9_row3_col10, #T_4ecb9_row4_col9 {
+#T_d9151_row3_col10, #T_d9151_row4_col9 {
 background-color: #42ac5a;
 color: #f1f1f1;
 }
-#T_4ecb9_row4_col5, #T_4ecb9_row4_col8 {
+#T_d9151_row4_col5, #T_d9151_row4_col8 {
 background-color: #7dc765;
 color: #000000;
 }
-#T_4ecb9_row4_col6 {
+#T_d9151_row4_col6 {
 background-color: #7ac665;
 color: #000000;
 }
-#T_4ecb9_row4_col7 {
+#T_d9151_row4_col7 {
 background-color: #66bd63;
 color: #f1f1f1;
 }
-#T_4ecb9_row4_col10 {
+#T_d9151_row4_col10 {
 background-color: #6ec064;
 color: #000000;
 }
-#T_4ecb9_row5_col5 {
+#T_d9151_row5_col5 {
 background-color: #e5f49b;
 color: #000000;
 }
-#T_4ecb9_row5_col6 {
+#T_d9151_row5_col6 {
 background-color: #feda86;
 color: #000000;
 }
-#T_4ecb9_row5_col7 {
+#T_d9151_row5_col7 {
 background-color: #fdb163;
 color: #000000;
 }
-#T_4ecb9_row5_col8 {
+#T_d9151_row5_col8 {
 background-color: #a50026;
 color: #f1f1f1;
 }
-#T_4ecb9_row5_col9 {
+#T_d9151_row5_col9 {
 background-color: #fdc574;
 color: #000000;
 }
-#T_4ecb9_row5_col10 {
+#T_d9151_row5_col10 {
 background-color: #fed27f;
 color: #000000;
 }
 </style>
 
-<table id="T_4ecb9" class="caption-top table table-sm table-striped small" data-quarto-postprocess="true">
+<table id="T_d9151" class="caption-top table table-sm table-striped small" data-quarto-postprocess="true">
 <thead>
 <tr class="header">
 <th class="blank level0" data-quarto-table-cell-role="th"> </th>
-<th id="T_4ecb9_level0_col0" class="col_heading level0 col0" data-quarto-table-cell-role="th">gene_name</th>
-<th id="T_4ecb9_level0_col1" class="col_heading level0 col1" data-quarto-table-cell-role="th">mean_rank</th>
-<th id="T_4ecb9_level0_col2" class="col_heading level0 col2" data-quarto-table-cell-role="th">mean_score_all</th>
-<th id="T_4ecb9_level0_col3" class="col_heading level0 col3" data-quarto-table-cell-role="th">models_consensus</th>
-<th id="T_4ecb9_level0_col4" class="col_heading level0 col4" data-quarto-table-cell-role="th">cgc_tier</th>
-<th id="T_4ecb9_level0_col5" class="col_heading level0 col5" data-quarto-table-cell-role="th">rank_random_r0.1</th>
-<th id="T_4ecb9_level0_col6" class="col_heading level0 col6" data-quarto-table-cell-role="th">rank_random_r0.2</th>
-<th id="T_4ecb9_level0_col7" class="col_heading level0 col7" data-quarto-table-cell-role="th">rank_coarsening_r0.1</th>
-<th id="T_4ecb9_level0_col8" class="col_heading level0 col8" data-quarto-table-cell-role="th">rank_coarsening_r0.2</th>
-<th id="T_4ecb9_level0_col9" class="col_heading level0 col9" data-quarto-table-cell-role="th">rank_priority_r0.1</th>
-<th id="T_4ecb9_level0_col10" class="col_heading level0 col10" data-quarto-table-cell-role="th">rank_priority_r0.2</th>
+<th id="T_d9151_level0_col0" class="col_heading level0 col0" data-quarto-table-cell-role="th">gene_name</th>
+<th id="T_d9151_level0_col1" class="col_heading level0 col1" data-quarto-table-cell-role="th">mean_rank</th>
+<th id="T_d9151_level0_col2" class="col_heading level0 col2" data-quarto-table-cell-role="th">mean_score_all</th>
+<th id="T_d9151_level0_col3" class="col_heading level0 col3" data-quarto-table-cell-role="th">models_consensus</th>
+<th id="T_d9151_level0_col4" class="col_heading level0 col4" data-quarto-table-cell-role="th">cgc_tier</th>
+<th id="T_d9151_level0_col5" class="col_heading level0 col5" data-quarto-table-cell-role="th">rank_random_r0.1</th>
+<th id="T_d9151_level0_col6" class="col_heading level0 col6" data-quarto-table-cell-role="th">rank_random_r0.2</th>
+<th id="T_d9151_level0_col7" class="col_heading level0 col7" data-quarto-table-cell-role="th">rank_coarsening_r0.1</th>
+<th id="T_d9151_level0_col8" class="col_heading level0 col8" data-quarto-table-cell-role="th">rank_coarsening_r0.2</th>
+<th id="T_d9151_level0_col9" class="col_heading level0 col9" data-quarto-table-cell-role="th">rank_priority_r0.1</th>
+<th id="T_d9151_level0_col10" class="col_heading level0 col10" data-quarto-table-cell-role="th">rank_priority_r0.2</th>
 </tr>
 </thead>
 <tbody>
 <tr class="odd">
-<td id="T_4ecb9_level0_row0" class="row_heading level0 row0" data-quarto-table-cell-role="th">1</td>
-<td id="T_4ecb9_row0_col0" class="data row0 col0">TRERF1</td>
-<td id="T_4ecb9_row0_col1" class="data row0 col1">439.5</td>
-<td id="T_4ecb9_row0_col2" class="data row0 col2">0.6662</td>
-<td id="T_4ecb9_row0_col3" class="data row0 col3">4</td>
-<td id="T_4ecb9_row0_col4" class="data row0 col4">Novel</td>
-<td id="T_4ecb9_row0_col5" class="data row0 col5">240</td>
-<td id="T_4ecb9_row0_col6" class="data row0 col6">436</td>
-<td id="T_4ecb9_row0_col7" class="data row0 col7">391</td>
-<td id="T_4ecb9_row0_col8" class="data row0 col8">838</td>
-<td id="T_4ecb9_row0_col9" class="data row0 col9">291</td>
-<td id="T_4ecb9_row0_col10" class="data row0 col10">441</td>
+<td id="T_d9151_level0_row0" class="row_heading level0 row0" data-quarto-table-cell-role="th">1</td>
+<td id="T_d9151_row0_col0" class="data row0 col0">TRERF1</td>
+<td id="T_d9151_row0_col1" class="data row0 col1">439.5</td>
+<td id="T_d9151_row0_col2" class="data row0 col2">0.6662</td>
+<td id="T_d9151_row0_col3" class="data row0 col3">4</td>
+<td id="T_d9151_row0_col4" class="data row0 col4">Novel</td>
+<td id="T_d9151_row0_col5" class="data row0 col5">240</td>
+<td id="T_d9151_row0_col6" class="data row0 col6">436</td>
+<td id="T_d9151_row0_col7" class="data row0 col7">391</td>
+<td id="T_d9151_row0_col8" class="data row0 col8">838</td>
+<td id="T_d9151_row0_col9" class="data row0 col9">291</td>
+<td id="T_d9151_row0_col10" class="data row0 col10">441</td>
 </tr>
 <tr class="even">
-<td id="T_4ecb9_level0_row1" class="row_heading level0 row1" data-quarto-table-cell-role="th">2</td>
-<td id="T_4ecb9_row1_col0" class="data row1 col0">CBFA2T2</td>
-<td id="T_4ecb9_row1_col1" class="data row1 col1">489.3</td>
-<td id="T_4ecb9_row1_col2" class="data row1 col2">0.6862</td>
-<td id="T_4ecb9_row1_col3" class="data row1 col3">4</td>
-<td id="T_4ecb9_row1_col4" class="data row1 col4">Novel</td>
-<td id="T_4ecb9_row1_col5" class="data row1 col5">441</td>
-<td id="T_4ecb9_row1_col6" class="data row1 col6">693</td>
-<td id="T_4ecb9_row1_col7" class="data row1 col7">548</td>
-<td id="T_4ecb9_row1_col8" class="data row1 col8">42</td>
-<td id="T_4ecb9_row1_col9" class="data row1 col9">496</td>
-<td id="T_4ecb9_row1_col10" class="data row1 col10">716</td>
+<td id="T_d9151_level0_row1" class="row_heading level0 row1" data-quarto-table-cell-role="th">2</td>
+<td id="T_d9151_row1_col0" class="data row1 col0">CBFA2T2</td>
+<td id="T_d9151_row1_col1" class="data row1 col1">489.3</td>
+<td id="T_d9151_row1_col2" class="data row1 col2">0.6862</td>
+<td id="T_d9151_row1_col3" class="data row1 col3">4</td>
+<td id="T_d9151_row1_col4" class="data row1 col4">Novel</td>
+<td id="T_d9151_row1_col5" class="data row1 col5">441</td>
+<td id="T_d9151_row1_col6" class="data row1 col6">693</td>
+<td id="T_d9151_row1_col7" class="data row1 col7">548</td>
+<td id="T_d9151_row1_col8" class="data row1 col8">42</td>
+<td id="T_d9151_row1_col9" class="data row1 col9">496</td>
+<td id="T_d9151_row1_col10" class="data row1 col10">716</td>
 </tr>
 <tr class="odd">
-<td id="T_4ecb9_level0_row2" class="row_heading level0 row2" data-quarto-table-cell-role="th">3</td>
-<td id="T_4ecb9_row2_col0" class="data row2 col0">ANAPC2</td>
-<td id="T_4ecb9_row2_col1" class="data row2 col1">998.0</td>
-<td id="T_4ecb9_row2_col2" class="data row2 col2">0.6053</td>
-<td id="T_4ecb9_row2_col3" class="data row2 col3">4</td>
-<td id="T_4ecb9_row2_col4" class="data row2 col4">Novel</td>
-<td id="T_4ecb9_row2_col5" class="data row2 col5">1322</td>
-<td id="T_4ecb9_row2_col6" class="data row2 col6">798</td>
-<td id="T_4ecb9_row2_col7" class="data row2 col7">824</td>
-<td id="T_4ecb9_row2_col8" class="data row2 col8">441</td>
-<td id="T_4ecb9_row2_col9" class="data row2 col9">1380</td>
-<td id="T_4ecb9_row2_col10" class="data row2 col10">1223</td>
+<td id="T_d9151_level0_row2" class="row_heading level0 row2" data-quarto-table-cell-role="th">3</td>
+<td id="T_d9151_row2_col0" class="data row2 col0">ANAPC2</td>
+<td id="T_d9151_row2_col1" class="data row2 col1">998.0</td>
+<td id="T_d9151_row2_col2" class="data row2 col2">0.6053</td>
+<td id="T_d9151_row2_col3" class="data row2 col3">4</td>
+<td id="T_d9151_row2_col4" class="data row2 col4">Novel</td>
+<td id="T_d9151_row2_col5" class="data row2 col5">1322</td>
+<td id="T_d9151_row2_col6" class="data row2 col6">798</td>
+<td id="T_d9151_row2_col7" class="data row2 col7">824</td>
+<td id="T_d9151_row2_col8" class="data row2 col8">441</td>
+<td id="T_d9151_row2_col9" class="data row2 col9">1380</td>
+<td id="T_d9151_row2_col10" class="data row2 col10">1223</td>
 </tr>
 <tr class="even">
-<td id="T_4ecb9_level0_row3" class="row_heading level0 row3" data-quarto-table-cell-role="th">4</td>
-<td id="T_4ecb9_row3_col0" class="data row3 col0">NPAS2</td>
-<td id="T_4ecb9_row3_col1" class="data row3 col1">1112.3</td>
-<td id="T_4ecb9_row3_col2" class="data row3 col2">0.5251</td>
-<td id="T_4ecb9_row3_col3" class="data row3 col3">4</td>
-<td id="T_4ecb9_row3_col4" class="data row3 col4">Novel</td>
-<td id="T_4ecb9_row3_col5" class="data row3 col5">974</td>
-<td id="T_4ecb9_row3_col6" class="data row3 col6">1190</td>
-<td id="T_4ecb9_row3_col7" class="data row3 col7">911</td>
-<td id="T_4ecb9_row3_col8" class="data row3 col8">1737</td>
-<td id="T_4ecb9_row3_col9" class="data row3 col9">814</td>
-<td id="T_4ecb9_row3_col10" class="data row3 col10">1048</td>
+<td id="T_d9151_level0_row3" class="row_heading level0 row3" data-quarto-table-cell-role="th">4</td>
+<td id="T_d9151_row3_col0" class="data row3 col0">NPAS2</td>
+<td id="T_d9151_row3_col1" class="data row3 col1">1112.3</td>
+<td id="T_d9151_row3_col2" class="data row3 col2">0.5251</td>
+<td id="T_d9151_row3_col3" class="data row3 col3">4</td>
+<td id="T_d9151_row3_col4" class="data row3 col4">Novel</td>
+<td id="T_d9151_row3_col5" class="data row3 col5">974</td>
+<td id="T_d9151_row3_col6" class="data row3 col6">1190</td>
+<td id="T_d9151_row3_col7" class="data row3 col7">911</td>
+<td id="T_d9151_row3_col8" class="data row3 col8">1737</td>
+<td id="T_d9151_row3_col9" class="data row3 col9">814</td>
+<td id="T_d9151_row3_col10" class="data row3 col10">1048</td>
 </tr>
 <tr class="odd">
-<td id="T_4ecb9_level0_row4" class="row_heading level0 row4" data-quarto-table-cell-role="th">5</td>
-<td id="T_4ecb9_row4_col0" class="data row4 col0">SLC16A1</td>
-<td id="T_4ecb9_row4_col1" class="data row4 col1">1419.7</td>
-<td id="T_4ecb9_row4_col2" class="data row4 col2">0.4960</td>
-<td id="T_4ecb9_row4_col3" class="data row4 col3">4</td>
-<td id="T_4ecb9_row4_col4" class="data row4 col4">Novel</td>
-<td id="T_4ecb9_row4_col5" class="data row4 col5">1569</td>
-<td id="T_4ecb9_row4_col6" class="data row4 col6">1545</td>
-<td id="T_4ecb9_row4_col7" class="data row4 col7">1355</td>
-<td id="T_4ecb9_row4_col8" class="data row4 col8">1570</td>
-<td id="T_4ecb9_row4_col9" class="data row4 col9">1048</td>
-<td id="T_4ecb9_row4_col10" class="data row4 col10">1431</td>
+<td id="T_d9151_level0_row4" class="row_heading level0 row4" data-quarto-table-cell-role="th">5</td>
+<td id="T_d9151_row4_col0" class="data row4 col0">SLC16A1</td>
+<td id="T_d9151_row4_col1" class="data row4 col1">1419.7</td>
+<td id="T_d9151_row4_col2" class="data row4 col2">0.4960</td>
+<td id="T_d9151_row4_col3" class="data row4 col3">4</td>
+<td id="T_d9151_row4_col4" class="data row4 col4">Novel</td>
+<td id="T_d9151_row4_col5" class="data row4 col5">1569</td>
+<td id="T_d9151_row4_col6" class="data row4 col6">1545</td>
+<td id="T_d9151_row4_col7" class="data row4 col7">1355</td>
+<td id="T_d9151_row4_col8" class="data row4 col8">1570</td>
+<td id="T_d9151_row4_col9" class="data row4 col9">1048</td>
+<td id="T_d9151_row4_col10" class="data row4 col10">1431</td>
 </tr>
 <tr class="even">
-<td id="T_4ecb9_level0_row5" class="row_heading level0 row5" data-quarto-table-cell-role="th">6</td>
-<td id="T_4ecb9_row5_col0" class="data row5 col0">TUB</td>
-<td id="T_4ecb9_row5_col1" class="data row5 col1">4395.7</td>
-<td id="T_4ecb9_row5_col2" class="data row5 col2">0.2400</td>
-<td id="T_4ecb9_row5_col3" class="data row5 col3">4</td>
-<td id="T_4ecb9_row5_col4" class="data row5 col4">Novel</td>
-<td id="T_4ecb9_row5_col5" class="data row5 col5">2837</td>
-<td id="T_4ecb9_row5_col6" class="data row5 col6">4021</td>
-<td id="T_4ecb9_row5_col7" class="data row5 col7">4554</td>
-<td id="T_4ecb9_row5_col8" class="data row5 col8">6545</td>
-<td id="T_4ecb9_row5_col9" class="data row5 col9">4300</td>
-<td id="T_4ecb9_row5_col10" class="data row5 col10">4117</td>
+<td id="T_d9151_level0_row5" class="row_heading level0 row5" data-quarto-table-cell-role="th">6</td>
+<td id="T_d9151_row5_col0" class="data row5 col0">TUB</td>
+<td id="T_d9151_row5_col1" class="data row5 col1">4395.7</td>
+<td id="T_d9151_row5_col2" class="data row5 col2">0.2400</td>
+<td id="T_d9151_row5_col3" class="data row5 col3">4</td>
+<td id="T_d9151_row5_col4" class="data row5 col4">Novel</td>
+<td id="T_d9151_row5_col5" class="data row5 col5">2837</td>
+<td id="T_d9151_row5_col6" class="data row5 col6">4021</td>
+<td id="T_d9151_row5_col7" class="data row5 col7">4554</td>
+<td id="T_d9151_row5_col8" class="data row5 col8">6545</td>
+<td id="T_d9151_row5_col9" class="data row5 col9">4300</td>
+<td id="T_d9151_row5_col10" class="data row5 col10">4117</td>
 </tr>
 </tbody>
 </table>
@@ -3601,234 +3601,234 @@ Connected components: 8 (largest: 43 nodes)</code></pre>
 </div>
 <div id="cross-network-table" class="cell-output cell-output-display">
 <style type="text/css">
-#T_18f0e caption {
+#T_53b57 caption {
 font-size: 13px;
 font-weight: bold;
 text-align: left;
 padding-bottom: 8px;
 }
-#T_18f0e th {
+#T_53b57 th {
 background-color: #2C3E50;
 color: white;
 font-size: 11px;
 text-align: center;
 padding: 6px 10px;
 }
-#T_18f0e td {
+#T_53b57 td {
 font-size: 11px;
 text-align: center;
 padding: 5px 10px;
 }
-#T_18f0e tr:hover td {
+#T_53b57 tr:hover td {
 background-color: #EBF5FB;
 }
-#T_18f0e_row0_col0, #T_18f0e_row0_col1, #T_18f0e_row0_col2, #T_18f0e_row0_col3, #T_18f0e_row0_col4, #T_18f0e_row0_col5, #T_18f0e_row1_col0, #T_18f0e_row1_col1, #T_18f0e_row1_col2, #T_18f0e_row1_col3, #T_18f0e_row1_col4, #T_18f0e_row1_col5, #T_18f0e_row3_col0, #T_18f0e_row3_col1, #T_18f0e_row3_col2, #T_18f0e_row3_col3, #T_18f0e_row3_col4, #T_18f0e_row3_col5, #T_18f0e_row4_col0, #T_18f0e_row4_col1, #T_18f0e_row4_col2, #T_18f0e_row4_col3, #T_18f0e_row4_col4, #T_18f0e_row4_col5, #T_18f0e_row8_col0, #T_18f0e_row8_col1, #T_18f0e_row8_col2, #T_18f0e_row8_col3, #T_18f0e_row8_col4, #T_18f0e_row8_col5, #T_18f0e_row9_col0, #T_18f0e_row9_col1, #T_18f0e_row9_col2, #T_18f0e_row9_col3, #T_18f0e_row9_col4, #T_18f0e_row9_col5, #T_18f0e_row10_col0, #T_18f0e_row10_col1, #T_18f0e_row10_col2, #T_18f0e_row10_col3, #T_18f0e_row10_col4, #T_18f0e_row10_col5, #T_18f0e_row12_col0, #T_18f0e_row12_col1, #T_18f0e_row12_col2, #T_18f0e_row12_col3, #T_18f0e_row12_col4, #T_18f0e_row12_col5, #T_18f0e_row13_col0, #T_18f0e_row13_col1, #T_18f0e_row13_col2, #T_18f0e_row13_col3, #T_18f0e_row13_col4, #T_18f0e_row13_col5, #T_18f0e_row14_col0, #T_18f0e_row14_col1, #T_18f0e_row14_col2, #T_18f0e_row14_col3, #T_18f0e_row14_col4, #T_18f0e_row14_col5, #T_18f0e_row15_col0, #T_18f0e_row15_col1, #T_18f0e_row15_col2, #T_18f0e_row15_col3, #T_18f0e_row15_col4, #T_18f0e_row15_col5, #T_18f0e_row17_col0, #T_18f0e_row17_col1, #T_18f0e_row17_col2, #T_18f0e_row17_col3, #T_18f0e_row17_col4, #T_18f0e_row17_col5, #T_18f0e_row18_col0, #T_18f0e_row18_col1, #T_18f0e_row18_col2, #T_18f0e_row18_col3, #T_18f0e_row18_col4, #T_18f0e_row18_col5, #T_18f0e_row19_col0, #T_18f0e_row19_col1, #T_18f0e_row19_col2, #T_18f0e_row19_col3, #T_18f0e_row19_col4, #T_18f0e_row19_col5 {
+#T_53b57_row0_col0, #T_53b57_row0_col1, #T_53b57_row0_col2, #T_53b57_row0_col3, #T_53b57_row0_col4, #T_53b57_row0_col5, #T_53b57_row1_col0, #T_53b57_row1_col1, #T_53b57_row1_col2, #T_53b57_row1_col3, #T_53b57_row1_col4, #T_53b57_row1_col5, #T_53b57_row3_col0, #T_53b57_row3_col1, #T_53b57_row3_col2, #T_53b57_row3_col3, #T_53b57_row3_col4, #T_53b57_row3_col5, #T_53b57_row4_col0, #T_53b57_row4_col1, #T_53b57_row4_col2, #T_53b57_row4_col3, #T_53b57_row4_col4, #T_53b57_row4_col5, #T_53b57_row8_col0, #T_53b57_row8_col1, #T_53b57_row8_col2, #T_53b57_row8_col3, #T_53b57_row8_col4, #T_53b57_row8_col5, #T_53b57_row9_col0, #T_53b57_row9_col1, #T_53b57_row9_col2, #T_53b57_row9_col3, #T_53b57_row9_col4, #T_53b57_row9_col5, #T_53b57_row10_col0, #T_53b57_row10_col1, #T_53b57_row10_col2, #T_53b57_row10_col3, #T_53b57_row10_col4, #T_53b57_row10_col5, #T_53b57_row12_col0, #T_53b57_row12_col1, #T_53b57_row12_col2, #T_53b57_row12_col3, #T_53b57_row12_col4, #T_53b57_row12_col5, #T_53b57_row13_col0, #T_53b57_row13_col1, #T_53b57_row13_col2, #T_53b57_row13_col3, #T_53b57_row13_col4, #T_53b57_row13_col5, #T_53b57_row14_col0, #T_53b57_row14_col1, #T_53b57_row14_col2, #T_53b57_row14_col3, #T_53b57_row14_col4, #T_53b57_row14_col5, #T_53b57_row15_col0, #T_53b57_row15_col1, #T_53b57_row15_col2, #T_53b57_row15_col3, #T_53b57_row15_col4, #T_53b57_row15_col5, #T_53b57_row17_col0, #T_53b57_row17_col1, #T_53b57_row17_col2, #T_53b57_row17_col3, #T_53b57_row17_col4, #T_53b57_row17_col5, #T_53b57_row18_col0, #T_53b57_row18_col1, #T_53b57_row18_col2, #T_53b57_row18_col3, #T_53b57_row18_col4, #T_53b57_row18_col5, #T_53b57_row19_col0, #T_53b57_row19_col1, #T_53b57_row19_col2, #T_53b57_row19_col3, #T_53b57_row19_col4, #T_53b57_row19_col5 {
 background-color: #FFF3CD;
 font-weight: bold;
 }
-#T_18f0e_row2_col0, #T_18f0e_row2_col1, #T_18f0e_row2_col2, #T_18f0e_row2_col3, #T_18f0e_row2_col4, #T_18f0e_row2_col5, #T_18f0e_row5_col0, #T_18f0e_row5_col1, #T_18f0e_row5_col2, #T_18f0e_row5_col3, #T_18f0e_row5_col4, #T_18f0e_row5_col5, #T_18f0e_row6_col0, #T_18f0e_row6_col1, #T_18f0e_row6_col2, #T_18f0e_row6_col3, #T_18f0e_row6_col4, #T_18f0e_row6_col5, #T_18f0e_row7_col0, #T_18f0e_row7_col1, #T_18f0e_row7_col2, #T_18f0e_row7_col3, #T_18f0e_row7_col4, #T_18f0e_row7_col5, #T_18f0e_row16_col0, #T_18f0e_row16_col1, #T_18f0e_row16_col2, #T_18f0e_row16_col3, #T_18f0e_row16_col4, #T_18f0e_row16_col5 {
+#T_53b57_row2_col0, #T_53b57_row2_col1, #T_53b57_row2_col2, #T_53b57_row2_col3, #T_53b57_row2_col4, #T_53b57_row2_col5, #T_53b57_row5_col0, #T_53b57_row5_col1, #T_53b57_row5_col2, #T_53b57_row5_col3, #T_53b57_row5_col4, #T_53b57_row5_col5, #T_53b57_row6_col0, #T_53b57_row6_col1, #T_53b57_row6_col2, #T_53b57_row6_col3, #T_53b57_row6_col4, #T_53b57_row6_col5, #T_53b57_row7_col0, #T_53b57_row7_col1, #T_53b57_row7_col2, #T_53b57_row7_col3, #T_53b57_row7_col4, #T_53b57_row7_col5, #T_53b57_row16_col0, #T_53b57_row16_col1, #T_53b57_row16_col2, #T_53b57_row16_col3, #T_53b57_row16_col4, #T_53b57_row16_col5 {
 background-color: #FDECEA;
 }
 </style>
 
-<div id="T_18f0e" class="quarto-float quarto-figure quarto-figure-center anchored" data-quarto-postprocess="true">
+<div id="T_53b57" class="quarto-float quarto-figure quarto-figure-center anchored" data-quarto-postprocess="true">
 <figure class="quarto-float quarto-float-tbl figure">
-<figcaption class="quarto-float-caption-top quarto-float-caption quarto-float-tbl" id="T_18f0e-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<figcaption class="quarto-float-caption-top quarto-float-caption quarto-float-tbl" id="T_53b57-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
 Table 2: Top 20 Consensus Cancer Driver Gene Predictions Across Networks (DriverJinn, ρ=0.2) — Novel candidates highlighted in gold
 </figcaption>
-<div aria-describedby="T_18f0e-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
-<table id="T_18f0e" class="caption-top table table-sm table-striped small" data-quarto-postprocess="true">
+<div aria-describedby="T_53b57-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<table id="T_53b57" class="caption-top table table-sm table-striped small" data-quarto-postprocess="true">
 <thead>
 <tr class="header">
 <th class="blank level0" data-quarto-table-cell-role="th"> </th>
-<th id="T_18f0e_level0_col0" class="col_heading level0 col0" data-quarto-table-cell-role="th">Consensus Rank</th>
-<th id="T_18f0e_level0_col1" class="col_heading level0 col1" data-quarto-table-cell-role="th">Gene</th>
-<th id="T_18f0e_level0_col2" class="col_heading level0 col2" data-quarto-table-cell-role="th">GGNet</th>
-<th id="T_18f0e_level0_col3" class="col_heading level0 col3" data-quarto-table-cell-role="th">PathNet</th>
-<th id="T_18f0e_level0_col4" class="col_heading level0 col4" data-quarto-table-cell-role="th">PPNet</th>
-<th id="T_18f0e_level0_col5" class="col_heading level0 col5" data-quarto-table-cell-role="th">CGC Status</th>
+<th id="T_53b57_level0_col0" class="col_heading level0 col0" data-quarto-table-cell-role="th">Consensus Rank</th>
+<th id="T_53b57_level0_col1" class="col_heading level0 col1" data-quarto-table-cell-role="th">Gene</th>
+<th id="T_53b57_level0_col2" class="col_heading level0 col2" data-quarto-table-cell-role="th">GGNet</th>
+<th id="T_53b57_level0_col3" class="col_heading level0 col3" data-quarto-table-cell-role="th">PathNet</th>
+<th id="T_53b57_level0_col4" class="col_heading level0 col4" data-quarto-table-cell-role="th">PPNet</th>
+<th id="T_53b57_level0_col5" class="col_heading level0 col5" data-quarto-table-cell-role="th">CGC Status</th>
 </tr>
 </thead>
 <tbody>
 <tr class="odd">
-<td id="T_18f0e_level0_row0" class="row_heading level0 row0" data-quarto-table-cell-role="th">30</td>
-<td id="T_18f0e_row0_col0" class="data row0 col0">1</td>
-<td id="T_18f0e_row0_col1" class="data row0 col1">SIN3A</td>
-<td id="T_18f0e_row0_col2" class="data row0 col2">31</td>
-<td id="T_18f0e_row0_col3" class="data row0 col3">20</td>
-<td id="T_18f0e_row0_col4" class="data row0 col4">118</td>
-<td id="T_18f0e_row0_col5" class="data row0 col5">Novel</td>
+<td id="T_53b57_level0_row0" class="row_heading level0 row0" data-quarto-table-cell-role="th">30</td>
+<td id="T_53b57_row0_col0" class="data row0 col0">1</td>
+<td id="T_53b57_row0_col1" class="data row0 col1">SIN3A</td>
+<td id="T_53b57_row0_col2" class="data row0 col2">31</td>
+<td id="T_53b57_row0_col3" class="data row0 col3">20</td>
+<td id="T_53b57_row0_col4" class="data row0 col4">118</td>
+<td id="T_53b57_row0_col5" class="data row0 col5">Novel</td>
 </tr>
 <tr class="even">
-<td id="T_18f0e_level0_row1" class="row_heading level0 row1" data-quarto-table-cell-role="th">22</td>
-<td id="T_18f0e_row1_col0" class="data row1 col0">2</td>
-<td id="T_18f0e_row1_col1" class="data row1 col1">HDAC2</td>
-<td id="T_18f0e_row1_col2" class="data row1 col2">23</td>
-<td id="T_18f0e_row1_col3" class="data row1 col3">82</td>
-<td id="T_18f0e_row1_col4" class="data row1 col4">69</td>
-<td id="T_18f0e_row1_col5" class="data row1 col5">Novel</td>
+<td id="T_53b57_level0_row1" class="row_heading level0 row1" data-quarto-table-cell-role="th">22</td>
+<td id="T_53b57_row1_col0" class="data row1 col0">2</td>
+<td id="T_53b57_row1_col1" class="data row1 col1">HDAC2</td>
+<td id="T_53b57_row1_col2" class="data row1 col2">23</td>
+<td id="T_53b57_row1_col3" class="data row1 col3">82</td>
+<td id="T_53b57_row1_col4" class="data row1 col4">69</td>
+<td id="T_53b57_row1_col5" class="data row1 col5">Novel</td>
 </tr>
 <tr class="odd">
-<td id="T_18f0e_level0_row2" class="row_heading level0 row2" data-quarto-table-cell-role="th">113</td>
-<td id="T_18f0e_row2_col0" class="data row2 col0">3</td>
-<td id="T_18f0e_row2_col1" class="data row2 col1">NCOR2</td>
-<td id="T_18f0e_row2_col2" class="data row2 col2">121</td>
-<td id="T_18f0e_row2_col3" class="data row2 col3">46</td>
-<td id="T_18f0e_row2_col4" class="data row2 col4">91</td>
-<td id="T_18f0e_row2_col5" class="data row2 col5">Tier 1</td>
+<td id="T_53b57_level0_row2" class="row_heading level0 row2" data-quarto-table-cell-role="th">113</td>
+<td id="T_53b57_row2_col0" class="data row2 col0">3</td>
+<td id="T_53b57_row2_col1" class="data row2 col1">NCOR2</td>
+<td id="T_53b57_row2_col2" class="data row2 col2">121</td>
+<td id="T_53b57_row2_col3" class="data row2 col3">46</td>
+<td id="T_53b57_row2_col4" class="data row2 col4">91</td>
+<td id="T_53b57_row2_col5" class="data row2 col5">Tier 1</td>
 </tr>
 <tr class="even">
-<td id="T_18f0e_level0_row3" class="row_heading level0 row3" data-quarto-table-cell-role="th">55</td>
-<td id="T_18f0e_row3_col0" class="data row3 col0">4</td>
-<td id="T_18f0e_row3_col1" class="data row3 col1">SMARCC1</td>
-<td id="T_18f0e_row3_col2" class="data row3 col2">58</td>
-<td id="T_18f0e_row3_col3" class="data row3 col3">149</td>
-<td id="T_18f0e_row3_col4" class="data row3 col4">85</td>
-<td id="T_18f0e_row3_col5" class="data row3 col5">Novel</td>
+<td id="T_53b57_level0_row3" class="row_heading level0 row3" data-quarto-table-cell-role="th">55</td>
+<td id="T_53b57_row3_col0" class="data row3 col0">4</td>
+<td id="T_53b57_row3_col1" class="data row3 col1">SMARCC1</td>
+<td id="T_53b57_row3_col2" class="data row3 col2">58</td>
+<td id="T_53b57_row3_col3" class="data row3 col3">149</td>
+<td id="T_53b57_row3_col4" class="data row3 col4">85</td>
+<td id="T_53b57_row3_col5" class="data row3 col5">Novel</td>
 </tr>
 <tr class="odd">
-<td id="T_18f0e_level0_row4" class="row_heading level0 row4" data-quarto-table-cell-role="th">224</td>
-<td id="T_18f0e_row4_col0" class="data row4 col0">5</td>
-<td id="T_18f0e_row4_col1" class="data row4 col1">KMT2E</td>
-<td id="T_18f0e_row4_col2" class="data row4 col2">255</td>
-<td id="T_18f0e_row4_col3" class="data row4 col3">22</td>
-<td id="T_18f0e_row4_col4" class="data row4 col4">23</td>
-<td id="T_18f0e_row4_col5" class="data row4 col5">Novel</td>
+<td id="T_53b57_level0_row4" class="row_heading level0 row4" data-quarto-table-cell-role="th">224</td>
+<td id="T_53b57_row4_col0" class="data row4 col0">5</td>
+<td id="T_53b57_row4_col1" class="data row4 col1">KMT2E</td>
+<td id="T_53b57_row4_col2" class="data row4 col2">255</td>
+<td id="T_53b57_row4_col3" class="data row4 col3">22</td>
+<td id="T_53b57_row4_col4" class="data row4 col4">23</td>
+<td id="T_53b57_row4_col5" class="data row4 col5">Novel</td>
 </tr>
 <tr class="even">
-<td id="T_18f0e_level0_row5" class="row_heading level0 row5" data-quarto-table-cell-role="th">17</td>
-<td id="T_18f0e_row5_col0" class="data row5 col0">6</td>
-<td id="T_18f0e_row5_col1" class="data row5 col1">SOS1</td>
-<td id="T_18f0e_row5_col2" class="data row5 col2">18</td>
-<td id="T_18f0e_row5_col3" class="data row5 col3">91</td>
-<td id="T_18f0e_row5_col4" class="data row5 col4">193</td>
-<td id="T_18f0e_row5_col5" class="data row5 col5">Tier 1</td>
+<td id="T_53b57_level0_row5" class="row_heading level0 row5" data-quarto-table-cell-role="th">17</td>
+<td id="T_53b57_row5_col0" class="data row5 col0">6</td>
+<td id="T_53b57_row5_col1" class="data row5 col1">SOS1</td>
+<td id="T_53b57_row5_col2" class="data row5 col2">18</td>
+<td id="T_53b57_row5_col3" class="data row5 col3">91</td>
+<td id="T_53b57_row5_col4" class="data row5 col4">193</td>
+<td id="T_53b57_row5_col5" class="data row5 col5">Tier 1</td>
 </tr>
 <tr class="odd">
-<td id="T_18f0e_level0_row6" class="row_heading level0 row6" data-quarto-table-cell-role="th">20</td>
-<td id="T_18f0e_row6_col0" class="data row6 col0">7</td>
-<td id="T_18f0e_row6_col1" class="data row6 col1">CBFB</td>
-<td id="T_18f0e_row6_col2" class="data row6 col2">21</td>
-<td id="T_18f0e_row6_col3" class="data row6 col3">84</td>
-<td id="T_18f0e_row6_col4" class="data row6 col4">209</td>
-<td id="T_18f0e_row6_col5" class="data row6 col5">Tier 1</td>
+<td id="T_53b57_level0_row6" class="row_heading level0 row6" data-quarto-table-cell-role="th">20</td>
+<td id="T_53b57_row6_col0" class="data row6 col0">7</td>
+<td id="T_53b57_row6_col1" class="data row6 col1">CBFB</td>
+<td id="T_53b57_row6_col2" class="data row6 col2">21</td>
+<td id="T_53b57_row6_col3" class="data row6 col3">84</td>
+<td id="T_53b57_row6_col4" class="data row6 col4">209</td>
+<td id="T_53b57_row6_col5" class="data row6 col5">Tier 1</td>
 </tr>
 <tr class="even">
-<td id="T_18f0e_level0_row7" class="row_heading level0 row7" data-quarto-table-cell-role="th">93</td>
-<td id="T_18f0e_row7_col0" class="data row7 col0">8</td>
-<td id="T_18f0e_row7_col1" class="data row7 col1">KDR</td>
-<td id="T_18f0e_row7_col2" class="data row7 col2">100</td>
-<td id="T_18f0e_row7_col3" class="data row7 col3">113</td>
-<td id="T_18f0e_row7_col4" class="data row7 col4">103</td>
-<td id="T_18f0e_row7_col5" class="data row7 col5">Tier 1</td>
+<td id="T_53b57_level0_row7" class="row_heading level0 row7" data-quarto-table-cell-role="th">93</td>
+<td id="T_53b57_row7_col0" class="data row7 col0">8</td>
+<td id="T_53b57_row7_col1" class="data row7 col1">KDR</td>
+<td id="T_53b57_row7_col2" class="data row7 col2">100</td>
+<td id="T_53b57_row7_col3" class="data row7 col3">113</td>
+<td id="T_53b57_row7_col4" class="data row7 col4">103</td>
+<td id="T_53b57_row7_col5" class="data row7 col5">Tier 1</td>
 </tr>
 <tr class="odd">
-<td id="T_18f0e_level0_row8" class="row_heading level0 row8" data-quarto-table-cell-role="th">85</td>
-<td id="T_18f0e_row8_col0" class="data row8 col0">9</td>
-<td id="T_18f0e_row8_col1" class="data row8 col1">SMARCC2</td>
-<td id="T_18f0e_row8_col2" class="data row8 col2">92</td>
-<td id="T_18f0e_row8_col3" class="data row8 col3">29</td>
-<td id="T_18f0e_row8_col4" class="data row8 col4">196</td>
-<td id="T_18f0e_row8_col5" class="data row8 col5">Novel</td>
+<td id="T_53b57_level0_row8" class="row_heading level0 row8" data-quarto-table-cell-role="th">85</td>
+<td id="T_53b57_row8_col0" class="data row8 col0">9</td>
+<td id="T_53b57_row8_col1" class="data row8 col1">SMARCC2</td>
+<td id="T_53b57_row8_col2" class="data row8 col2">92</td>
+<td id="T_53b57_row8_col3" class="data row8 col3">29</td>
+<td id="T_53b57_row8_col4" class="data row8 col4">196</td>
+<td id="T_53b57_row8_col5" class="data row8 col5">Novel</td>
 </tr>
 <tr class="even">
-<td id="T_18f0e_level0_row9" class="row_heading level0 row9" data-quarto-table-cell-role="th">171</td>
-<td id="T_18f0e_row9_col0" class="data row9 col0">10</td>
-<td id="T_18f0e_row9_col1" class="data row9 col1">SMARCA2</td>
-<td id="T_18f0e_row9_col2" class="data row9 col2">190</td>
-<td id="T_18f0e_row9_col3" class="data row9 col3">68</td>
-<td id="T_18f0e_row9_col4" class="data row9 col4">61</td>
-<td id="T_18f0e_row9_col5" class="data row9 col5">Novel</td>
+<td id="T_53b57_level0_row9" class="row_heading level0 row9" data-quarto-table-cell-role="th">171</td>
+<td id="T_53b57_row9_col0" class="data row9 col0">10</td>
+<td id="T_53b57_row9_col1" class="data row9 col1">SMARCA2</td>
+<td id="T_53b57_row9_col2" class="data row9 col2">190</td>
+<td id="T_53b57_row9_col3" class="data row9 col3">68</td>
+<td id="T_53b57_row9_col4" class="data row9 col4">61</td>
+<td id="T_53b57_row9_col5" class="data row9 col5">Novel</td>
 </tr>
 <tr class="odd">
-<td id="T_18f0e_level0_row10" class="row_heading level0 row10" data-quarto-table-cell-role="th">12</td>
-<td id="T_18f0e_row10_col0" class="data row10 col0">11</td>
-<td id="T_18f0e_row10_col1" class="data row10 col1">RBBP4</td>
-<td id="T_18f0e_row10_col2" class="data row10 col2">13</td>
-<td id="T_18f0e_row10_col3" class="data row10 col3">47</td>
-<td id="T_18f0e_row10_col4" class="data row10 col4">294</td>
-<td id="T_18f0e_row10_col5" class="data row10 col5">Novel</td>
+<td id="T_53b57_level0_row10" class="row_heading level0 row10" data-quarto-table-cell-role="th">12</td>
+<td id="T_53b57_row10_col0" class="data row10 col0">11</td>
+<td id="T_53b57_row10_col1" class="data row10 col1">RBBP4</td>
+<td id="T_53b57_row10_col2" class="data row10 col2">13</td>
+<td id="T_53b57_row10_col3" class="data row10 col3">47</td>
+<td id="T_53b57_row10_col4" class="data row10 col4">294</td>
+<td id="T_53b57_row10_col5" class="data row10 col5">Novel</td>
 </tr>
 <tr class="even">
-<td id="T_18f0e_level0_row11" class="row_heading level0 row11" data-quarto-table-cell-role="th">196</td>
-<td id="T_18f0e_row11_col0" class="data row11 col0">12</td>
-<td id="T_18f0e_row11_col1" class="data row11 col1">EED</td>
-<td id="T_18f0e_row11_col2" class="data row11 col2">218</td>
-<td id="T_18f0e_row11_col3" class="data row11 col3">34</td>
-<td id="T_18f0e_row11_col4" class="data row11 col4">115</td>
-<td id="T_18f0e_row11_col5" class="data row11 col5">Tier 2</td>
+<td id="T_53b57_level0_row11" class="row_heading level0 row11" data-quarto-table-cell-role="th">196</td>
+<td id="T_53b57_row11_col0" class="data row11 col0">12</td>
+<td id="T_53b57_row11_col1" class="data row11 col1">EED</td>
+<td id="T_53b57_row11_col2" class="data row11 col2">218</td>
+<td id="T_53b57_row11_col3" class="data row11 col3">34</td>
+<td id="T_53b57_row11_col4" class="data row11 col4">115</td>
+<td id="T_53b57_row11_col5" class="data row11 col5">Tier 2</td>
 </tr>
 <tr class="odd">
-<td id="T_18f0e_level0_row12" class="row_heading level0 row12" data-quarto-table-cell-role="th">82</td>
-<td id="T_18f0e_row12_col0" class="data row12 col0">13</td>
-<td id="T_18f0e_row12_col1" class="data row12 col1">FRS2</td>
-<td id="T_18f0e_row12_col2" class="data row12 col2">88</td>
-<td id="T_18f0e_row12_col3" class="data row12 col3">132</td>
-<td id="T_18f0e_row12_col4" class="data row12 col4">147</td>
-<td id="T_18f0e_row12_col5" class="data row12 col5">Novel</td>
+<td id="T_53b57_level0_row12" class="row_heading level0 row12" data-quarto-table-cell-role="th">82</td>
+<td id="T_53b57_row12_col0" class="data row12 col0">13</td>
+<td id="T_53b57_row12_col1" class="data row12 col1">FRS2</td>
+<td id="T_53b57_row12_col2" class="data row12 col2">88</td>
+<td id="T_53b57_row12_col3" class="data row12 col3">132</td>
+<td id="T_53b57_row12_col4" class="data row12 col4">147</td>
+<td id="T_53b57_row12_col5" class="data row12 col5">Novel</td>
 </tr>
 <tr class="even">
-<td id="T_18f0e_level0_row13" class="row_heading level0 row13" data-quarto-table-cell-role="th">254</td>
-<td id="T_18f0e_row13_col0" class="data row13 col0">14</td>
-<td id="T_18f0e_row13_col1" class="data row13 col1">DOCK7</td>
-<td id="T_18f0e_row13_col2" class="data row13 col2">290</td>
-<td id="T_18f0e_row13_col3" class="data row13 col3">37</td>
-<td id="T_18f0e_row13_col4" class="data row13 col4">64</td>
-<td id="T_18f0e_row13_col5" class="data row13 col5">Novel</td>
+<td id="T_53b57_level0_row13" class="row_heading level0 row13" data-quarto-table-cell-role="th">254</td>
+<td id="T_53b57_row13_col0" class="data row13 col0">14</td>
+<td id="T_53b57_row13_col1" class="data row13 col1">DOCK7</td>
+<td id="T_53b57_row13_col2" class="data row13 col2">290</td>
+<td id="T_53b57_row13_col3" class="data row13 col3">37</td>
+<td id="T_53b57_row13_col4" class="data row13 col4">64</td>
+<td id="T_53b57_row13_col5" class="data row13 col5">Novel</td>
 </tr>
 <tr class="odd">
-<td id="T_18f0e_level0_row14" class="row_heading level0 row14" data-quarto-table-cell-role="th">280</td>
-<td id="T_18f0e_row14_col0" class="data row14 col0">15</td>
-<td id="T_18f0e_row14_col1" class="data row14 col1">NCOA3</td>
-<td id="T_18f0e_row14_col2" class="data row14 col2">319</td>
-<td id="T_18f0e_row14_col3" class="data row14 col3">4</td>
-<td id="T_18f0e_row14_col4" class="data row14 col4">80</td>
-<td id="T_18f0e_row14_col5" class="data row14 col5">Novel</td>
+<td id="T_53b57_level0_row14" class="row_heading level0 row14" data-quarto-table-cell-role="th">280</td>
+<td id="T_53b57_row14_col0" class="data row14 col0">15</td>
+<td id="T_53b57_row14_col1" class="data row14 col1">NCOA3</td>
+<td id="T_53b57_row14_col2" class="data row14 col2">319</td>
+<td id="T_53b57_row14_col3" class="data row14 col3">4</td>
+<td id="T_53b57_row14_col4" class="data row14 col4">80</td>
+<td id="T_53b57_row14_col5" class="data row14 col5">Novel</td>
 </tr>
 <tr class="even">
-<td id="T_18f0e_level0_row15" class="row_heading level0 row15" data-quarto-table-cell-role="th">120</td>
-<td id="T_18f0e_row15_col0" class="data row15 col0">16</td>
-<td id="T_18f0e_row15_col1" class="data row15 col1">MED1</td>
-<td id="T_18f0e_row15_col2" class="data row15 col2">129</td>
-<td id="T_18f0e_row15_col3" class="data row15 col3">108</td>
-<td id="T_18f0e_row15_col4" class="data row15 col4">170</td>
-<td id="T_18f0e_row15_col5" class="data row15 col5">Novel</td>
+<td id="T_53b57_level0_row15" class="row_heading level0 row15" data-quarto-table-cell-role="th">120</td>
+<td id="T_53b57_row15_col0" class="data row15 col0">16</td>
+<td id="T_53b57_row15_col1" class="data row15 col1">MED1</td>
+<td id="T_53b57_row15_col2" class="data row15 col2">129</td>
+<td id="T_53b57_row15_col3" class="data row15 col3">108</td>
+<td id="T_53b57_row15_col4" class="data row15 col4">170</td>
+<td id="T_53b57_row15_col5" class="data row15 col5">Novel</td>
 </tr>
 <tr class="odd">
-<td id="T_18f0e_level0_row16" class="row_heading level0 row16" data-quarto-table-cell-role="th">76</td>
-<td id="T_18f0e_row16_col0" class="data row16 col0">17</td>
-<td id="T_18f0e_row16_col1" class="data row16 col1">CHD4</td>
-<td id="T_18f0e_row16_col2" class="data row16 col2">82</td>
-<td id="T_18f0e_row16_col3" class="data row16 col3">19</td>
-<td id="T_18f0e_row16_col4" class="data row16 col4">315</td>
-<td id="T_18f0e_row16_col5" class="data row16 col5">Tier 1</td>
+<td id="T_53b57_level0_row16" class="row_heading level0 row16" data-quarto-table-cell-role="th">76</td>
+<td id="T_53b57_row16_col0" class="data row16 col0">17</td>
+<td id="T_53b57_row16_col1" class="data row16 col1">CHD4</td>
+<td id="T_53b57_row16_col2" class="data row16 col2">82</td>
+<td id="T_53b57_row16_col3" class="data row16 col3">19</td>
+<td id="T_53b57_row16_col4" class="data row16 col4">315</td>
+<td id="T_53b57_row16_col5" class="data row16 col5">Tier 1</td>
 </tr>
 <tr class="even">
-<td id="T_18f0e_level0_row17" class="row_heading level0 row17" data-quarto-table-cell-role="th">95</td>
-<td id="T_18f0e_row17_col0" class="data row17 col0">18</td>
-<td id="T_18f0e_row17_col1" class="data row17 col1">SHC1</td>
-<td id="T_18f0e_row17_col2" class="data row17 col2">102</td>
-<td id="T_18f0e_row17_col3" class="data row17 col3">281</td>
-<td id="T_18f0e_row17_col4" class="data row17 col4">36</td>
-<td id="T_18f0e_row17_col5" class="data row17 col5">Novel</td>
+<td id="T_53b57_level0_row17" class="row_heading level0 row17" data-quarto-table-cell-role="th">95</td>
+<td id="T_53b57_row17_col0" class="data row17 col0">18</td>
+<td id="T_53b57_row17_col1" class="data row17 col1">SHC1</td>
+<td id="T_53b57_row17_col2" class="data row17 col2">102</td>
+<td id="T_53b57_row17_col3" class="data row17 col3">281</td>
+<td id="T_53b57_row17_col4" class="data row17 col4">36</td>
+<td id="T_53b57_row17_col5" class="data row17 col5">Novel</td>
 </tr>
 <tr class="odd">
-<td id="T_18f0e_level0_row18" class="row_heading level0 row18" data-quarto-table-cell-role="th">195</td>
-<td id="T_18f0e_row18_col0" class="data row18 col0">19</td>
-<td id="T_18f0e_row18_col1" class="data row18 col1">MARK3</td>
-<td id="T_18f0e_row18_col2" class="data row18 col2">216</td>
-<td id="T_18f0e_row18_col3" class="data row18 col3">107</td>
-<td id="T_18f0e_row18_col4" class="data row18 col4">100</td>
-<td id="T_18f0e_row18_col5" class="data row18 col5">Novel</td>
+<td id="T_53b57_level0_row18" class="row_heading level0 row18" data-quarto-table-cell-role="th">195</td>
+<td id="T_53b57_row18_col0" class="data row18 col0">19</td>
+<td id="T_53b57_row18_col1" class="data row18 col1">MARK3</td>
+<td id="T_53b57_row18_col2" class="data row18 col2">216</td>
+<td id="T_53b57_row18_col3" class="data row18 col3">107</td>
+<td id="T_53b57_row18_col4" class="data row18 col4">100</td>
+<td id="T_53b57_row18_col5" class="data row18 col5">Novel</td>
 </tr>
 <tr class="even">
-<td id="T_18f0e_level0_row19" class="row_heading level0 row19" data-quarto-table-cell-role="th">2</td>
-<td id="T_18f0e_row19_col0" class="data row19 col0">20</td>
-<td id="T_18f0e_row19_col1" class="data row19 col1">HDAC1</td>
-<td id="T_18f0e_row19_col2" class="data row19 col2">3</td>
-<td id="T_18f0e_row19_col3" class="data row19 col3">122</td>
-<td id="T_18f0e_row19_col4" class="data row19 col4">301</td>
-<td id="T_18f0e_row19_col5" class="data row19 col5">Novel</td>
+<td id="T_53b57_level0_row19" class="row_heading level0 row19" data-quarto-table-cell-role="th">2</td>
+<td id="T_53b57_row19_col0" class="data row19 col0">20</td>
+<td id="T_53b57_row19_col1" class="data row19 col1">HDAC1</td>
+<td id="T_53b57_row19_col2" class="data row19 col2">3</td>
+<td id="T_53b57_row19_col3" class="data row19 col3">122</td>
+<td id="T_53b57_row19_col4" class="data row19 col4">301</td>
+<td id="T_53b57_row19_col5" class="data row19 col5">Novel</td>
 </tr>
 </tbody>
 </table>
@@ -3899,7 +3899,7 @@ Table 2: Top 20 Consensus Cancer Driver Gene Predictions Across Networks (Drive
 <span id="cb27-52"><a href="#cb27-52" aria-hidden="true" tabindex="-1"></a>             fontsize<span class="op">=</span><span class="dv">13</span>, fontweight<span class="op">=</span><span class="st">&quot;bold&quot;</span>, pad<span class="op">=</span><span class="dv">14</span>)</span>
 <span id="cb27-53"><a href="#cb27-53" aria-hidden="true" tabindex="-1"></a>ax.axis(<span class="st">&quot;off&quot;</span>)</span>
 <span id="cb27-54"><a href="#cb27-54" aria-hidden="true" tabindex="-1"></a>plt.tight_layout()</span>
-<span id="cb27-55"><a href="#cb27-55" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;consensus_subnetwork.pdf&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
+<span id="cb27-55"><a href="#cb27-55" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;consensus_subnetwork.png&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb27-56"><a href="#cb27-56" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;consensus_subnetwork.png&quot;</span>, dpi<span class="op">=</span><span class="dv">200</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb27-57"><a href="#cb27-57" aria-hidden="true" tabindex="-1"></a>plt.show()</span>
 <span id="cb27-58"><a href="#cb27-58" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(<span class="ss">f&quot;Target genes in graph : </span><span class="sc">{</span><span class="bu">sorted</span>(target_set <span class="op">&amp;</span> <span class="bu">set</span>(H.nodes()))<span class="sc">}</span><span class="ss">&quot;</span>)</span>
@@ -4046,7 +4046,7 @@ Total edges           : 1196</code></pre>
 <span id="cb31-83"><a href="#cb31-83" aria-hidden="true" tabindex="-1"></a>             fontsize<span class="op">=</span><span class="dv">13</span>, fontweight<span class="op">=</span><span class="st">&quot;bold&quot;</span>, pad<span class="op">=</span><span class="dv">12</span>)</span>
 <span id="cb31-84"><a href="#cb31-84" aria-hidden="true" tabindex="-1"></a>ax.axis(<span class="st">&quot;off&quot;</span>)</span>
 <span id="cb31-85"><a href="#cb31-85" aria-hidden="true" tabindex="-1"></a>plt.tight_layout()</span>
-<span id="cb31-86"><a href="#cb31-86" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;cluster_curvature_subgraph.pdf&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
+<span id="cb31-86"><a href="#cb31-86" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;cluster_curvature_subgraph.png&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb31-87"><a href="#cb31-87" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;cluster_curvature_subgraph.png&quot;</span>, dpi<span class="op">=</span><span class="dv">200</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb31-88"><a href="#cb31-88" aria-hidden="true" tabindex="-1"></a>plt.show()</span>
 <span id="cb31-89"><a href="#cb31-89" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(<span class="ss">f&quot;Cluster subgraph: </span><span class="sc">{</span>C<span class="sc">.</span>number_of_nodes()<span class="sc">}</span><span class="ss"> nodes, </span><span class="sc">{</span>C<span class="sc">.</span>number_of_edges()<span class="sc">}</span><span class="ss"> edges&quot;</span>)</span>
@@ -4132,7 +4132,7 @@ ORC available on edges: False</code></pre>
 <span id="cb33-60"><a href="#cb33-60" aria-hidden="true" tabindex="-1"></a>               title<span class="op">=</span><span class="st">&quot;Complex&quot;</span>, fontsize<span class="op">=</span><span class="dv">9</span>, loc<span class="op">=</span><span class="st">&quot;lower right&quot;</span>, framealpha<span class="op">=</span><span class="fl">0.9</span>)</span>
 <span id="cb33-61"><a href="#cb33-61" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb33-62"><a href="#cb33-62" aria-hidden="true" tabindex="-1"></a>plt.tight_layout()</span>
-<span id="cb33-63"><a href="#cb33-63" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;cluster_rank_heatmap.pdf&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
+<span id="cb33-63"><a href="#cb33-63" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;cluster_rank_heatmap.png&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb33-64"><a href="#cb33-64" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;cluster_rank_heatmap.png&quot;</span>, dpi<span class="op">=</span><span class="dv">200</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb33-65"><a href="#cb33-65" aria-hidden="true" tabindex="-1"></a>plt.show()</span>
 <span id="cb33-66"><a href="#cb33-66" aria-hidden="true" tabindex="-1"></a></span>
@@ -4240,7 +4240,7 @@ dtype: float64</code></pre>
 <span id="cb35-59"><a href="#cb35-59" aria-hidden="true" tabindex="-1"></a>sns.despine(ax<span class="op">=</span>axes[<span class="dv">1</span>])</span>
 <span id="cb35-60"><a href="#cb35-60" aria-hidden="true" tabindex="-1"></a></span>
 <span id="cb35-61"><a href="#cb35-61" aria-hidden="true" tabindex="-1"></a>plt.tight_layout()</span>
-<span id="cb35-62"><a href="#cb35-62" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;cluster_fold_consistency.pdf&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
+<span id="cb35-62"><a href="#cb35-62" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;cluster_fold_consistency.png&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb35-63"><a href="#cb35-63" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;cluster_fold_consistency.png&quot;</span>, dpi<span class="op">=</span><span class="dv">200</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb35-64"><a href="#cb35-64" aria-hidden="true" tabindex="-1"></a>plt.show()</span>
 <span id="cb35-65"><a href="#cb35-65" aria-hidden="true" tabindex="-1"></a></span>
@@ -4250,12 +4250,12 @@ dtype: float64</code></pre>
 <span id="cb35-69"><a href="#cb35-69" aria-hidden="true" tabindex="-1"></a><span class="bu">print</span>(cv.sort_values(<span class="st">&quot;CV&quot;</span>))</span></code><button title="Copy to Clipboard" class="code-copy-button"><i class="bi"></i></button></pre></div>
 </details>
 <div class="cell-output cell-output-stderr">
-<pre><code>C:\Users\siddh\AppData\Local\Temp\ipykernel_53420\4098021423.py:25: UserWarning: 
+<pre><code>C:\Users\siddh\AppData\Local\Temp\ipykernel_64836\3703365513.py:25: UserWarning: 
 
 The `scale` parameter is deprecated and will be removed in v0.15.0. You can now control the size of each plot element using matplotlib `Line2D` parameters (e.g., `linewidth`, `markersize`, etc.).
 
   sns.pointplot(data=fold_scores, x=&quot;Gene&quot;, y=&quot;Score&quot;,
-C:\Users\siddh\AppData\Local\Temp\ipykernel_53420\4098021423.py:47: UserWarning: 
+C:\Users\siddh\AppData\Local\Temp\ipykernel_64836\3703365513.py:47: UserWarning: 
 
 The `scale` parameter is deprecated and will be removed in v0.15.0. You can now control the size of each plot element using matplotlib `Line2D` parameters (e.g., `linewidth`, `markersize`, etc.).
 
@@ -4318,7 +4318,7 @@ SMARCC2  0.999707  0.000572  0.001</code></pre>
 <span id="cb38-28"><a href="#cb38-28" aria-hidden="true" tabindex="-1"></a>ax.legend(fontsize<span class="op">=</span><span class="dv">10</span>)</span>
 <span id="cb38-29"><a href="#cb38-29" aria-hidden="true" tabindex="-1"></a>sns.despine()</span>
 <span id="cb38-30"><a href="#cb38-30" aria-hidden="true" tabindex="-1"></a>plt.tight_layout()</span>
-<span id="cb38-31"><a href="#cb38-31" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;cluster_vs_tier1_scores.pdf&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
+<span id="cb38-31"><a href="#cb38-31" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;cluster_vs_tier1_scores.png&quot;</span>, dpi<span class="op">=</span><span class="dv">300</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb38-32"><a href="#cb38-32" aria-hidden="true" tabindex="-1"></a>plt.savefig(PLOTS_DIR <span class="op">/</span> <span class="st">&quot;cluster_vs_tier1_scores.png&quot;</span>, dpi<span class="op">=</span><span class="dv">200</span>, bbox_inches<span class="op">=</span><span class="st">&quot;tight&quot;</span>)</span>
 <span id="cb38-33"><a href="#cb38-33" aria-hidden="true" tabindex="-1"></a>plt.show()</span>
 <span id="cb38-34"><a href="#cb38-34" aria-hidden="true" tabindex="-1"></a></span>
@@ -4433,126 +4433,126 @@ CGC Tier 1 median    : 0.9867
 </details>
 <div id="cluster-summary-table" class="cell-output cell-output-display">
 <style type="text/css">
-#T_d9707 caption {
+#T_21d2a caption {
 font-size: 13px;
 font-weight: bold;
 text-align: left;
 padding-bottom: 8px;
 }
-#T_d9707 th {
+#T_21d2a th {
 background-color: #2C3E50;
 color: white;
 font-size: 10px;
 text-align: center;
 padding: 5px 8px;
 }
-#T_d9707 td {
+#T_21d2a td {
 font-size: 10px;
 padding: 5px 8px;
 }
-#T_d9707_row0_col0, #T_d9707_row0_col1, #T_d9707_row0_col2, #T_d9707_row0_col3, #T_d9707_row0_col4, #T_d9707_row0_col5, #T_d9707_row0_col6, #T_d9707_row0_col7, #T_d9707_row1_col0, #T_d9707_row1_col1, #T_d9707_row1_col2, #T_d9707_row1_col3, #T_d9707_row1_col4, #T_d9707_row1_col5, #T_d9707_row1_col6, #T_d9707_row1_col7, #T_d9707_row2_col0, #T_d9707_row2_col1, #T_d9707_row2_col2, #T_d9707_row2_col3, #T_d9707_row2_col4, #T_d9707_row2_col5, #T_d9707_row2_col6, #T_d9707_row2_col7 {
+#T_21d2a_row0_col0, #T_21d2a_row0_col1, #T_21d2a_row0_col2, #T_21d2a_row0_col3, #T_21d2a_row0_col4, #T_21d2a_row0_col5, #T_21d2a_row0_col6, #T_21d2a_row0_col7, #T_21d2a_row1_col0, #T_21d2a_row1_col1, #T_21d2a_row1_col2, #T_21d2a_row1_col3, #T_21d2a_row1_col4, #T_21d2a_row1_col5, #T_21d2a_row1_col6, #T_21d2a_row1_col7, #T_21d2a_row2_col0, #T_21d2a_row2_col1, #T_21d2a_row2_col2, #T_21d2a_row2_col3, #T_21d2a_row2_col4, #T_21d2a_row2_col5, #T_21d2a_row2_col6, #T_21d2a_row2_col7 {
 background-color: #E74C3C22;
 }
-#T_d9707_row3_col0, #T_d9707_row3_col1, #T_d9707_row3_col2, #T_d9707_row3_col3, #T_d9707_row3_col4, #T_d9707_row3_col5, #T_d9707_row3_col6, #T_d9707_row3_col7, #T_d9707_row4_col0, #T_d9707_row4_col1, #T_d9707_row4_col2, #T_d9707_row4_col3, #T_d9707_row4_col4, #T_d9707_row4_col5, #T_d9707_row4_col6, #T_d9707_row4_col7 {
+#T_21d2a_row3_col0, #T_21d2a_row3_col1, #T_21d2a_row3_col2, #T_21d2a_row3_col3, #T_21d2a_row3_col4, #T_21d2a_row3_col5, #T_21d2a_row3_col6, #T_21d2a_row3_col7, #T_21d2a_row4_col0, #T_21d2a_row4_col1, #T_21d2a_row4_col2, #T_21d2a_row4_col3, #T_21d2a_row4_col4, #T_21d2a_row4_col5, #T_21d2a_row4_col6, #T_21d2a_row4_col7 {
 background-color: #27AE6022;
 }
-#T_d9707_row5_col0, #T_d9707_row5_col1, #T_d9707_row5_col2, #T_d9707_row5_col3, #T_d9707_row5_col4, #T_d9707_row5_col5, #T_d9707_row5_col6, #T_d9707_row5_col7 {
+#T_21d2a_row5_col0, #T_21d2a_row5_col1, #T_21d2a_row5_col2, #T_21d2a_row5_col3, #T_21d2a_row5_col4, #T_21d2a_row5_col5, #T_21d2a_row5_col6, #T_21d2a_row5_col7 {
 background-color: #9B59B622;
 }
-#T_d9707_row6_col0, #T_d9707_row6_col1, #T_d9707_row6_col2, #T_d9707_row6_col3, #T_d9707_row6_col4, #T_d9707_row6_col5, #T_d9707_row6_col6, #T_d9707_row6_col7 {
+#T_21d2a_row6_col0, #T_21d2a_row6_col1, #T_21d2a_row6_col2, #T_21d2a_row6_col3, #T_21d2a_row6_col4, #T_21d2a_row6_col5, #T_21d2a_row6_col6, #T_21d2a_row6_col7 {
 background-color: #2980B922;
 }
 </style>
 
-<div id="T_d9707" class="quarto-float quarto-figure quarto-figure-center anchored" data-quarto-postprocess="true">
+<div id="T_21d2a" class="quarto-float quarto-figure quarto-figure-center anchored" data-quarto-postprocess="true">
 <figure class="quarto-float quarto-float-tbl figure">
-<figcaption class="quarto-float-caption-top quarto-float-caption quarto-float-tbl" id="T_d9707-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<figcaption class="quarto-float-caption-top quarto-float-caption quarto-float-tbl" id="T_21d2a-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
 Table 3: Chromatin Remodeling Cluster — Gene Summary (DriverJinn predictions, ρ=0.2, GGNet)
 </figcaption>
-<div aria-describedby="T_d9707-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
-<table id="T_d9707" class="caption-top table table-sm table-striped small" data-quarto-postprocess="true">
+<div aria-describedby="T_21d2a-caption-0ceaefa1-69ba-4598-a22c-09a6ac19f8ca">
+<table id="T_21d2a" class="caption-top table table-sm table-striped small" data-quarto-postprocess="true">
 <thead>
 <tr class="header">
-<th id="T_d9707_level0_col0" class="col_heading level0 col0" data-quarto-table-cell-role="th">Gene</th>
-<th id="T_d9707_level0_col1" class="col_heading level0 col1" data-quarto-table-cell-role="th">Complex</th>
-<th id="T_d9707_level0_col2" class="col_heading level0 col2" data-quarto-table-cell-role="th">CGC Status</th>
-<th id="T_d9707_level0_col3" class="col_heading level0 col3" data-quarto-table-cell-role="th">GGNet Score</th>
-<th id="T_d9707_level0_col4" class="col_heading level0 col4" data-quarto-table-cell-role="th">GGNet Rank</th>
-<th id="T_d9707_level0_col5" class="col_heading level0 col5" data-quarto-table-cell-role="th">Mean Rank (9 cond)</th>
-<th id="T_d9707_level0_col6" class="col_heading level0 col6" data-quarto-table-cell-role="th">Rank Std</th>
-<th id="T_d9707_level0_col7" class="col_heading level0 col7" data-quarto-table-cell-role="th">Known Cancer Role</th>
+<th id="T_21d2a_level0_col0" class="col_heading level0 col0" data-quarto-table-cell-role="th">Gene</th>
+<th id="T_21d2a_level0_col1" class="col_heading level0 col1" data-quarto-table-cell-role="th">Complex</th>
+<th id="T_21d2a_level0_col2" class="col_heading level0 col2" data-quarto-table-cell-role="th">CGC Status</th>
+<th id="T_21d2a_level0_col3" class="col_heading level0 col3" data-quarto-table-cell-role="th">GGNet Score</th>
+<th id="T_21d2a_level0_col4" class="col_heading level0 col4" data-quarto-table-cell-role="th">GGNet Rank</th>
+<th id="T_21d2a_level0_col5" class="col_heading level0 col5" data-quarto-table-cell-role="th">Mean Rank (9 cond)</th>
+<th id="T_21d2a_level0_col6" class="col_heading level0 col6" data-quarto-table-cell-role="th">Rank Std</th>
+<th id="T_21d2a_level0_col7" class="col_heading level0 col7" data-quarto-table-cell-role="th">Known Cancer Role</th>
 </tr>
 </thead>
 <tbody>
 <tr class="odd">
-<td id="T_d9707_row0_col0" class="data row0 col0">SIN3A</td>
-<td id="T_d9707_row0_col1" class="data row0 col1">SIN3/HDAC</td>
-<td id="T_d9707_row0_col2" class="data row0 col2">Novel</td>
-<td id="T_d9707_row0_col3" class="data row0 col3">1.000000</td>
-<td id="T_d9707_row0_col4" class="data row0 col4">31</td>
-<td id="T_d9707_row0_col5" class="data row0 col5">119.900000</td>
-<td id="T_d9707_row0_col6" class="data row0 col6">214.200000</td>
-<td id="T_d9707_row0_col7" class="data row0 col7">Transcriptional co-repressor; recruits HDAC1/2. Tumour suppressor function in several cancers.</td>
+<td id="T_21d2a_row0_col0" class="data row0 col0">SIN3A</td>
+<td id="T_21d2a_row0_col1" class="data row0 col1">SIN3/HDAC</td>
+<td id="T_21d2a_row0_col2" class="data row0 col2">Novel</td>
+<td id="T_21d2a_row0_col3" class="data row0 col3">1.000000</td>
+<td id="T_21d2a_row0_col4" class="data row0 col4">31</td>
+<td id="T_21d2a_row0_col5" class="data row0 col5">119.900000</td>
+<td id="T_21d2a_row0_col6" class="data row0 col6">214.200000</td>
+<td id="T_21d2a_row0_col7" class="data row0 col7">Transcriptional co-repressor; recruits HDAC1/2. Tumour suppressor function in several cancers.</td>
 </tr>
 <tr class="even">
-<td id="T_d9707_row1_col0" class="data row1 col0">HDAC1</td>
-<td id="T_d9707_row1_col1" class="data row1 col1">SIN3/HDAC</td>
-<td id="T_d9707_row1_col2" class="data row1 col2">Novel</td>
-<td id="T_d9707_row1_col3" class="data row1 col3">1.000000</td>
-<td id="T_d9707_row1_col4" class="data row1 col4">3</td>
-<td id="T_d9707_row1_col5" class="data row1 col5">1095.200000</td>
-<td id="T_d9707_row1_col6" class="data row1 col6">2718.600000</td>
-<td id="T_d9707_row1_col7" class="data row1 col7">Histone deacetylase; epigenetic silencing of tumour suppressors. Overexpressed in gastric, colorectal, breast cancers.</td>
+<td id="T_21d2a_row1_col0" class="data row1 col0">HDAC1</td>
+<td id="T_21d2a_row1_col1" class="data row1 col1">SIN3/HDAC</td>
+<td id="T_21d2a_row1_col2" class="data row1 col2">Novel</td>
+<td id="T_21d2a_row1_col3" class="data row1 col3">1.000000</td>
+<td id="T_21d2a_row1_col4" class="data row1 col4">3</td>
+<td id="T_21d2a_row1_col5" class="data row1 col5">1095.200000</td>
+<td id="T_21d2a_row1_col6" class="data row1 col6">2718.600000</td>
+<td id="T_21d2a_row1_col7" class="data row1 col7">Histone deacetylase; epigenetic silencing of tumour suppressors. Overexpressed in gastric, colorectal, breast cancers.</td>
 </tr>
 <tr class="odd">
-<td id="T_d9707_row2_col0" class="data row2 col0">HDAC2</td>
-<td id="T_d9707_row2_col1" class="data row2 col1">SIN3/HDAC</td>
-<td id="T_d9707_row2_col2" class="data row2 col2">Novel</td>
-<td id="T_d9707_row2_col3" class="data row2 col3">1.000000</td>
-<td id="T_d9707_row2_col4" class="data row2 col4">23</td>
-<td id="T_d9707_row2_col5" class="data row2 col5">674.900000</td>
-<td id="T_d9707_row2_col6" class="data row2 col6">1672.000000</td>
-<td id="T_d9707_row2_col7" class="data row2 col7">Histone deacetylase; promotes proliferation. Overexpressed in hepatocellular and colorectal cancers.</td>
+<td id="T_21d2a_row2_col0" class="data row2 col0">HDAC2</td>
+<td id="T_21d2a_row2_col1" class="data row2 col1">SIN3/HDAC</td>
+<td id="T_21d2a_row2_col2" class="data row2 col2">Novel</td>
+<td id="T_21d2a_row2_col3" class="data row2 col3">1.000000</td>
+<td id="T_21d2a_row2_col4" class="data row2 col4">23</td>
+<td id="T_21d2a_row2_col5" class="data row2 col5">674.900000</td>
+<td id="T_21d2a_row2_col6" class="data row2 col6">1672.000000</td>
+<td id="T_21d2a_row2_col7" class="data row2 col7">Histone deacetylase; promotes proliferation. Overexpressed in hepatocellular and colorectal cancers.</td>
 </tr>
 <tr class="even">
-<td id="T_d9707_row3_col0" class="data row3 col0">SMARCC1</td>
-<td id="T_d9707_row3_col1" class="data row3 col1">SWI/SNF</td>
-<td id="T_d9707_row3_col2" class="data row3 col2">Novel</td>
-<td id="T_d9707_row3_col3" class="data row3 col3">0.999900</td>
-<td id="T_d9707_row3_col4" class="data row3 col4">58</td>
-<td id="T_d9707_row3_col5" class="data row3 col5">221.300000</td>
-<td id="T_d9707_row3_col6" class="data row3 col6">251.300000</td>
-<td id="T_d9707_row3_col7" class="data row3 col7">SWI/SNF ATPase subunit. SWI/SNF is mutated in ~20% of human cancers; acts as tumour suppressor complex.</td>
+<td id="T_21d2a_row3_col0" class="data row3 col0">SMARCC1</td>
+<td id="T_21d2a_row3_col1" class="data row3 col1">SWI/SNF</td>
+<td id="T_21d2a_row3_col2" class="data row3 col2">Novel</td>
+<td id="T_21d2a_row3_col3" class="data row3 col3">0.999900</td>
+<td id="T_21d2a_row3_col4" class="data row3 col4">58</td>
+<td id="T_21d2a_row3_col5" class="data row3 col5">221.300000</td>
+<td id="T_21d2a_row3_col6" class="data row3 col6">251.300000</td>
+<td id="T_21d2a_row3_col7" class="data row3 col7">SWI/SNF ATPase subunit. SWI/SNF is mutated in ~20% of human cancers; acts as tumour suppressor complex.</td>
 </tr>
 <tr class="odd">
-<td id="T_d9707_row4_col0" class="data row4 col0">SMARCC2</td>
-<td id="T_d9707_row4_col1" class="data row4 col1">SWI/SNF</td>
-<td id="T_d9707_row4_col2" class="data row4 col2">Novel</td>
-<td id="T_d9707_row4_col3" class="data row4 col3">0.999900</td>
-<td id="T_d9707_row4_col4" class="data row4 col4">92</td>
-<td id="T_d9707_row4_col5" class="data row4 col5">166.200000</td>
-<td id="T_d9707_row4_col6" class="data row4 col6">248.000000</td>
-<td id="T_d9707_row4_col7" class="data row4 col7">SWI/SNF core subunit. Co-mutated with SMARCC1 in tumours; contributes to chromatin accessibility.</td>
+<td id="T_21d2a_row4_col0" class="data row4 col0">SMARCC2</td>
+<td id="T_21d2a_row4_col1" class="data row4 col1">SWI/SNF</td>
+<td id="T_21d2a_row4_col2" class="data row4 col2">Novel</td>
+<td id="T_21d2a_row4_col3" class="data row4 col3">0.999900</td>
+<td id="T_21d2a_row4_col4" class="data row4 col4">92</td>
+<td id="T_21d2a_row4_col5" class="data row4 col5">166.200000</td>
+<td id="T_21d2a_row4_col6" class="data row4 col6">248.000000</td>
+<td id="T_21d2a_row4_col7" class="data row4 col7">SWI/SNF core subunit. Co-mutated with SMARCC1 in tumours; contributes to chromatin accessibility.</td>
 </tr>
 <tr class="even">
-<td id="T_d9707_row5_col0" class="data row5 col0">RBBP4</td>
-<td id="T_d9707_row5_col1" class="data row5 col1">NuRD/PRC2</td>
-<td id="T_d9707_row5_col2" class="data row5 col2">Novel</td>
-<td id="T_d9707_row5_col3" class="data row5 col3">1.000000</td>
-<td id="T_d9707_row5_col4" class="data row5 col4">13</td>
-<td id="T_d9707_row5_col5" class="data row5 col5">732.300000</td>
-<td id="T_d9707_row5_col6" class="data row5 col6">1735.600000</td>
-<td id="T_d9707_row5_col7" class="data row5 col7">Core subunit of NuRD, PRC2, and CAF-1 complexes. PRC2 role links it to H3K27me3-mediated silencing.</td>
+<td id="T_21d2a_row5_col0" class="data row5 col0">RBBP4</td>
+<td id="T_21d2a_row5_col1" class="data row5 col1">NuRD/PRC2</td>
+<td id="T_21d2a_row5_col2" class="data row5 col2">Novel</td>
+<td id="T_21d2a_row5_col3" class="data row5 col3">1.000000</td>
+<td id="T_21d2a_row5_col4" class="data row5 col4">13</td>
+<td id="T_21d2a_row5_col5" class="data row5 col5">732.300000</td>
+<td id="T_21d2a_row5_col6" class="data row5 col6">1735.600000</td>
+<td id="T_21d2a_row5_col7" class="data row5 col7">Core subunit of NuRD, PRC2, and CAF-1 complexes. PRC2 role links it to H3K27me3-mediated silencing.</td>
 </tr>
 <tr class="odd">
-<td id="T_d9707_row6_col0" class="data row6 col0">KMT2E</td>
-<td id="T_d9707_row6_col1" class="data row6 col1">KMT</td>
-<td id="T_d9707_row6_col2" class="data row6 col2">Novel</td>
-<td id="T_d9707_row6_col3" class="data row6 col3">0.999900</td>
-<td id="T_d9707_row6_col4" class="data row6 col4">255</td>
-<td id="T_d9707_row6_col5" class="data row6 col5">86.200000</td>
-<td id="T_d9707_row6_col6" class="data row6 col6">101.100000</td>
-<td id="T_d9707_row6_col7" class="data row6 col7">H3K4 mono-methyltransferase. Loss associated with AML; gains in solid tumours through super-enhancer regulation.</td>
+<td id="T_21d2a_row6_col0" class="data row6 col0">KMT2E</td>
+<td id="T_21d2a_row6_col1" class="data row6 col1">KMT</td>
+<td id="T_21d2a_row6_col2" class="data row6 col2">Novel</td>
+<td id="T_21d2a_row6_col3" class="data row6 col3">0.999900</td>
+<td id="T_21d2a_row6_col4" class="data row6 col4">255</td>
+<td id="T_21d2a_row6_col5" class="data row6 col5">86.200000</td>
+<td id="T_21d2a_row6_col6" class="data row6 col6">101.100000</td>
+<td id="T_21d2a_row6_col7" class="data row6 col7">H3K4 mono-methyltransferase. Loss associated with AML; gains in solid tumours through super-enhancer regulation.</td>
 </tr>
 </tbody>
 </table>

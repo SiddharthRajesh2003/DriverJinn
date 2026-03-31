@@ -220,7 +220,7 @@ ax.set_title("DriverJinn — Enrichment Curve (GGNet, ρ=0.2)", fontsize=13, fon
 ax.legend(fontsize=10)
 sns.despine()
 plt.tight_layout()
-plt.savefig(PLOTS_DIR / "poster_enrichment_curve.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "poster_enrichment_curve.png", dpi=300, bbox_inches="tight")
 plt.show()
 ```
 
@@ -252,7 +252,7 @@ ax.set_title("Score Distribution by CGC Status\n(GGNet, ρ=0.2)", fontsize=13, f
 ax.set_xticklabels(["CGC Tier 1", "CGC Tier 2", "Non-CGC"])
 sns.despine()
 plt.tight_layout()
-plt.savefig(PLOTS_DIR / "poster_score_violin.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "poster_score_violin.png", dpi=300, bbox_inches="tight")
 plt.show()
 ```
 
@@ -301,7 +301,7 @@ ax.set_title("DriverJinn — Precision@K Across Folds\n(GGNet, ρ=0.2)", fontsiz
 ax.legend(fontsize=10)
 sns.despine()
 plt.tight_layout()
-plt.savefig(PLOTS_DIR / "poster_precision_at_k.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "poster_precision_at_k.png", dpi=300, bbox_inches="tight")
 plt.show()
 ```
 
@@ -348,7 +348,7 @@ axes[1].legend(handles=[
     mpatches.Patch(color=COLORS["non-CGC"], label="Non-CGC"),
 ], loc="lower right", fontsize=8, framealpha=0.9)
 plt.tight_layout()
-plt.savefig(PLOTS_DIR / "poster_rank_stability.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "poster_rank_stability.png", dpi=300, bbox_inches="tight")
 plt.show()
 ```
 
@@ -384,7 +384,7 @@ ax.set_title("DriverJinn — Per-Fold Validation Metrics\n(GGNet, ρ=0.2)",
 ax.legend(fontsize=9, ncol=3, loc="upper right")
 sns.despine()
 plt.tight_layout()
-plt.savefig(PLOTS_DIR / "poster_metrics_summary.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "poster_metrics_summary.png", dpi=300, bbox_inches="tight")
 plt.show()
 ```
 
@@ -485,7 +485,7 @@ try:
     ax.invert_yaxis()
     sns.despine()
     plt.tight_layout()
-    plt.savefig(PLOTS_DIR / "poster_kegg_enrichment.pdf", dpi=300, bbox_inches="tight")
+    plt.savefig(PLOTS_DIR / "poster_kegg_enrichment.png", dpi=300, bbox_inches="tight")
     plt.show()
 except ImportError:
     print("gseapy not installed — run: pip install gseapy")
@@ -814,7 +814,7 @@ ax.set_title(f"PPI Neighborhood — Top 20 Consensus Driver Genes + Bridge Neigh
              fontsize=13, fontweight="bold", pad=14)
 ax.axis("off")
 plt.tight_layout()
-plt.savefig(PLOTS_DIR / "consensus_subnetwork.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "consensus_subnetwork.png", dpi=300, bbox_inches="tight")
 plt.savefig(PLOTS_DIR / "consensus_subnetwork.png", dpi=200, bbox_inches="tight")
 plt.show()
 print(f"Target genes in graph : {sorted(target_set & set(H.nodes()))}")
@@ -946,7 +946,7 @@ ax.set_title("Chromatin Remodeling Cluster — PPI Subgraph\n"
              fontsize=13, fontweight="bold", pad=12)
 ax.axis("off")
 plt.tight_layout()
-plt.savefig(PLOTS_DIR / "cluster_curvature_subgraph.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "cluster_curvature_subgraph.png", dpi=300, bbox_inches="tight")
 plt.savefig(PLOTS_DIR / "cluster_curvature_subgraph.png", dpi=200, bbox_inches="tight")
 plt.show()
 print(f"Cluster subgraph: {C.number_of_nodes()} nodes, {C.number_of_edges()} edges")
@@ -1020,7 +1020,7 @@ axes[1].legend(handles=[mpatches.Patch(color=c, label=l)
                title="Complex", fontsize=9, loc="lower right", framealpha=0.9)
 
 plt.tight_layout()
-plt.savefig(PLOTS_DIR / "cluster_rank_heatmap.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "cluster_rank_heatmap.png", dpi=300, bbox_inches="tight")
 plt.savefig(PLOTS_DIR / "cluster_rank_heatmap.png", dpi=200, bbox_inches="tight")
 plt.show()
 
@@ -1096,7 +1096,7 @@ for tick, g in zip(axes[1].get_xticklabels(), gene_order):
 sns.despine(ax=axes[1])
 
 plt.tight_layout()
-plt.savefig(PLOTS_DIR / "cluster_fold_consistency.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "cluster_fold_consistency.png", dpi=300, bbox_inches="tight")
 plt.savefig(PLOTS_DIR / "cluster_fold_consistency.png", dpi=200, bbox_inches="tight")
 plt.show()
 
@@ -1141,7 +1141,7 @@ ax.set_title("Chromatin Remodeling Cluster vs CGC Score Distributions\n"
 ax.legend(fontsize=10)
 sns.despine()
 plt.tight_layout()
-plt.savefig(PLOTS_DIR / "cluster_vs_tier1_scores.pdf", dpi=300, bbox_inches="tight")
+plt.savefig(PLOTS_DIR / "cluster_vs_tier1_scores.png", dpi=300, bbox_inches="tight")
 plt.savefig(PLOTS_DIR / "cluster_vs_tier1_scores.png", dpi=200, bbox_inches="tight")
 plt.show()
 
