@@ -447,7 +447,9 @@ else:
     ax.set_title("Hallmark Enrichment — Top 100 Predicted Drivers")
     ax.legend()
     plt.tight_layout()
+    plt.savefig('plots/cgc_hallmark_enrichment.png')
     plt.show()
+    
     display(sig[["Hallmark", "Overlap", "GS Size", "p-value", "p.adj"]]
             .style.format({"p-value": "{:.3e}", "p.adj": "{:.3e}"}))
 ```
