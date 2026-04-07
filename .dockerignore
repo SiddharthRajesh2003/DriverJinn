@@ -19,10 +19,18 @@ model/__pycache__
 model/model_tester.py
 all_model_results/
 misc/
-model_results/
+model_results_*/
 .claude/
 GNN Architecture.jpeg
 DriverJinn Data Preprocessing.jpeg
 CLAUDE.md
 *.tar.gz
 *.docx
+*.pdf
+WORKFLOW.md
+Downstream/cosmic/
+Downstream/plots
+Downstream/Data-preprocessing.jpeg
+*.svg
+.gitignore
+.gitattributes

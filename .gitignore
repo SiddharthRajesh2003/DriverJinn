@@ -16,3 +16,6 @@ WORKFLOW.md
 .vscode/
 Downstream/cosmic/
 *.docx
+# pixi environments
+.pixi/*
+!.pixi/config.toml
