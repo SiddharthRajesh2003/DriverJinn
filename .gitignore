@@ -1,10 +1,8 @@
-graph_builder/__pycache__
+*/__pycache__/
 logs/
-utils/__pycache__
 *.tar.gz
 curvature_output/
 .env
-model/__pycache__
 model/model_tester.py
 all_model_results/
 misc/

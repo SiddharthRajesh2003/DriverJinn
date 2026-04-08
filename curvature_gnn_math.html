@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>DriverJinn — Curvature-Aware GNN: Mathematical Formulation</title>
+
+  <!-- KaTeX -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css" />
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.js"></script>
+  <script defer src="https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/contrib/auto-render.min.js"
+    onload="renderMathInElement(document.body, {
+      delimiters: [
+        {left: '$$', right: '$$', display: true},
+        {left: '$', right: '$', display: false}
+      ]
+    });"></script>
+
+  <style>
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --border: #2d3148;
+      --accent: #6c8ebf;
+      --accent2: #7ec8a0;
+      --text: #dde1f0;
+      --muted: #7a80a0;
+      --box-bg: #14172240;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: 'Segoe UI', system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.7;
+      padding: 2rem 1rem;
+    }
+
+    .page {
+      max-width: 860px;
+      margin: 0 auto;
+    }
+
+    header {
+      border-bottom: 1px solid var(--border);
+      padding-bottom: 1.2rem;
+      margin-bottom: 2.4rem;
+    }
+
+    header h1 {
+      font-size: 1.8rem;
+      font-weight: 700;
+      color: #fff;
+      letter-spacing: -0.02em;
+    }
+
+    header p {
+      color: var(--muted);
+      margin-top: 0.3rem;
+      font-size: 0.95rem;
+    }
+
+    .section {
+      margin-bottom: 2.6rem;
+    }
+
+    .section-header {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+
+    .section-num {
+      background: var(--accent);
+      color: #fff;
+      font-size: 0.78rem;
+      font-weight: 700;
+      width: 1.7rem;
+      height: 1.7rem;
+      border-radius: 50%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+    }
+
+    .section-title {
+      font-size: 1.1rem;
+      font-weight: 600;
+      color: #fff;
+    }
+
+    .desc {
+      color: var(--muted);
+      font-size: 0.9rem;
+      margin-bottom: 1rem;
+    }
+
+    .math-block {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 1.2rem 1.6rem;
+      margin: 0.8rem 0;
+      overflow-x: auto;
+    }
+
+    .math-block.highlight {
+      border-color: var(--accent);
+      background: #1a2035;
+    }
+
+    .math-block.result {
+      border-color: var(--accent2);
+      background: #121f1a;
+    }
+
+    .label {
+      font-size: 0.78rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--accent);
+      margin-bottom: 0.5rem;
+    }
+
+    .label.green { color: var(--accent2); }
+
+    p.note {
+      font-size: 0.88rem;
+      color: var(--muted);
+      margin-top: 0.6rem;
+    }
+
+    .divider {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 2.8rem 0;
+    }
+
+    .final-box {
+      background: #141c2e;
+      border: 2px solid var(--accent);
+      border-radius: 10px;
+      padding: 1.4rem 2rem;
+      margin-top: 2rem;
+    }
+
+    .final-box .label { color: #fff; font-size: 0.85rem; margin-bottom: 0.8rem; }
+  </style>
+</head>
+<body>
+<div class="page">
+
+  <header>
+    <h1>DriverJinn — Curvature-Aware GNN</h1>
+    <p>Mathematical Formulation &nbsp;·&nbsp; Cancer Driver Gene Prediction</p>
+  </header>
+
+  <!-- Section 1 -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">1</div>
+      <div class="section-title">Ollivier-Ricci Curvature</div>
+    </div>
+    <p class="desc">
+      For each edge $(u, v)$ in the gene interaction network, curvature quantifies local geometric stress
+      via the transport cost between neighborhood distributions.
+    </p>
+
+    <div class="math-block">
+      <div class="label">Edge Curvature</div>
+      $$\kappa(u,v) \;=\; 1 \;-\; \frac{W_1(\mu_u,\, \mu_v)}{d(u,v)}$$
+    </div>
+    <p class="note">
+      $W_1$: 1-Wasserstein (earth mover's) distance &nbsp;·&nbsp;
+      $\mu_v$: uniform distribution over neighbors of $v$ &nbsp;·&nbsp;
+      $d(u,v)$: shortest-path distance
+    </p>
+
+    <div class="math-block" style="margin-top:1rem;">
+      <div class="label">Curvature Feature Augmentation (per node)</div>
+      $$\tilde{x}_v \;=\; \Bigl[\, x_v \;\Big\|\; \bar{\kappa}_v,\; \kappa_v^{\min},\; \kappa_v^{\max} \,\Bigr]
+        \;\in\; \mathbb{R}^{d\,+\,15}$$
+    </div>
+    <p class="note">
+      Three curvature statistics appended to the original $d$-dimensional node features.
+      Total input dim: $d + 15$ (e.g., $58 + 15 = 73$).
+    </p>
+  </div>
+
+  <!-- Section 2 -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">2</div>
+      <div class="section-title">Schur Complement Graph Augmentation</div>
+    </div>
+    <p class="desc">
+      Two stochastic graph views are constructed by eliminating a random $\rho$-fraction of nodes
+      via Schur complement reduction of the graph Laplacian.
+    </p>
+
+    <div class="math-block">
+      <div class="label">Block Partition of Graph Laplacian</div>
+      $$L \;=\; \begin{bmatrix} L_{AA} & L_{AB} \\ L_{BA} & L_{BB} \end{bmatrix}$$
+    </div>
+    <p class="note">$A$: retained nodes &nbsp;·&nbsp; $B$: eliminated nodes (random $\rho = 0.2$ sample)</p>
+
+    <div class="math-block">
+      <div class="label">Schur Complement onto Retained Set A</div>
+      $$L^{(S)} \;=\; L_{AA} \;-\; L_{AB}\, L_{BB}^{-1}\, L_{BA}$$
+    </div>
+
+    <div class="math-block result">
+      <div class="label green">Two Independent Views</div>
+      $$\tilde{G}_1,\; \tilde{G}_2
+        \;\longleftarrow\;
+        \text{two independent random draws of } B \text{ at } \rho = 0.2$$
+    </div>
+  </div>
+
+  <!-- Section 3 -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">3</div>
+      <div class="section-title">Multi-Head Graph Attention Encoder (GAT)</div>
+    </div>
+    <p class="desc">
+      Applied independently to each view. Produces per-node embeddings
+      via learned attention over neighbor features.
+    </p>
+
+    <div class="math-block">
+      <div class="label">Attention Coefficient (layer $\ell$, head $k$)</div>
+      $$\alpha_{vu}^{(k,\ell)} \;=\;
+        \frac{
+          \exp\!\Bigl(\operatorname{LeakyReLU}\!\bigl(\mathbf{a}^k \cdot
+            [W^k h_v^{(\ell-1)} \;\|\; W^k h_u^{(\ell-1)}]\bigr)\Bigr)
+        }{
+          \displaystyle\sum_{w \in \mathcal{N}(v)}
+          \exp\!\Bigl(\operatorname{LeakyReLU}\!\bigl(\mathbf{a}^k \cdot
+            [W^k h_v^{(\ell-1)} \;\|\; W^k h_w^{(\ell-1)}]\bigr)\Bigr)
+        }$$
+    </div>
+
+    <div class="math-block">
+      <div class="label">Node Update (multi-head concatenation)</div>
+      $$h_v^{(\ell)} \;=\; \Big\|_{k=1}^{K}\; \sigma\!\left(
+          \sum_{u \in \mathcal{N}(v)} \alpha_{vu}^{(k,\ell)}\; W^k h_u^{(\ell-1)}
+        \right)$$
+    </div>
+    <p class="note">
+      $K = 4$ attention heads &nbsp;·&nbsp; hidden dim $= 128$ &nbsp;·&nbsp; dropout $= 0.3$
+    </p>
+
+    <div class="math-block result">
+      <div class="label green">View Embeddings</div>
+      $$z_v^{(i)} \;=\; \operatorname{GAT}\!\bigl(\tilde{G}_i,\; \tilde{x}_v\bigr)
+        \;\in\; \mathbb{R}^{128}, \qquad i \in \{1, 2\}$$
+    </div>
+  </div>
+
+  <!-- Section 4 -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">4</div>
+      <div class="section-title">NT-Xent Contrastive Loss</div>
+    </div>
+    <p class="desc">
+      Pulls together embeddings of the same node across the two views,
+      while pushing apart embeddings of different nodes.
+    </p>
+
+    <div class="math-block">
+      <div class="label">Cosine Similarity</div>
+      $$\operatorname{sim}(\mathbf{a}, \mathbf{b}) \;=\;
+        \frac{\mathbf{a} \cdot \mathbf{b}}{\|\mathbf{a}\|\,\|\mathbf{b}\|}$$
+    </div>
+
+    <div class="math-block highlight">
+      <div class="label">NT-Xent Loss</div>
+      $$\mathcal{L}_{\text{con}} \;=\;
+        -\frac{1}{|V|} \sum_{v \in V}
+        \log \frac{
+          \exp\!\bigl(\operatorname{sim}(z_v^{(1)},\, z_v^{(2)}) \,/\, \tau\bigr)
+        }{
+          \displaystyle\sum_{u \neq v}
+          \exp\!\bigl(\operatorname{sim}(z_v^{(1)},\, z_u^{(2)}) \,/\, \tau\bigr)
+        }$$
+    </div>
+    <p class="note">Temperature $\tau = 0.3$</p>
+  </div>
+
+  <!-- Section 5 -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">5</div>
+      <div class="section-title">BPR Ranking Loss</div>
+    </div>
+    <p class="desc">
+      Bayesian Personalized Ranking: enforces that known cancer drivers
+      score higher than non-driver genes.
+    </p>
+
+    <div class="math-block">
+      <div class="label">Gene Score</div>
+      $$s_v \;=\; \operatorname{MLP}(z_v) \;\in\; \mathbb{R}$$
+    </div>
+
+    <div class="math-block highlight">
+      <div class="label">BPR Loss (positive node $p$, negative node $q$)</div>
+      $$\mathcal{L}_{\text{rank}} \;=\;
+        -\sum_{(p,\, q)} \log \sigma(s_p - s_q)$$
+    </div>
+    <p class="note">
+      $\sigma$: sigmoid function &nbsp;·&nbsp;
+      Positive set: COSMIC CGC known cancer drivers
+    </p>
+  </div>
+
+  <!-- Section 6 -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">6</div>
+      <div class="section-title">Joint Training Objective</div>
+    </div>
+
+    <div class="final-box">
+      <div class="label">Combined Loss</div>
+      $$\mathcal{L} \;=\; (1 - \lambda)\;\mathcal{L}_{\text{rank}}
+        \;+\; \lambda\;\mathcal{L}_{\text{con}},
+        \qquad \lambda = 0.2$$
+    </div>
+    <p class="note" style="margin-top:0.8rem;">
+      Ranking loss carries $80\%$ of the signal;
+      contrastive loss provides structural regularization at $20\%$.
+    </p>
+  </div>
+
+  <!-- Section 7 -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num">7</div>
+      <div class="section-title">EMA Parameter Update (Inference Stability)</div>
+    </div>
+
+    <div class="math-block">
+      <div class="label">Exponential Moving Average</div>
+      $$\theta_{\text{EMA}} \;\leftarrow\; \gamma\;\theta_{\text{EMA}}
+        \;+\; (1 - \gamma)\;\theta$$
+    </div>
+    <p class="note">
+      $\theta$: current model parameters &nbsp;·&nbsp;
+      EMA weights used for scoring at inference time (not during training).
+    </p>
+  </div>
+
+  <hr class="divider" />
+
+  <!-- Evaluation -->
+  <div class="section">
+    <div class="section-header">
+      <div class="section-num" style="background:var(--accent2);">★</div>
+      <div class="section-title">Evaluation Metric — NDCG@K</div>
+    </div>
+    <p class="desc">
+      Normalized Discounted Cumulative Gain: rewards ranking true cancer drivers near the top of the list,
+      with a logarithmic position discount. Early stopping monitors NDCG@50 on validation nodes.
+    </p>
+
+    <div class="math-block result">
+      <div class="label green">NDCG@K</div>
+      $$\text{NDCG@}K \;=\; \frac{1}{Z} \sum_{k=1}^{K}
+        \frac{2^{\,\mathbb{1}[v_k \in \mathcal{P}]} - 1}{\log_2(k + 1)}$$
+    </div>
+    <p class="note">
+      $\mathcal{P}$: positive (CGC driver) node set &nbsp;·&nbsp;
+      $Z$: ideal DCG (all positives ranked first) &nbsp;·&nbsp;
+      Best fold: NDCG@50 $\approx 0.52$, AUROC $\approx 0.81$
+    </p>
+  </div>
+
+</div>
+</body>
+</html>
