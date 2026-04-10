@@ -986,40 +986,31 @@ for condition, path in CONDITIONS.items():
 rank_df = pd.DataFrame(rank_rows).T   # genes × conditions
 rank_df.index.name = "Gene"
 
-# Annotate rows with complex
-row_colors = [COMPLEX_COLORS[COMPLEX_MAP[g]] for g in rank_df.index]
+# Single-axes heatmap — gene labels coloured by complex membership
+fig, ax = plt.subplots(figsize=(13, 5))
 
-fig, axes = plt.subplots(1, 2, figsize=(14, 5),
-                          gridspec_kw={"width_ratios": [0.03, 1]})
-
-# Left: complex colour bar
-complex_ids = np.array([[list(COMPLEX_COLORS.keys()).index(COMPLEX_MAP[g])]
-                         for g in rank_df.index])
-axes[0].imshow(complex_ids, aspect="auto",
-               cmap=plt.cm.colors.ListedColormap(list(COMPLEX_COLORS.values())))
-axes[0].set_xticks([])
-axes[0].set_yticks(range(len(CLUSTER_GENES)))
-axes[0].set_yticklabels(rank_df.index, fontsize=10, fontweight="bold")
-axes[0].set_title("Complex", fontsize=9, pad=4)
-
-# Right: rank heatmap
-sns.heatmap(rank_df, ax=axes[1], cmap="RdYlGn_r",
+sns.heatmap(rank_df, ax=ax, cmap="RdYlGn_r",
             annot=True, fmt=".0f", annot_kws={"size": 9},
             linewidths=0.4, linecolor="white",
+            yticklabels=rank_df.index,
             cbar_kws={"label": "Aggregate Rank", "shrink": 0.7})
-axes[1].set_yticks([])
-axes[1].set_xlabel("")
-axes[1].set_xticklabels(axes[1].get_xticklabels(), rotation=30, ha="right", fontsize=9)
-axes[1].set_title("Chromatin Remodeling Cluster — Aggregate Rank Across\n"
-                  "3 Networks × 3 Augmentation Strategies (ρ=0.2)",
-                  fontsize=12, fontweight="bold")
 
-# Complex legend
-for patch in [mpatches.Patch(color=c, label=l) for l, c in COMPLEX_COLORS.items()]:
-    pass
-axes[1].legend(handles=[mpatches.Patch(color=c, label=l)
-                         for l, c in COMPLEX_COLORS.items()],
-               title="Complex", fontsize=9, loc="lower right", framealpha=0.9)
+# Colour gene name y-tick labels by complex (replaces the strip subplot)
+for tick, g in zip(ax.get_yticklabels(), rank_df.index):
+    tick.set_color(COMPLEX_COLORS[COMPLEX_MAP[g]])
+    tick.set_fontweight("bold")
+    tick.set_fontsize(10)
+
+ax.set_xlabel("")
+ax.set_xticklabels(ax.get_xticklabels(), rotation=30, ha="right", fontsize=9)
+ax.set_title("Chromatin Remodeling Cluster — Aggregate Rank Across\n"
+             "3 Networks × 3 Augmentation Strategies (ρ=0.2)",
+             fontsize=12, fontweight="bold")
+
+# Legend outside the plot to the right, clear of the heatmap and colorbar
+ax.legend(handles=[mpatches.Patch(color=c, label=l) for l, c in COMPLEX_COLORS.items()],
+          title="Complex", fontsize=9, title_fontsize=9,
+          loc="upper left", bbox_to_anchor=(1.18, 1), framealpha=0.9)
 
 plt.tight_layout()
 plt.savefig(PLOTS_DIR / "cluster_rank_heatmap.png", dpi=300, bbox_inches="tight")

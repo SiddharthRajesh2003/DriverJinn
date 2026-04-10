@@ -24,7 +24,7 @@ A Graph Neural Network framework for cancer driver gene prediction using curvatu
 │                 ↓                                                           │
 │             Integrate features   (curvature_integration.py)                 │
 │               • 58 original dims + 12 curvature dims + 3 summary dims       │
-│               • = 27 total feature dimensions per node                      │
+│               • = 73 total feature dimensions per node                      │
 │                 ↓                                                           │
 │             Create 5-fold stratified splits (seed=42)                       │
 │                 ↓                                                           │
@@ -187,17 +187,20 @@ GNNDriver/
 │   ├── support_models.py       #   EMA, RankingLoss, EarlyStopping, WarmupScheduler
 │   ├── hyperparameter_search.py#   Optuna-based hyperparameter optimization
 │   └── aggregate_fold_results.py#  Cross-fold result aggregation
+├── Downstream/                 # Downstream analysis and visualizations
+│   ├── plots/                  #   Generated figures
+│   └── cosmic/                 #   COSMIC cancer gene census reference data
 ├── utils/
 │   └── logging_manager.py      # Logging configuration
 ├── curvature_output/           # Preprocessed graph datasets (generated)
 ├── model_results/              # Training results and plots (generated)
 ├── trained_models/             # Model checkpoints (generated)
 ├── hyperparam_results/         # Hyperparameter search outputs (generated)
-├── run_model.sh                # SLURM script: sequential fold training
-├── run_model_array.sh          # SLURM script: parallel fold training
+├── run_model_array.sh          # SLURM script: parallel fold training (array job)
 ├── run_hyperparam_search.sh    # SLURM script: hyperparameter search
 ├── preprocess_script.sh        # SLURM script: graph preprocessing
 ├── environment.yaml            # Conda environment specification
+├── requirements.txt            # Pip requirements
 └── Dockerfile                  # Docker configuration
 ```
 
@@ -511,17 +514,9 @@ python -m model.aggregate_fold_results \
 
 ## HPC Usage with SLURM
 
-### Sequential Training (all folds on one GPU)
-
-Use `run_model.sh` when the full training fits within the partition time limit:
-
-```bash
-sbatch run_model.sh
-```
-
 ### Parallel Training (one fold per GPU)
 
-Use `run_model_array.sh` to train each fold independently via SLURM job arrays. This is recommended when training exceeds the partition time limit:
+Use `run_model_array.sh` to train each fold independently via SLURM job arrays:
 
 ```bash
 sbatch run_model_array.sh
