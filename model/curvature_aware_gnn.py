@@ -146,38 +146,38 @@ class CurvatureAwareGNN(nn.Module):
         Process a single pathway through all layers.
         This function is checkpointed to save memory.
         """
-        h = x.clone()
-        layer_outputs = []
-        layer_attentions = []
+        h = x.clone()   # Copy projected input so original x stays unchanged across all pathways
+        layer_outputs = []  # Accumulates per-layer node embeddings if return_all_layers=True
+        layer_attentions = []   # Accumulates per-layer attention weights if return_attention=True
 
-        for i, conv in enumerate(self.conv_layers[pathway_key]):
+        for i, conv in enumerate(self.conv_layers[pathway_key]):    # Iterate over each message passing layer in this (curvature_type, hop_type) pathway
             # Message passing
-            h, alpha = conv(h, edge_index, edge_curvature, return_attention)
+            h, alpha = conv(h, edge_index, edge_curvature, return_attention)    # Run curvature constrained message passing; returns updated node features and optional attention weights
 
             # Normalization
-            if self.use_pathway_norms:
-                h = self.pathway_batch_norms[pathway_key][i](h)
+            if self.use_pathway_norms:  # If pathway-specific norms are enabled (default false)
+                h = self.pathway_batch_norms[pathway_key][i](h) # Normalize using this pathway's dedicated BatchNorm for layer i
             else:
-                h = self.batch_norms[i](h)
+                h = self.batch_norms[i](h)  # Normalize using shared BatchNorm for layer i across all pathways
 
             # Activation
-            h = F.relu(h)
+            h = F.relu(h)   # Apply ReLU non-linearity after normalization
 
             # Dropout
-            h = F.dropout(h, p=self.dropout, training=self.training)
+            h = F.dropout(h, p=self.dropout, training=self.training)    # Randomly zero out features during training
 
-            if return_all_layers:
-                layer_outputs.append(h)
+            if return_all_layers:       # Only store intermediate outputs if called
+                layer_outputs.append(h)     # Save this layer's node embeddings
                 if return_attention and alpha is not None:
-                    layer_attentions.append(alpha)
+                    layer_attentions.append(alpha)  # Save attention weights only if were computed
 
         # If not return_all_layers, only return final output
         if not return_all_layers:
-            layer_outputs = [h]
+            layer_outputs = [h] # Discard intermediate layers; keep only the final embedding
             if return_attention and alpha is not None:
-                layer_attentions = [alpha]
+                layer_attentions = [alpha]  # Keep only the final layer's embeddings
 
-        return layer_outputs, layer_attentions
+        return layer_outputs, layer_attentions  # Return list of embeddings (len = num_layers or 1) and corresponding attentions
 
     def forward(
         self,
@@ -215,24 +215,24 @@ class CurvatureAwareGNN(nn.Module):
         """
         
         # Project input features
-        x = self.input_proj(x)
-        x = F.relu(x)
-        x = F.dropout(x, p = self.dropout, training=self.training)
+        x = self.input_proj(x)      # Linear projection from in_channels -> hidden_channels; aligns all pathways to a common dimension
+        x = F.relu(x)               # Non linearity after projection 
+        x = F.dropout(x, p = self.dropout, training=self.training)  # Regularization on the shared projected input
         
         # Initialize output structures
         outputs = {curv_type: {hop_type: [] for hop_type in self.hop_types} 
-                    for curv_type in self.curvature_types}
+                    for curv_type in self.curvature_types}  # Nested dict to store [layer embeddings] per (curvature_type, hop_type) pathways
         
         attention_weights = None
         if return_attention:
             attention_weights = {
                 curv_type: {hop_type: [] for hop_type in self.hop_types}
-                for curv_type in self.curvature_types
+                for curv_type in self.curvature_types   # Same nested structure for attention weights
             }
         
-        for curv_type in self.curvature_types:
-            for hop_type in self.hop_types:
-                pathway_key = f"{curv_type}_{hop_type}"
+        for curv_type in self.curvature_types:  # Iterate over curvature filter types eg 'positive', 'negative', 'both'
+            for hop_type in self.hop_types:     # Iterate over hop distances eg 'one_hop', 'two_hop'
+                pathway_key = f"{curv_type}_{hop_type}" # Unique string to look up this pathway's layers in self.conv_layers
 
                 # CRITICAL: Use checkpointing during training for memory efficiency
                 if self.training and self.use_pathway_checkpointing:
@@ -242,8 +242,8 @@ class CurvatureAwareGNN(nn.Module):
                         x, edge_index, edge_curvature,
                         pathway_key, curv_type,
                         return_all_layers, return_attention,
-                        use_reentrant=False
-                    )
+                        use_reentrant=False     # Recomputes activations on backward pass instead of storing them; trades compute for memory
+                    )       
                 else:
                     # During eval: process pathway and immediately detach to save memory
                     layer_outputs, layer_attentions = self._process_single_pathway(
@@ -254,18 +254,18 @@ class CurvatureAwareGNN(nn.Module):
 
                     # CRITICAL: Detach outputs during eval to free computational graph
                     if not self.training:
-                        layer_outputs = [out.detach() for out in layer_outputs]
+                        layer_outputs = [out.detach() for out in layer_outputs]     # Free the autograd graph; inference doesn't require gradients
                         if layer_attentions is not None:
                             layer_attentions = [att.detach() if att is not None else None
-                                                for att in layer_attentions]
+                                                for att in layer_attentions]        # Same is applied for the attention tensors
 
                 # Store pathway outputs
-                outputs[curv_type][hop_type] = layer_outputs
+                outputs[curv_type][hop_type] = layer_outputs    # Store this pathway's embeddings into the output dict
 
                 if return_attention:
-                    attention_weights[curv_type][hop_type] = layer_attentions
+                    attention_weights[curv_type][hop_type] = layer_attentions   # Store attention weights for this pathway
         
-        return outputs, attention_weights
+        return outputs, attention_weights   # Full nested dict of all pathway embeddings + optional attention weights
     
     def get_pathway_names(self) -> List[str]:
         """
@@ -274,7 +274,7 @@ class CurvatureAwareGNN(nn.Module):
         Returns:
             List of pathway keys like ['positive_one_hop', 'positive_two_hop', ...]
         """
-        return list(self.conv_layers.keys())
+        return list(self.conv_layers.keys())    # Returns all registered pathway keys eg ['positive_one_hop', 'positive_two_hop'...]
     
     def count_parameters(self) -> Dict[str, int]:
         """
@@ -283,24 +283,24 @@ class CurvatureAwareGNN(nn.Module):
         Returns:
             Dictionary with parameter counts
         """
-        counts = {}
-        total = 0
+        counts = {}     # Will hold parameter counts keyed by pathway name and 'shared'/'total'
+        total = 0       # Running sum across all components
         
         # Shared parameters
-        shared_params = sum(p.numel() for p in self.input_proj.parameters())
-        shared_params += sum(p.numel() for p in self.batch_norms.parameters())
-        counts['shared'] = shared_params
+        shared_params = sum(p.numel() for p in self.input_proj.parameters())    # Count elements in the shared input projection
+        shared_params += sum(p.numel() for p in self.batch_norms.parameters())  # Add shared BatchNorm parameters across all layers
+        counts['shared'] = shared_params    # Store shared count separately for visibility
         total += shared_params
         
         # Pathway-specific parameters
-        for pathway_key, layers in self.conv_layers.items():
+        for pathway_key, layers in self.conv_layers.items():    # Iterate over each (curvature_type, hop_type) pathway
             pathway_params = sum(
-                p.numel() for layer in layers for p in layer.parameters()
+                p.numel() for layer in layers for p in layer.parameters()   # Sum all parameters across every layer in this pathway
             )
-            counts[pathway_key] = pathway_params
+            counts[pathway_key] = pathway_params    # Store per-pathway count
             total += pathway_params
         
-        counts['total'] = total
+        counts['total'] = total # Finally tally including shared + all_pathways
         
         return counts
     
@@ -324,22 +324,22 @@ class CurvatureAwareGNN(nn.Module):
                 }
             }
         """
-        stats = {}
+        stats = {}      # Will hold mean/std/min/max per pathway and per layer
         
         for curv_type in self.curvature_types:
             for hop_type in self.hop_types:
-                pathway_key = f"{curv_type}_{hop_type}"
+                pathway_key = f"{curv_type}_{hop_type}"     # Reconstruct key to index into attention weights
                 stats[pathway_key] = {}
                 
-                attentions = attention_weights[curv_type][hop_type]
+                attentions = attention_weights[curv_type][hop_type] # List of attention tensor, one per layer
                 
-                for layer_idx, alpha in enumerate(attentions):
-                    if alpha is not None:
+                for layer_idx, alpha in enumerate(attentions):      # Iterate over each layer's attention weights
+                    if alpha is not None:                           # Skip layers that didn't return attention
                         stats[pathway_key][f'layer_{layer_idx}'] = {
-                            'mean': alpha.mean().item(),
-                            'std': alpha.std().item(),
-                            'max': alpha.max().item(),
-                            'min': alpha.min().item()
+                            'mean': alpha.mean().item(),    # Average attention weight across all edges and heads
+                            'std': alpha.std().item(),      # Spread of attention weights; high std = sharper/more selective attention
+                            'max': alpha.max().item(),      # Most attended edge in this layer
+                            'min': alpha.min().item()       # Least attended edge in this layer
                         }
         
         return stats

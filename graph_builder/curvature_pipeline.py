@@ -466,37 +466,21 @@ class CurvaturePipeline:
         except Exception as e:
             logger.error(f'Error in calculating edge curvatures: {e}')
     
-    def integrate_features(self, normalize=True):
+    def integrate_features(self):
         """
-        Integrate curvature features with existing features
-        
-        Parameters:
-        normalize: bool, whether to normalize curvature features
-        
-        Note: If train/test split has been created, normalization will be done
-        using training data only (fit on train, transform on all)
+        Integrate curvature features with existing features.
+
+        Raw (unnormalized) features are stored — normalization is deferred to per-fold
+        training in train_model.py to prevent data leakage across cross-validation folds.
         """
         try:
             logger.info("Integrating curvature features with existing features...")
-            
+
             if self.edge_curvature is None:
                 raise ValueError("Must calculate curvatures first using calculate_curvatures()")
-            
+
             integrator = CurvatureFeatureIntegrator(self.edge_curvature, self.data_dict)
             integrator.analyze_curvature_distribution()
-            
-            # Check if we have splits already
-            train_mask = None
-            val_mask = None
-            test_mask = None
-            
-            if self.split_data is not None:
-                train_mask = self.split_data['train_mask']
-                val_mask = self.split_data['val_mask']
-                test_mask = self.split_data['test_mask']
-                logger.info("Using existing split for normalization (fit on train only)")
-            else:
-                logger.info("No split found - will create enhanced features without split-aware normalization")
             
             # CRITICAL: Store raw features BEFORE normalization for augmentation
             logger.info("Storing raw unnormalized features for augmentation...")
@@ -545,30 +529,11 @@ class CurvaturePipeline:
             logger.info(f"  Original features: {original_features_raw.shape[1]} dims")
             logger.info(f"  Curvature features: {all_curvature_raw.shape[1]} dims")
             
-            # Create enhanced features with proper train/test normalization
-            self.enhanced_data_dict = integrator.create_enhanced_features(
-                normalize=normalize,
-                train_mask=train_mask,
-                val_mask=val_mask,
-                test_mask=test_mask
-            )
-            
-            # Add raw features to enhanced_data_dict for easy access
+            # Create raw enhanced features (no normalization)
+            self.enhanced_data_dict = integrator.create_enhanced_features()
+
+            # Also store under x_raw for compatibility with train_model.py per-fold normalization
             self.enhanced_data_dict['x_raw'] = self.raw_enhanced_features
-            
-            # Verify normalization if enabled
-            if normalize and hasattr(integrator, 'curvature_scaler'):
-                num_original = len(self.data_dict['feature_name'])
-                normalized_curv = self.enhanced_data_dict['feature'][:, num_original:].numpy()
-                curv_mean = normalized_curv.mean()
-                curv_std = normalized_curv.std()
-                
-                logger.info(f"Normalized curvature features: mean={curv_mean:.6f}, std={curv_std:.6f}")
-                
-                if abs(curv_mean) > 0.1:
-                    logger.warning(f"⚠️ Curvature mean {curv_mean:.4f} is not close to 0!")
-                else:
-                    logger.info("✓ Curvature features properly normalized")
             
             self.curvature_dict = integrator.create_edge_features_dict()
             
@@ -807,37 +772,9 @@ class CurvaturePipeline:
                     f"This should not happen with the new alignment method."
                 )
             
-            # ====================================================================
-            # Normalize the augmented RAW features using fitted scalers
-            # ====================================================================
-            if hasattr(self.integrator, 'original_scaler') and self.integrator.original_scaler is not None:
-                logger.info(f"Normalizing augmented view {i+1} using fitted scalers...")
-                
-                # Split into original and curvature features
-                num_original = len(self.integrator.feature_names)
-                aug_original_raw = aug_features_raw_np[:, :num_original]
-                aug_curvature_raw = aug_features_raw_np[:, num_original:]
-                
-                # Transform using SAME scalers fitted on training data
-                aug_original_norm = self.integrator.original_scaler.transform(aug_original_raw)
-                aug_curvature_norm = self.integrator.curvature_scaler.transform(aug_curvature_raw)
-                
-                # Combine normalized features
-                aug_features_normalized = np.hstack([aug_original_norm, aug_curvature_norm])
-                aug_features = torch.tensor(aug_features_normalized, dtype=torch.float32)
-                
-                # Verification
-                curv_mean = aug_curvature_norm.mean()
-                curv_std = aug_curvature_norm.std()
-                logger.info(f"View {i+1} normalized curvature: mean={curv_mean:.6f}, std={curv_std:.6f}")
-                
-                if abs(curv_mean) > 0.5:
-                    logger.error(f"⚠️ WARNING: View {i+1} normalization failed! Mean={curv_mean:.4f}")
-                else:
-                    logger.info(f"✓ View {i+1} properly normalized")
-            else:
-                logger.warning("No scalers available - using unnormalized features")
-                aug_features = torch.tensor(aug_features_raw_np, dtype=torch.float32)
+            # Store raw augmented features — normalization is deferred to per-fold
+            # training in train_model.py to prevent data leakage
+            aug_features = torch.tensor(aug_features_raw_np, dtype=torch.float32)
             
             # ====================================================================
             # Compute curvature for augmented graph
@@ -847,7 +784,7 @@ class CurvaturePipeline:
                 logger.info(f"Computing curvature for augmented view {i+1}...")
                 aug_curvature_dict = self.compute_augmented_curvature(
                     aug_graph,
-                    aug_features,  # Use normalized features
+                    aug_features,
                     method=curvature_method
                 )
                 
@@ -1556,10 +1493,9 @@ class CurvaturePipeline:
     
         return output_path
 
-    def run_pipeline(self, 
-                    output_dir='./output', 
-                    method='both', 
-                    normalize=True,
+    def run_pipeline(self,
+                    output_dir='./output',
+                    method='both',
                     use_augmentation=False,
                     num_augmented_views=2,
                     elimination_ratio=0.2,
@@ -1575,12 +1511,13 @@ class CurvaturePipeline:
                     use_kfold = True,
                     n_folds = 5):
         """
-        Run the complete curvature integration pipeline with optional augmentation
-        
+        Run the complete curvature integration pipeline with optional augmentation.
+        Features are stored raw (unnormalized) — normalization is deferred to per-fold
+        training in train_model.py to prevent data leakage.
+
         Parameters:
         output_dir: str, directory to save outputs
         method: str, curvature calculation method
-        normalize: bool, whether to normalize features
         use_augmentation: bool, whether to generate augmented views
         num_augmented_views: int, number of augmented views to generate
         elimination_ratio: float, ratio of nodes to eliminate in augmentation
@@ -1618,7 +1555,7 @@ class CurvaturePipeline:
                     # Store raw (unnormalized) features — normalization is
                     # deferred to per-fold training to prevent data leakage.
                     logger.info("K-fold mode: storing raw features (normalization deferred to per-fold training)")
-                    self.integrate_features(normalize=False)
+                    self.integrate_features()
 
                     self.enhanced_data_dict['kfold_splits'] = kfold_data
 
@@ -1635,11 +1572,11 @@ class CurvaturePipeline:
                         random_seed=random_seed,
                         use_existing_mask=use_existing_mask
                     )
-                    # Then integrate features (will use splits for normalization)
-                    self.integrate_features(normalize=normalize)
+                    # Then integrate features (raw — normalization deferred to per-fold training)
+                    self.integrate_features()
             else:
-                # No splits - integrate features normally
-                self.integrate_features(normalize=normalize)
+                # No splits - integrate features (raw)
+                self.integrate_features()
             
             os.makedirs(output_dir, exist_ok=True)
             
@@ -1727,8 +1664,7 @@ def main():
     # Curvature calculation
     parser.add_argument('--method', type=str, choices=['ollivier', 'forman', 'both'], 
                         default='both', help='Curvature calculation method')
-    parser.add_argument('--no_normalize', action='store_true', 
-                        help='Skip normalization of curvature features')
+    # --no_normalize removed: normalization is now always deferred to per-fold training
     
     # Augmentation
     parser.add_argument('--augment', action='store_true',
@@ -1772,7 +1708,6 @@ def main():
         result = pipeline.run_pipeline(
             output_dir=args.output_dir,
             method=args.method,
-            normalize=not args.no_normalize,
             use_augmentation=args.augment,
             num_augmented_views=args.num_views,
             elimination_ratio=args.elimination_ratio,

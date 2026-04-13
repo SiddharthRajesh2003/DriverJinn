@@ -46,8 +46,10 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
         concat: bool = True,
         negative_slope: float = 0.2
     ):
+        # Initialize the parent class MessagePassing with the method for aggregation
         super().__init__(aggr=aggregation)
         
+        # Assign the variables to be stored as attributes of the object using self
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.curvature_type = curvature_type.lower()
@@ -165,7 +167,7 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
         
         # Validate inputs
         num_nodes = x.shape[0]
-        max_node_idx = edge_index.max().item() if edge_index.numel() > 0 else -1
+        max_node_idx = edge_index.max().item() if edge_index.numel() > 0 else -1    # Ensure that the nodes in the node list and edge list match
         
         if max_node_idx >= num_nodes:
             raise ValueError(f"Edge index contains node {max_node_idx} but only {num_nodes} nodes in features")
@@ -373,11 +375,11 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
     ) -> torch.Tensor:
         """Standard GAT attention (node features only)."""
         # [h_i || h_j]
-        alpha_input = torch.cat([x_i, x_j], dim=-1)
-        alpha = (alpha_input * self.att).sum(dim=-1)
-        alpha = F.leaky_relu(alpha, self.negative_slope)
-        alpha = self.softmax_per_node(alpha, index, size_i)
-        return alpha
+        alpha_input = torch.cat([x_i, x_j], dim=-1)     # Merge together the 2 tensors along their feature dimension
+        alpha = (alpha_input * self.att).sum(dim=-1)    # Compute the raw attention score
+        alpha = F.leaky_relu(alpha, self.negative_slope)# Apply leaky_relu activation to keep the neurons active
+        alpha = self.softmax_per_node(alpha, index, size_i) # Apply softmax normalization per node
+        return alpha    # Return the calculated attention weights
     
     def softmax_per_node(
         self,
@@ -387,126 +389,127 @@ class CurvatureConstrainedMessagePassing(MessagePassing):
     ) -> torch.Tensor:
         """Apply softmax normalization per destination node."""
         if size_i is None:
-            size_i = int(index.max()) + 1
+            size_i = int(index.max()) + 1   
         
-        alpha_list = []
+        alpha_list = [] # Instantiate the empty list
         
-        for head in range(self.heads):
-            alpha_head = alpha[:, head]
+        for head in range(self.heads):  # loop over the total number of attention heads
+            alpha_head = alpha[:, head] # Get the attention weight for each head.
             
             # Numerical stability
-            alpha_max = torch.zeros(size_i, device=alpha.device)
-            alpha_max.scatter_reduce_(0, index, alpha_head, reduce='amax', include_self=False)
-            alpha_head = alpha_head - alpha_max[index]
+            alpha_max = torch.zeros(size_i, device=alpha.device)    # Create a buffer to store the max score for each target node
+            alpha_max.scatter_reduce_(0, index, alpha_head, reduce='amax', include_self=False) # Find the max score among all incoming edges for node 'i'
+            alpha_head = alpha_head - alpha_max[index] # Subtract the max from the scores to prevent overflow when calculating exp()
             
             # Exp and normalize
-            alpha_head = alpha_head.exp()
-            alpha_sum = torch.zeros(size_i, device=alpha.device)
-            alpha_sum.scatter_add_(0, index, alpha_head)
-            alpha_head = alpha_head / (alpha_sum[index] + 1e-16)
+            alpha_head = alpha_head.exp()   # Exponentiate the stabilized scores
+            alpha_sum = torch.zeros(size_i, device=alpha.device)    # Create a buffer to sum the exponentiated scores per destination node
+            alpha_sum.scatter_add_(0, index, alpha_head) # Sum all incoming edge scores for each node 'i'
+            alpha_head = alpha_head / (alpha_sum[index] + 1e-16) # Divide each edge score by its node's total sum (with epsilon to avoid div by zero)
             
             alpha_list.append(alpha_head)
         
+        # Recombine the normalized scores from all heads back into a single tensor
         return torch.stack(alpha_list, dim=1)
 
     def compute_edge_feature_attention(
         self,
-        x_i: torch.Tensor,
-        x_j: torch.Tensor,
-        edge_curvature: torch.Tensor,
-        index: torch.Tensor,
-        size_i: Optional[int]
+        x_i: torch.Tensor, # Target node features, shape [E, head, head_dim]
+        x_j: torch.Tensor, # Source node features, shape [E, head, head_dim]
+        edge_curvature: torch.Tensor, # Scalar curvature per edge, shape [E]
+        index: torch.Tensor, # Target node indices for softmax grouping
+        size_i: Optional[int] # No of target nodes (for scatter softmax)
     ) -> torch.Tensor:
         """Attention with curvature as edge feature."""
-        curv_expanded = (edge_curvature * self.curvature_scale).unsqueeze(-1).unsqueeze(-1)
-        curv_expanded = curv_expanded.expand(-1, self.heads, -1)
+        curv_expanded = (edge_curvature * self.curvature_scale).unsqueeze(-1).unsqueeze(-1) # Scale curvature then shape to [E, 1, 1]
+        curv_expanded = curv_expanded.expand(-1, self.heads, -1) # Broadcast to [E, heads, 1] to match x_i, x_j head_dim
         
-        alpha_input = torch.cat([x_i, x_j, curv_expanded], dim=-1)
-        alpha = (alpha_input * self.att).sum(dim=-1)
-        alpha = F.leaky_relu(alpha, self.negative_slope)
-        alpha = self.softmax_per_node(alpha, index, size_i)
-        return alpha
+        alpha_input = torch.cat([x_i, x_j, curv_expanded], dim=-1) # Concatenate source, target and curvature into [E, heads, 2*head_dim + 1]
+        alpha = (alpha_input * self.att).sum(dim=-1) # DOt product with learned attention weights -> [E, heads]
+        alpha = F.leaky_relu(alpha, self.negative_slope) # Non-linearity to allow negative attention score 
+        alpha = self.softmax_per_node(alpha, index, size_i) # Normalize scores across all source nodes per target node
+        return alpha # Normalized attention coefficients [E, heads]
     
     def compute_bias_attention(
         self,
-        x_i: torch.Tensor,
-        x_j: torch.Tensor,
-        edge_curvature: torch.Tensor,
-        index: torch.Tensor,
-        size_i: int 
+        x_i: torch.Tensor, # Target node features, shape [E, head, head_dim]
+        x_j: torch.Tensor, # Source node features, shape [E, head, head_dim]
+        edge_curvature: torch.Tensor, # Scalar curvature per edge, shape [E]
+        index: torch.Tensor, # Target node indices for softmax grouping
+        size_i: Optional[int] # No of target nodes (for scatter softmax) 
     ) -> torch.Tensor:
         """Attention with curvature as additive bias."""
-        alpha_input = torch.cat([x_i, x_j], dim=-1)
-        alpha = (alpha_input * self.att).sum(dim=-1)
-        alpha = F.leaky_relu(alpha, self.negative_slope)
+        alpha_input = torch.cat([x_i, x_j], dim=-1)     # Concatenate source and target features -> [E, 2*head_dim]
+        alpha = (alpha_input * self.att).sum(dim=-1)    # Standard GAT dot-product attention -> [E, heads]
+        alpha = F.leaky_relu(alpha, self.negative_slope)# Non-linearity before adding curvature bias
         
         # Add curvature bias
-        curvature_bias = edge_curvature.unsqueeze(-1) * self.curvature_bias_weight
-        alpha = alpha + curvature_bias
+        curvature_bias = edge_curvature.unsqueeze(-1) * self.curvature_bias_weight # Learned per-edge shift -> [E, 1]; high curvature edges get stronger/weaker weight
+        alpha = alpha + curvature_bias       # Inject curvature bias additively without making changes to the curvature structure
         
-        alpha = self.softmax_per_node(alpha, index, size_i)
-        return alpha
+        alpha = self.softmax_per_node(alpha, index, size_i) # Normalize across neighbors per target node
+        return alpha    # Normalized attention coefficients [E, heads]
     
     def compute_gated_attention(
         self,
-        x_i: torch.Tensor,
-        x_j: torch.Tensor,
-        edge_curvature: torch.Tensor,
-        index: torch.Tensor,
-        size_i: int
+        x_i: torch.Tensor, # Target node features, shape [E, head, head_dim]
+        x_j: torch.Tensor, # Source node features, shape [E, head, head_dim]
+        edge_curvature: torch.Tensor, # Scalar curvature per edge, shape [E]
+        index: torch.Tensor, # Target node indices for softmax grouping
+        size_i: Optional[int] # No of target nodes (for scatter softmax) 
     ) -> torch.Tensor:
         """Gated attention: learned mixing."""
         # Node attention
-        alpha_node_input = torch.cat([x_i, x_j], dim=-1)
-        alpha_node = (alpha_node_input * self.att_node).sum(dim=-1)
-        alpha_node = F.leaky_relu(alpha_node, self.negative_slope)
+        alpha_node_input = torch.cat([x_i, x_j], dim=-1)    # Standard GAT input: concat source and target features -> [E, heads, 2*head_dim]
+        alpha_node = (alpha_node_input * self.att_node).sum(dim=-1) # Node-only attention score -> [E, head]
+        alpha_node = F.leaky_relu(alpha_node, self.negative_slope)  # Non-linearity
         
         # Curvature attention
-        curv_expanded = edge_curvature.unsqueeze(-1).unsqueeze(-1).expand(-1, self.heads, -1)
-        alpha_curv = (curv_expanded * self.att_curv).squeeze(-1)
-        alpha_curv = F.leaky_relu(alpha_curv, self.negative_slope)
+        curv_expanded = edge_curvature.unsqueeze(-1).unsqueeze(-1).expand(-1, self.heads, -1)   # Reshape curvature to [E, heads, 1]
+        alpha_curv = (curv_expanded * self.att_curv).squeeze(-1)    # Curvature-only attention score via learned weight -> [E, heads]
+        alpha_curv = F.leaky_relu(alpha_curv, self.negative_slope)  # Non-linearity
         
         # Gate
         gate_input = torch.cat([
-            x_i.mean(dim=1),
-            x_j.mean(dim=1),
-            edge_curvature.unsqueeze(-1)
+            x_i.mean(dim=1),    # Average over heads to get [E, head_dim] node summary
+            x_j.mean(dim=1),    # Average over heads to get [E, head_dim] neighbor summary
+            edge_curvature.unsqueeze(-1)    # Curvature scalar appended -> total [E, 2*head_dim + 1]
         ], dim=-1)
-        gate = self.gate_net(gate_input)
+        gate = self.gate_net(gate_input)    # MLP produces per-edge scalar in (0, 1) controlling blend ratio -> [E, heads] 
         
         # Mix
-        alpha = gate * alpha_node + (1 - gate) * alpha_curv
-        alpha = self.softmax_per_node(alpha, index, size_i)
-        return alpha
+        alpha = gate * alpha_node + (1 - gate) * alpha_curv # Convex combination: gate=1 is pure node attention, gate=0 is pure curvature attention
+        alpha = self.softmax_per_node(alpha, index, size_i) # Normalize across neighbors per target node
+        return alpha    # Normalized attention coefficients [E, heads]
     
     def compute_hybrid_attention(
         self,
-        x_i: torch.Tensor,
-        x_j: torch.Tensor,
-        edge_curvature: torch.Tensor, 
-        index: torch.Tensor,
-        size_i: int
+        x_i: torch.Tensor, # Target node features, shape [E, head, head_dim]
+        x_j: torch.Tensor, # Source node features, shape [E, head, head_dim]
+        edge_curvature: torch.Tensor, # Scalar curvature per edge, shape [E]
+        index: torch.Tensor, # Target node indices for softmax grouping
+        size_i: Optional[int] # No of target nodes (for scatter softmax) 
     ) -> torch.Tensor:
         """Hybrid: Combines edge_feature and bias."""
         # Edge feature component
-        curv_expanded = (edge_curvature * self.curvature_scale).unsqueeze(-1).unsqueeze(-1)
-        curv_expanded = curv_expanded.expand(-1, self.heads, -1)
+        curv_expanded = (edge_curvature * self.curvature_scale).unsqueeze(-1).unsqueeze(-1) # Scale and reshape curvature to [E, 1, 1]
+        curv_expanded = curv_expanded.expand(-1, self.heads, -1)       # Broadcast to [E, heads, 1]
         
-        alpha_feature_input = torch.cat([x_i, x_j, curv_expanded], dim=-1)
-        alpha_feature = (alpha_feature_input * self.att_feature).sum(dim=-1)
-        alpha_feature = F.leaky_relu(alpha_feature, self.negative_slope)
+        alpha_feature_input = torch.cat([x_i, x_j, curv_expanded], dim=-1)  # Concat source, target, curvature -> [E, heads, 2*head_dim+1]
+        alpha_feature = (alpha_feature_input * self.att_feature).sum(dim=-1)    # Edge feature attention score (same as compute_edge_feature_attention) -> [E, heads]
+        alpha_feature = F.leaky_relu(alpha_feature, self.negative_slope)    # Non-linearity
         
         # Bias component
-        alpha_bias_input = torch.cat([x_i, x_j], dim=-1)
-        alpha_bias = (alpha_bias_input * self.att_bias).sum(dim=-1)
-        alpha_bias = F.leaky_relu(alpha_bias, self.negative_slope)
+        alpha_bias_input = torch.cat([x_i, x_j], dim=-1)    # Concat source and target only -> [E, heads, 2*head_dim+1]
+        alpha_bias = (alpha_bias_input * self.att_bias).sum(dim=-1) # Node-only attention score (same as compute_bias_attention) -> [E, heads]
+        alpha_bias = F.leaky_relu(alpha_bias, self.negative_slope)  # Non-linearity
         
-        curvature_bias = edge_curvature.unsqueeze(-1) * self.curvature_bias_weight
-        alpha_bias = alpha_bias + curvature_bias
+        curvature_bias = edge_curvature.unsqueeze(-1) * self.curvature_bias_weight  # Learned curvature additive shift -> [E, 1]
+        alpha_bias = alpha_bias + curvature_bias    # Inject curvature as bias into the node-based score
         
         # Combine
-        weights = F.softmax(self.hybrid_weight, dim=0)
-        alpha = weights[0] * alpha_feature + weights[1] * alpha_bias
+        weights = F.softmax(self.hybrid_weight, dim=0)  # Learned 2-element weight vector that sums to 1, balancing the 2 components
+        alpha = weights[0] * alpha_feature + weights[1] * alpha_bias    # Weighted sum of edge-feature and bias attention scores -> [E, heads]
         
-        alpha = self.softmax_per_node(alpha, index, size_i)
-        return alpha
+        alpha = self.softmax_per_node(alpha, index, size_i) # Normalized across neighbors per target node
+        return alpha    # Normalized attention coefficients [E, heads]

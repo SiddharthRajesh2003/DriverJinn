@@ -75,7 +75,7 @@ A Graph Neural Network framework for cancer driver gene prediction using curvatu
 │          └──────────────────────────────────────────────────────────┘       │
 │                                                                             │
 │          Optimizations:                                                     │
-│            • Cosine Annealing Warm Restarts (T_0=200, T_mult=2)             │
+│            • ReduceLROnPlateau (factor, patience configurable)               │
 │            • Linear warmup (10 epochs)                                      │
 │            • Gradient accumulation (8 steps)                                │
 │            • Mixed precision (FP16)                                         │

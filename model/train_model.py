@@ -22,23 +22,23 @@ from model.DriverGenePredictor import ContrastiveDriverGenePredictor, compute_nd
 from model.support_models import WarmupScheduler, EarlyStopping, RankingLoss, EMA
 
 # Memory optimization
-torch.cuda.empty_cache()
-gc.collect()
+torch.cuda.empty_cache()                                                        # Flush any GPU memory allocated from previous runs before training starts
+gc.collect()                                                                    # Trigger python garbage collection to free unreferenced CPU objects
 
 # Enable efficient operations
-torch.backends.cuda.matmul.allow_tf32 = True
-torch.backends.cudnn.allow_tf32 = True
+torch.backends.cuda.matmul.allow_tf32 = True                                    # Use TF32 for matrix multiplications; faster on Ampere+ GPUs with negligible precision loss
+torch.backends.cudnn.allow_tf32 = True                                          # Use TF32 for cuDNN convolutions; same trade-off as above
 
 logger = get_logger(__name__)
 
 def set_seed(seed: int = 42):
     """Set random seed for reproducibility across all libraries."""
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+    random.seed(seed)                                                           # Seed python's built in random module
+    np.random.seed(seed)                                                        # Seed NumPy's RNG
+    torch.manual_seed(seed)                                                     # Seed PyTorch CPU RNG
+    torch.cuda.manual_seed_all(seed)                                            # Seed all GPU RNG (covers multi-GPU setups)
+    torch.backends.cudnn.deterministic = True                                   # Force cuDNN to use deterministic algorithms; prevents non-reproducible results from algorithm selection
+    torch.backends.cudnn.benchmark = False                                      # Disable cuDNN auto-tuner; tuner picks fastest kernel per input shape but is non-deterministic
     logger.info(f"Random seed set to {seed}")
 
 def setup_device(model):
@@ -50,14 +50,14 @@ def setup_device(model):
     """
     if not torch.cuda.is_available():
         print('CUDA not available, using CPU')
-        return model, torch.device('cpu')
+        return model, torch.device('cpu')                                       # Graceful fallback to CPU
 
-    device = torch.device('cuda:0')
+    device = torch.device('cuda:0')                                             # use the First available GPU
     props = torch.cuda.get_device_properties(0)
-    mem_gb = props.total_memory / 1024**3
+    mem_gb = props.total_memory / 1024**3                                       # Convert bytes -> GB for human-readable display
     print(f"\n✓ Using GPU: {props.name} ({mem_gb:.1f} GB)")
 
-    model = model.to(device)
+    model = model.to(device)                                                    # Move all model parameters and buffers to the GPU
     return model, device
 
 
@@ -66,47 +66,47 @@ def check_for_nans(tensor, name="tensor", raise_error=True):
     if torch.isnan(tensor).any():
         msg = f"{name} contains NaN values"
         if raise_error:
-            raise ValueError(msg)
+            raise ValueError(msg)                                               # Hardstop: NaN in a tensor usually means a  broken forward pass
         else:
-            logger.error(msg)
+            logger.error(msg)                                                   # Soft warning: caller decides how to handle
             return True
     if torch.isinf(tensor).any():
         msg = f"{name} contains Inf values"
         if raise_error:
-            raise ValueError(msg)
+            raise ValueError(msg)                                               # Hardstop: Inf propagates through computations silently
         else:
             logger.error(msg)
-            return True
+            return True                                                         # Tensor is clean
     return False
 
 def sanitize_curvature(edge_curvature, name="curvature"):
     """Replace NaN/Inf values in curvature with safe defaults"""
     if edge_curvature is None or edge_curvature.numel() == 0:
-        return edge_curvature
+        return edge_curvature                                                   # Nothing to sanitize; return as is
     
-    nan_mask = torch.isnan(edge_curvature)
-    inf_mask = torch.isinf(edge_curvature)
+    nan_mask = torch.isnan(edge_curvature)                                      # Locate NaN entries
+    inf_mask = torch.isinf(edge_curvature)                                      # Locate Inf entries
     
     if nan_mask.any() or inf_mask.any():
         logger.warning(f"{name}: Found {nan_mask.sum().item()} NaN and {inf_mask.sum().item()} Inf values")
-        edge_curvature = edge_curvature.clone()
-        edge_curvature[nan_mask] = 0.0
-        edge_curvature[inf_mask] = 0.0
+        edge_curvature = edge_curvature.clone()                                 # Clone before in-place modification to avoid mutating the original
+        edge_curvature[nan_mask] = 0.0                                          # Replace NaN with neutral curvature value
+        edge_curvature[inf_mask] = 0.0                                          # Replace NaN with neutral curvature value
         logger.warning(f"{name}: Replaced problematic values with 0")
     
-    edge_curvature = torch.clamp(edge_curvature, min=-10.0, max=10.0)
+    edge_curvature = torch.clamp(edge_curvature, min=-10.0, max=10.0)           # Hard clip; prevents extreme curvature from dominating attention scores
     return edge_curvature
 
 def validate_graph_data(data, name="graph", strict=False):
     """Validate graph data structure for NaN/Inf values"""
-    issues = []
+    issues = []                                                                 # Accumulates all validation errors found; lets caller see all problems at once instead of stopping at the first
     
-    features = data.get('feature', data.get('x'))
+    features = data.get('feature', data.get('x'))                               # Support both naming conventions
     if features is not None:
         if torch.isnan(features).any():
             issues.append(f"{name}: Features contain NaN")
             if strict:
-                raise ValueError(issues[-1])
+                raise ValueError(issues[-1])                                    # In strict mode, abort immediately on first issue
         if torch.isinf(features).any():
             issues.append(f"{name}: Features contain Inf")
             if strict:
@@ -116,9 +116,9 @@ def validate_graph_data(data, name="graph", strict=False):
     if edge_index is not None:
         num_nodes = features.shape[0] if features is not None else edge_index.max().item() + 1
         if edge_index.min() < 0:
-            issues.append(f"{name}: Edge index contains negative values")
+            issues.append(f"{name}: Edge index contains negative values")       # Negative node indices are invalid
         if edge_index.max() >= num_nodes:
-            issues.append(f"{name}: Edge index exceeds number of nodes")
+            issues.append(f"{name}: Edge index exceeds number of nodes")        # Out-of-bounds index would cause index errors during message passing
     
     for curv_key in ['ollivier_curvature', 'forman_curvature']:
         if curv_key in data:
@@ -134,7 +134,7 @@ def validate_graph_data(data, name="graph", strict=False):
         if strict:
             raise ValueError(f"Graph validation failed: {issues}")
     
-    return len(issues) == 0
+    return len(issues) == 0                                                     # True = clean data, False = issues found (logged but not raised in non-strict mode)
 
 def preprocess_curvature_data(data: Dict, curvature_type: str = 'ollivier') -> Dict:
     """Preprocess data to ensure curvature dimensions match edge_index with NaN/Inf sanitization"""
@@ -142,14 +142,14 @@ def preprocess_curvature_data(data: Dict, curvature_type: str = 'ollivier') -> D
     
     if curv_key not in data:
         logger.warning(f"No '{curv_key}' found in data, skipping preprocessing")
-        return data
+        return data                                                             # Nothing to preprocess, return unchanged
     
     edge_index = data['edge_index']
     edge_curvature = data[curv_key]
     
     # Sanitize curvature values
     logger.info(f"Sanitizing {curv_key} values...")
-    edge_curvature = sanitize_curvature(edge_curvature, name=curv_key)
+    edge_curvature = sanitize_curvature(edge_curvature, name=curv_key)          # Replace NaN/Inf values before any dimension checjs
     
     num_edges = edge_index.shape[1]
     num_curvatures = edge_curvature.shape[0]
@@ -158,7 +158,7 @@ def preprocess_curvature_data(data: Dict, curvature_type: str = 'ollivier') -> D
     
     if num_curvatures == num_edges:
         logger.info("Curvature dimensions already match")
-        data[curv_key] = edge_curvature
+        data[curv_key] = edge_curvature                                         # Dimensions already aligned; just write back the sanitized values
         return data
     
     if num_curvatures * 2 == num_edges:
@@ -167,35 +167,37 @@ def preprocess_curvature_data(data: Dict, curvature_type: str = 'ollivier') -> D
         device = edge_curvature.device
         matched_curvature = torch.zeros(num_edges, device=device, dtype=edge_curvature.dtype)
         
-        edge_list = edge_index.t().cpu().numpy()
+        edge_list = edge_index.t().cpu().numpy()                                # [num_edges, 2] for row-wise iteration
         edge_to_curv_idx = {}
         
         for src, dst in edge_list:
             src, dst = int(src), int(dst)
-            canonical = (min(src, dst), max(src, dst))
+            canonical = (min(src, dst), max(src, dst))                          # Canonical form so both directions share the same key
             if canonical not in edge_to_curv_idx:
-                edge_to_curv_idx[canonical] = len(edge_to_curv_idx)
+                edge_to_curv_idx[canonical] = len(edge_to_curv_idx)             # Assign next available index on first encounter
         
         sorted_edges = sorted(edge_to_curv_idx.keys())
-        edge_to_curv_idx = {edge: i for i, edge in enumerate(sorted_edges)}
+        edge_to_curv_idx = {edge: i for i, edge in enumerate(sorted_edges)}     # Re-index by sorted order for determination
         
         for i, (src, dst) in enumerate(edge_list):
             src, dst = int(src), int(dst)
             canonical = (min(src, dst), max(src, dst))
-            curv_idx = edge_to_curv_idx.get(canonical, 0)
+            curv_idx = edge_to_curv_idx.get(canonical, 0)                       # Look up the curvature index for this canonical edge
             if curv_idx < num_curvatures:
-                matched_curvature[i] = edge_curvature[curv_idx]
+                matched_curvature[i] = edge_curvature[curv_idx]                 # Copy undirected curvature to this directed edge
         
         data[curv_key] = matched_curvature
         logger.info(f"Successfully matched {num_curvatures} curvatures to {num_edges} edges")
     
     elif num_edges * 2 == num_curvatures:
         logger.info("Detected directed curvature for undirected edges, averaging...")
-        data[curv_key] = edge_curvature.reshape(-1, 2).mean(dim=1)
+        data[curv_key] = edge_curvature.reshape(-1, 2).mean(dim=1)              # Average forward and backward curvature per undirected edge
     
     else:
         logger.warning(f"Unusual ratio: {num_curvatures} curvatures for {num_edges} edges")
         device = edge_curvature.device
+        
+        # non-standard ratio: fallback to best-effort canonical matching
         matched_curvature = torch.zeros(num_edges, device=device, dtype=edge_curvature.dtype)
         
         edge_list = edge_index.t().cpu().numpy()
@@ -210,6 +212,7 @@ def preprocess_curvature_data(data: Dict, curvature_type: str = 'ollivier') -> D
         sorted_edges = sorted(edge_to_curv_idx.keys())
         edge_to_curv_idx = {edge: i for i, edge in enumerate(sorted_edges)}
         
+        # same canonical matching logic as the 2:1 case above...
         for i, (src, dst) in enumerate(edge_list):
             src, dst = int(src), int(dst)
             canonical = (min(src, dst), max(src, dst))
@@ -217,12 +220,12 @@ def preprocess_curvature_data(data: Dict, curvature_type: str = 'ollivier') -> D
             if curv_idx < num_curvatures:
                 matched_curvature[i] = edge_curvature[curv_idx]
             else:
-                matched_curvature[i] = 0.0
+                matched_curvature[i] = 0.0                                      # No match; use neutral curvature
         
         data[curv_key] = matched_curvature
     
     # Final sanitization
-    data[curv_key] = sanitize_curvature(data[curv_key], name=f"{curv_key}_matched")
+    data[curv_key] = sanitize_curvature(data[curv_key], name=f"{curv_key}_matched") # Re-sanitize after matching in case any edge had no match and was left as 0
     
     return data
 
@@ -236,15 +239,15 @@ def evaluate_with_ranking_metrics(
     device: torch.device = None
 ) -> Dict[str, float]:
     """Evaluate model using ranking metrics (AUROC, AUPRC, NDCG, MRR, Precision@K)"""
-    model.eval()
+    model.eval()                                                                # Disable dropout and use inference-mode batch norm
     
     try:
-        with torch.no_grad():
+        with torch.no_grad():                                                   # No gradients needed during evaluation
             metrics = model.evaluate(  # <-- This should return a dict
                 data, labels, mask,
                 curvature_type=curvature_type,
                 device=device,
-                k_values=[10, 20, 50, 100]
+                k_values=[10, 20, 50, 100]                                      # Compute Precision@K and NDCG@K for these cutoffs
             )
         
         # Ensure metrics is a dict
@@ -256,13 +259,13 @@ def evaluate_with_ranking_metrics(
                 'ndcg@50': 0.0,
                 'precision@50': 0.0,
                 'mrr': 0.0
-            }
+            }                                                                   # Safe default metrics dict to prevent downstream KeyError crashes
         
         # Check for NaN in metrics
         for key, value in metrics.items():
             if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
                 logger.warning(f"Invalid metric {key}: {value}, setting to 0")
-                metrics[key] = 0.0
+                metrics[key] = 0.0                                              # Replace degenerate metric values so they don't corrupt averages
         
         return metrics
         
@@ -279,7 +282,7 @@ def evaluate_with_ranking_metrics(
             'precision@10': 0.0,
             'precision@50': 0.0,
             'mrr': 0.0
-        }
+        }                                                                       # Return zero metrics on any exception so training loop continues
 
 def create_cancer_driver_model(
     num_features: int = 74,
@@ -305,8 +308,8 @@ def create_cancer_driver_model(
         hidden_channels=hidden_channels,
         projection_dim=projection_dim,
         num_gnn_layers=num_layers,
-        curvature_types=['positive', 'negative', 'both'],
-        hop_types=['one_hop', 'two_hop'],
+        curvature_types=['positive', 'negative', 'both'],                  # Fixed set of curvature pathways
+        hop_types=['one_hop', 'two_hop'],                                  # Fixed set of hop distance
         num_attention_heads=num_heads,
         use_attention=True,
         aggregation=aggregation,
@@ -317,7 +320,7 @@ def create_cancer_driver_model(
         negative_slope=negative_slope,
         dropout=dropout,
         device=device
-    ).to(device)
+    ).to(device)                                                           # Move all parameters to target device immediately after construction
 
     logger.info(f"Created ContrastiveDriverGenePredictor model:")
     logger.info(f"  - Input features: {num_features}")
@@ -342,31 +345,31 @@ def reconstruct_node_mapping(augmented_views, num_nodes):
     """
     if not augmented_views or len(augmented_views) == 0:
         logger.warning("No augmented_views found, using placeholder names")
-        return np.array([f"Gene_{i}" for i in range(num_nodes)]), {}
+        return np.array([f"Gene_{i}" for i in range(num_nodes)]), {}       # No views = no metadata; fallback to index names
 
-    reference_mapping = None
+    reference_mapping = None                                               # Will hold the mapping from view 0 for cross-validation
 
     for view_idx, view in enumerate(augmented_views):
         metadata = view.get('metadata', {})
-        remaining = metadata.get('node_id_to_name', {})
-        eliminated = metadata.get('eliminated_node_id_to_name', {})
+        remaining = metadata.get('node_id_to_name', {})                    # Nodes kept after Schur elimination
+        eliminated = metadata.get('eliminated_node_id_to_name', {})        # Nodes removed by Schur elimination
 
         if not remaining and not eliminated:
             logger.warning(f"View {view_idx}: both node_id_to_name and eliminated_node_id_to_name are empty")
             continue
 
-        full_mapping = {**remaining, **eliminated}
+        full_mapping = {**remaining, **eliminated}                         # Union: Every node should appear in exactly one of the 2 dicts
 
         # Check for overlap (a node shouldn't be both remaining and eliminated)
         overlap = set(remaining.keys()) & set(eliminated.keys())
         if overlap:
             logger.error(f"View {view_idx}: {len(overlap)} nodes appear in both remaining and eliminated: "
-                        f"{list(overlap)[:5]}")
+                        f"{list(overlap)[:5]}")                            # Data corruption: a node can't be both kept and removed
 
         if reference_mapping is None:
-            reference_mapping = full_mapping
+            reference_mapping = full_mapping                               # Use view 0 as the authoritative mapping
             logger.info(f"View {view_idx}: {len(remaining)} remaining + {len(eliminated)} eliminated "
-                       f"= {len(full_mapping)} total nodes")
+                       f"= {len(full_mapping)} total nodes")               # Inconsistent metadata across views signals a preprocessing bug
         else:
             # Cross-validate against reference
             if full_mapping != reference_mapping:
@@ -382,9 +385,9 @@ def reconstruct_node_mapping(augmented_views, num_nodes):
 
     if reference_mapping is None:
         logger.warning("No valid mappings found in any view, using placeholder names")
-        return np.array([f"Gene_{i}" for i in range(num_nodes)]), {}
+        return np.array([f"Gene_{i}" for i in range(num_nodes)]), {}       # All views had empty metadata
 
-    node_names = np.array([str(reference_mapping.get(i, f"Gene_{i}")) for i in range(num_nodes)])
+    node_names = np.array([str(reference_mapping.get(i, f"Gene_{i}")) for i in range(num_nodes)])   # Build ordered name array indexed by Node ID
     return node_names, reference_mapping
 
 
@@ -394,15 +397,15 @@ def align_and_verify_labels(node_id_to_name_full, original_labels, num_nodes):
     Returns:
         labels: aligned label tensor
     """
-    aligned_labels = torch.zeros(num_nodes, dtype=original_labels.dtype)
+    aligned_labels = torch.zeros(num_nodes, dtype=original_labels.dtype)   # Start with all-zero labels
     missing_count = 0
 
     for i in range(num_nodes):
         if i in node_id_to_name_full:
-            aligned_labels[i] = original_labels[i]
+            aligned_labels[i] = original_labels[i]                         # Copy label from original tensor at the same node index
         else:
             missing_count += 1
-            aligned_labels[i] = 0
+            aligned_labels[i] = 0                                          # Node not in mapping; conservatively treat as non-driver
 
     if missing_count > 0:
         logger.warning(f"{missing_count} nodes not found in node_id_to_name_full mapping")
@@ -411,7 +414,7 @@ def align_and_verify_labels(node_id_to_name_full, original_labels, num_nodes):
 
     # Verify known driver genes
     node_names = np.array([str(node_id_to_name_full.get(i, f"Gene_{i}")) for i in range(num_nodes)])
-    known_drivers = ['TP53', 'KRAS', 'EGFR', 'PIK3CA', 'BRAF', 'PTEN']
+    known_drivers = ['TP53', 'KRAS', 'EGFR', 'PIK3CA', 'BRAF', 'PTEN']     # Well-established cancer drivers used as alignment sanity check
     all_correct = True
 
     for gene in known_drivers:
@@ -421,7 +424,7 @@ def align_and_verify_labels(node_id_to_name_full, original_labels, num_nodes):
             if label == 1:
                 logger.info(f"  {gene} (index {idx}): label=1 (driver)")
             else:
-                logger.error(f"  {gene} (index {idx}): label={label} (INCORRECT!)")
+                logger.error(f"  {gene} (index {idx}): label={label} (INCORRECT!)") # Known driver labeled as non-driver = alignment bug
                 all_correct = False
 
     if not all_correct:
@@ -449,17 +452,17 @@ def normalize_features_per_fold(features, augmented_views, train_mask, fold_idx)
     """
     raw_features = features
     if isinstance(raw_features, torch.Tensor):
-        raw_features_np = raw_features.cpu().numpy()
+        raw_features_np = raw_features.cpu().numpy()                       # Move to CPU numpy for sklearn
     else:
         raw_features_np = np.array(raw_features)
 
     train_mask_np = (train_mask.cpu().numpy()
                     if isinstance(train_mask, torch.Tensor)
-                    else train_mask)
+                    else train_mask)                                       # Convert mask to numpy for boolean indexing
 
     logger.info(f"Fold {fold_idx}: Fitting StandardScaler on {train_mask_np.sum()} training nodes")
     fold_scaler = StandardScaler()
-    fold_scaler.fit(raw_features_np[train_mask_np])
+    fold_scaler.fit(raw_features_np[train_mask_np])                        # Fit ONLY on training nodes; prevents val/test data from influencing normalization (leakage fix)
 
     # Guard against zero-variance features
     zero_var = fold_scaler.scale_ == 0
@@ -468,22 +471,22 @@ def normalize_features_per_fold(features, augmented_views, train_mask, fold_idx)
         fold_scaler.scale_[zero_var] = 1.0
 
     # Normalize original graph features
-    normalized_np = fold_scaler.transform(raw_features_np)
-    normalized_np = np.nan_to_num(normalized_np, nan=0.0, posinf=1.0, neginf=-1.0)
+    normalized_np = fold_scaler.transform(raw_features_np)                 # Apply scalar fitted on training set to all nodes
+    normalized_np = np.nan_to_num(normalized_np, nan=0.0, posinf=1.0, neginf=-1.0)  # Final cleanup in case transform produces edge-case values
     features = torch.tensor(normalized_np, dtype=torch.float32)
 
     # Normalize augmented view features (shallow-copy so raw data stays untouched for next fold)
     logger.info(f"Normalizing {len(augmented_views)} augmented views for fold {fold_idx}...")
     fold_augmented_views = []
     for view in augmented_views:
-        raw_x = view.get('x_raw', view['x'])
+        raw_x = view.get('x_raw', view['x'])                               # Prefer x_raw if available; falls back to x (which may already be normalized from a previous fold)
         if isinstance(raw_x, torch.Tensor):
             raw_x_np = raw_x.cpu().numpy()
         else:
             raw_x_np = np.array(raw_x)
-        norm_x_np = fold_scaler.transform(raw_x_np)
+        norm_x_np = fold_scaler.transform(raw_x_np)                        # Apply same fold scaler to augmented view features
         norm_x_np = np.nan_to_num(norm_x_np, nan=0.0, posinf=1.0, neginf=-1.0)
-        fold_augmented_views.append({**view, 'x': torch.tensor(norm_x_np, dtype=torch.float32)})
+        fold_augmented_views.append({**view, 'x': torch.tensor(norm_x_np, dtype=torch.float32)})    # Shallow copy with normalized 'x'; original view dict is not mutated
 
     logger.info(f"Fold {fold_idx}: Per-fold normalization complete")
     return features, fold_augmented_views
@@ -509,31 +512,31 @@ def precompute_contrastive_alignment(augmented_views, labels, train_mask):
     precomputed_mappings = []
 
     for _, view in enumerate(augmented_views):
-        eliminated_ids = set(view['metadata']['eliminated_node_ids'])
-        aug_size = view['x'].shape[0]
+        eliminated_ids = set(view['metadata']['eliminated_node_ids'])      # Set for O(1) membership checks
+        aug_size = view['x'].shape[0]                                      # Number of nodes remaining after Schur elimination
 
-        orig_to_aug = {}
+        orig_to_aug = {}                                                   # Maps original node index -> augmented node index for this view 
         aug_idx = 0
         for orig_idx in range(num_original):
             if orig_idx not in eliminated_ids:
-                orig_to_aug[orig_idx] = aug_idx
+                orig_to_aug[orig_idx] = aug_idx                            # Surviving nodes get compacted indices
                 aug_idx += 1
 
-        aug_labels_cpu = torch.full((aug_size,), -100, dtype=torch.long)
-        aug_mask_cpu = torch.zeros(aug_size, dtype=torch.bool)
+        aug_labels_cpu = torch.full((aug_size,), -100, dtype=torch.long)   # -100 = 'no label'; will be overwritten for known nodes
+        aug_mask_cpu = torch.zeros(aug_size, dtype=torch.bool)             # training mask for the augmented graph
 
         for orig_idx in range(num_original):
             if orig_idx in orig_to_aug:
                 aug_idx = orig_to_aug[orig_idx]
                 if aug_idx < aug_size:
-                    aug_labels_cpu[aug_idx] = labels.cpu()[orig_idx]
-                    aug_mask_cpu[aug_idx] = train_mask.cpu()[orig_idx]
+                    aug_labels_cpu[aug_idx] = labels.cpu()[orig_idx]       # Transfer label to augmented index
+                    aug_mask_cpu[aug_idx] = train_mask.cpu()[orig_idx]     # Transfer training mask for the augmented graph
 
         precomputed_mappings.append({
-            'aug_labels': aug_labels_cpu,
-            'aug_mask': aug_mask_cpu,
+            'aug_labels': aug_labels_cpu,                                  # Label tensor aligned to augmented graph
+            'aug_mask': aug_mask_cpu,                                      # Training mask aligned to augmented graph
             'aug_size': aug_size,
-            'orig_to_aug': orig_to_aug
+            'orig_to_aug': orig_to_aug                                     # Lookup dict for contrastive alignment
         })
 
     logger.info(f"Precomputed mappings for {len(augmented_views)} views")
@@ -546,10 +549,10 @@ def precompute_contrastive_alignment(augmented_views, labels, train_mask):
                 continue
             orig_to_aug_i = precomputed_mappings[i]['orig_to_aug']
             orig_to_aug_j = precomputed_mappings[j]['orig_to_aug']
-            common_orig_ids = sorted(set(orig_to_aug_i.keys()) & set(orig_to_aug_j.keys()))
-            idx_i = torch.tensor([orig_to_aug_i[oid] for oid in common_orig_ids], dtype=torch.long)
-            idx_j = torch.tensor([orig_to_aug_j[oid] for oid in common_orig_ids], dtype=torch.long)
-            contrastive_alignment[(i, j)] = (idx_i, idx_j)
+            common_orig_ids = sorted(set(orig_to_aug_i.keys()) & set(orig_to_aug_j.keys()))                 # Nodes present in both views after their respective eliminations
+            idx_i = torch.tensor([orig_to_aug_i[oid] for oid in common_orig_ids], dtype=torch.long)         # Augmented indices in view 1 for common nodes
+            idx_j = torch.tensor([orig_to_aug_j[oid] for oid in common_orig_ids], dtype=torch.long)         # Augmented indices in view 2 for common nodes
+            contrastive_alignment[(i, j)] = (idx_i, idx_j)                                                  # Pre-computed once; reused every epoch to align embeddings for NT-Xent loss
             logger.info(f"  View pair ({i},{j}): {len(common_orig_ids)} common nodes for contrastive loss")
 
     logger.info(f"Precomputed contrastive alignment for {len(contrastive_alignment)} view pairs")
@@ -604,24 +607,24 @@ def train_single_fold(
     print(f"{'='*80}")
     
     # Extract masks
-    train_mask_original = torch.from_numpy(fold_data['train_mask'])
+    train_mask_original = torch.from_numpy(fold_data['train_mask'])                 # Convert numpy bool array to torch tensor
     val_mask_original = torch.from_numpy(fold_data['val_mask'])
     
     # Get features - handle both 'feature' and 'x' keys
-    features = original.get('feature', original.get('x'))
+    features = original.get('feature', original.get('x'))                           # Support both key naming conventions
     if features is None:
         raise ValueError("No 'feature' or 'x' key found in original data")
     
     # Reconstruct node mapping (cross-validated across all views)
     num_nodes = features.shape[0]
-    node_names, node_id_to_name_full = reconstruct_node_mapping(augmented_views, num_nodes)
+    node_names, node_id_to_name_full = reconstruct_node_mapping(augmented_views, num_nodes) # Cross-validate gene name mapping across all views
 
     # Align labels using the validated mapping
     if node_id_to_name_full:
-        labels = align_and_verify_labels(node_id_to_name_full, original['label'], num_nodes)
+        labels = align_and_verify_labels(node_id_to_name_full, original['label'], num_nodes)# Re-align labels to verified mapping; spot-checks known drivers
 
     if len(node_names) != len(labels):
-        raise ValueError(f"FATAL: After alignment, {len(node_names)} names vs {len(labels)} labels")
+        raise ValueError(f"FATAL: After alignment, {len(node_names)} names vs {len(labels)} labels")    # Misalignment would silently corrupt all downstream scoring
     logger.info(f"Node names and labels are aligned: {len(node_names)} genes")
     
     num_original_nodes = features.shape[0]
@@ -629,10 +632,10 @@ def train_single_fold(
         raise ValueError(
             f"Train mask size ({len(train_mask_original)}) doesn't match "
             f"original graph nodes ({num_original_nodes})"
-        )
+        )                                                                           # Mask must cover exactly the original graph's nodes
 
     # Per-fold normalization: fit scaler on this fold's training data only
-    raw_features = original.get('x_raw', features)
+    raw_features = original.get('x_raw', features)                                  # Prefer x_raw (un-normalized) to avoid double normalization
     features, augmented_views = normalize_features_per_fold(
         raw_features, augmented_views, train_mask_original, fold_idx
     )
@@ -641,7 +644,7 @@ def train_single_fold(
     train_labels = labels[train_mask_original]
     num_pos = (train_labels == 1).sum().item()
     num_neg = (train_labels == 0).sum().item()
-    imbalance_ratio = num_neg / num_pos if num_pos > 0 else float('inf')
+    imbalance_ratio = num_neg / num_pos if num_pos > 0 else float('inf')            # Driver:Non-driver ratio; informs focal loss importance
     
     print(f"\nClass Distribution:")
     print(f"  Training samples: {len(train_labels)}")
@@ -678,11 +681,11 @@ def train_single_fold(
         negative_slope=negative_slope,
         concat_heads=concat_heads,
         device=device
-    )
+    )                                                           # Instantiate model with resolved architecture params
     
     # Setup device (GPU or CPU)
-    model, device = setup_device(model)
-    actual_model = model
+    model, device = setup_device(model)                         # Move Model to GPU; returns actual device in case of fallback
+    actual_model = model                                        # Alias used throughout to access the un-wrapped model directly
 
     # Print model architecture and parameter count
     print(f"\n{'='*60}")
@@ -700,45 +703,45 @@ def train_single_fold(
         model = actual_model,
         decay = decay,  # High decay  = very smooth
         device = torch.device('cpu')
-    )
+    )                                                           # Shadow params on CPU to preserve GPU memory
     
     # Optimizer
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=learning_rate,
         weight_decay=weight_decay,
-        betas=(0.9, 0.999)
+        betas=(0.9, 0.999)                                      # Standard Adam momentum; beta2 = 0.999 smooths second moment
     )
 
     # Learning rate scheduler (maximize NDCG) - Less aggressive for stability
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
         optimizer,
-        mode='max',
+        mode='max',                                             # Maximize NDCG@50
         factor=scheduler_factor,
         patience=scheduler_patience,  # Increased from 20 (more patience)
-        min_lr=1e-6
+        min_lr=1e-6                                             # Floor to prevent LR from reaching 0
     )
 
     # Warmup scheduler
     warmup_scheduler = WarmupScheduler(
         optimizer,
         warmup_epochs=10,
-        initial_lr=learning_rate / 100,  # Start at 1% of target LR
+        initial_lr=learning_rate / 100,                         # Start at 1% of target LR to stabilize early GNN gradients
         target_lr=learning_rate
     )
     
     # Early stopping based on NDCG@50
-    early_stopping = EarlyStopping(patience = early_stopping_patience, min_delta=0.0001, mode='max')
+    early_stopping = EarlyStopping(patience = early_stopping_patience, min_delta=0.0001, mode='max')    # Monitors smoothed NDCG@50
     
     # Mixed precision scaler
-    scaler = torch.amp.GradScaler('cuda') if mixed_precision and torch.cuda.is_available() else None
+    scaler = torch.amp.GradScaler('cuda') if mixed_precision and torch.cuda.is_available() else None    # FP16 gradient scaler; None disables mixed precision
     
     # Pre-process original data ONCE and keep on device
     logger.info("Pre-processing original graph data...")
     original_device = {
         'x': features.to(device),  # Use features variable
         'edge_index': original['edge_index'].to(device),
-        'ollivier_curvature': original['ollivier_curvature'].to(device),
+        'ollivier_curvature': original['ollivier_curvature'].to(device),        # Keep original graph permanently on GPU; avoids repeated CPU->GPU transfers each epoch
     }
     
     # Don't delete from original - other folds need it!
@@ -761,12 +764,12 @@ def train_single_fold(
         'val_precision@50': [],
         'val_mrr': [],
         'learning_rate': []
-    }
+    }                                                                   # Accumulates per-epoch metrics for post-training plotting
     
-    best_val_ndcg = 0.0
-    best_metrics = None
-    smoothed_ndcg = 0.0  # EMA of validation NDCG for scheduler/early stopping
-    metric_ema_alpha = 0.3  # Weight for new observation (lower = smoother)
+    best_val_ndcg = 0.0                                                 # Tracks the best validation NDCG@50 seen so far for each checkpoint decisions
+    best_metrics = None                                                 # Stores the full metrics dict at the best checkpoint epoch
+    smoothed_ndcg = 0.0                                                 # EMA-smoothed NDCG@50; used for scheduler and early stopping to reduce noise
+    metric_ema_alpha = 0.3                                              # EMD weight for new observations; lower=smoother signal, slower to react
     
     # Construct model checkpoint path in a subfolder named after model_prefix
     if model_prefix:
@@ -793,23 +796,23 @@ def train_single_fold(
 
     for epoch in range(num_epochs):
         # Clear cache at start of epoch
-        torch.cuda.empty_cache()
+        torch.cuda.empty_cache()                                                # Free fragmented GPU memory at the start of each epoch
         gc.collect()
 
         # Ensure model is in training mode (validation sets eval mode)
-        model.train()
+        model.train()                                                           # Re-enable dropout and batch norm training mode (validation sets eval mode)
 
         if epoch < 10:
-            warmup_scheduler.step()
+            warmup_scheduler.step()                                             # Linearly ramp LR from initial_lr -> target_lr over the first 10 epochs
 
         # Zero gradients once
-        optimizer.zero_grad()
+        optimizer.zero_grad()                                                   # Clear gradients once at the start of the accumulation window
         
         accumulated_loss = 0.0
         accumulated_contrastive_loss = 0.0
         accumulated_orig_ranking_loss = 0.0
         accumulated_metrics = {'train_ndcg': 0.0}
-        successful_steps = 0
+        successful_steps = 0                                                    # Counts accumulation steps that completed without OOM
 
         # Create ranking criterion once per epoch (more efficient)
         ranking_criterion = RankingLoss(
@@ -818,7 +821,7 @@ def train_single_fold(
             num_samples=ranking_loss_samples,
             focal_gamma=focal_gamma,
             use_focal=use_focal
-        )
+        )                                                                       # Create once per epoch; cheaper than creating inside the inner
 
         # Process views with contrastive + ranking loss
         for accum_step in range(gradient_accumulation_steps):
@@ -827,7 +830,7 @@ def train_single_fold(
                 # Use deterministic pairing based on epoch for stability
                 num_views = len(augmented_views)
                 if num_views >= 2:
-                    # Deterministic pairing reduces gradient variance
+                    # Deterministic pairing: (epoch * steps + step) % num_views ensures each pair is used 
                     view1_idx = (epoch * gradient_accumulation_steps + accum_step) % num_views
                     view2_idx = (epoch * gradient_accumulation_steps + accum_step + 1) % num_views
                 else:
@@ -840,7 +843,7 @@ def train_single_fold(
                 
                 # Adding Gaussian noise to reduce learning rate
                 if model.training:
-                    view1_x = view1_x + torch.randn_like(view1_x) * 0.01
+                    view1_x = view1_x + torch.randn_like(view1_x) * 0.01        # Small Gaussian noise augments the view further; acts as stochastic regularization
                 
                 view1_edge_index = view1['edge_index'].to(device)
                 view1_curvature = view1.get('ollivier_curvature')
@@ -853,11 +856,11 @@ def train_single_fold(
                         original_curvature=original_device['ollivier_curvature'],
                         original_edge_index=original_device['edge_index'],
                         method='transfer'
-                    )
+                    )                                                           # Fallback: Transfer curvature from the original graph when view dict doesn't store its own
 
                 view1_curvature = actual_model.validate_and_fix_curvature_dimensions(
                     view1_edge_index, view1_curvature, f"View1_Step{accum_step}"
-                )
+                )                                                               # Ensure curvature tensor aligns to this view's directed edge index
 
                 # === Load View 2 ===
                 view2 = augmented_views[view2_idx]
@@ -886,14 +889,14 @@ def train_single_fold(
 
                 # Forward pass with mixed precision
                 if scaler:
-                    with torch.amp.autocast('cuda'):
+                    with torch.amp.autocast('cuda'):                            # FP16 autocast region; reduces memory and speed up tensor ops
                         # === Encode both views ===
                         embeddings1, _ = gradient_checkpoint(
                             actual_model._encoder_wrapper,
                             view1_x, view1_edge_index, view1_curvature,
                             return_all_layers, False,
                             use_reentrant=False
-                        )
+                        )                                                       # Recompute activations on backward to save memory
                         # Aggregate pathway outputs
                         h1, _ = actual_model.aggregator(embeddings1, return_attention=False)
 
@@ -907,28 +910,28 @@ def train_single_fold(
 
                         # === Contrastive Loss ===
                         # Project to contrastive space
-                        z1 = F.normalize(actual_model.projection(h1), dim=-1)
+                        z1 = F.normalize(actual_model.projection(h1), dim=-1)   # L2-normalize: dot-product = cosine similarity
                         z2 = F.normalize(actual_model.projection(h2), dim=-1)
 
                         # Align common nodes between views for contrastive loss
                         if view1_idx != view2_idx and (view1_idx, view2_idx) in contrastive_alignment:
-                            align_idx1, align_idx2 = contrastive_alignment[(view1_idx, view2_idx)]
+                            align_idx1, align_idx2 = contrastive_alignment[(view1_idx, view2_idx)]  # Select only nodes present in both views
                             align_idx1 = align_idx1.to(device)
                             align_idx2 = align_idx2.to(device)
                             z1_common = z1[align_idx1]
                             z2_common = z2[align_idx2]
                         else:
                             # Same view used for both (single view fallback)
-                            min_nodes = min(z1.size(0), z2.size(0))
+                            min_nodes = min(z1.size(0), z2.size(0))                         # Same view fallback: truncate to shared size
                             z1_common = z1[:min_nodes]
                             z2_common = z2[:min_nodes]
 
                         contrastive_loss = actual_model.compute_contrastive_loss(z1_common, z2_common)
 
                         # Contrastive-only loss (ranking is on original graph)
-                        loss = contrastive_weight * contrastive_loss
-                        loss = torch.clamp(loss, max=10.0)
-                        loss = loss / gradient_accumulation_steps
+                        loss = contrastive_weight * contrastive_loss                        # Contrastive component of the total loss
+                        loss = torch.clamp(loss, max=10.0)                                  # Hardcap: Prevents a single bad batch from causing gradient explosion
+                        loss = loss / gradient_accumulation_steps                           # Normalize gradient by number of accumulation steps
                 else:
                     # No mixed precision - same logic
                     embeddings1, _ = gradient_checkpoint(
@@ -982,7 +985,7 @@ def train_single_fold(
                 successful_steps += 1
 
                 # Clean up immediately (CRITICAL for OOM)
-                del view1_x, view1_edge_index, view1_curvature
+                del view1_x, view1_edge_index, view1_curvature                      # Explicitly free GPU tensors before the next accumulation step
                 del view2_x, view2_edge_index, view2_curvature
                 del embeddings1, embeddings2, h1, h2, z1, z2
                 del loss, contrastive_loss
@@ -991,14 +994,14 @@ def train_single_fold(
                 # Aggressive CUDA cache clearing
                 if torch.cuda.is_available():
                     torch.cuda.empty_cache()
-                    torch.cuda.synchronize()  # Ensure cleanup completes
+                    torch.cuda.synchronize()  # Ensures all pending CUDA ops finish before checking summary
                 
             except RuntimeError as e:
                 if "out of memory" in str(e):
                     logger.warning(f"OOM at epoch {epoch}, step {accum_step}")
                     torch.cuda.empty_cache()
                     gc.collect()
-                    continue
+                    continue                                                        # Skip this accumulation step and try the next one+
                 else:
                     raise e
         
@@ -1009,7 +1012,7 @@ def train_single_fold(
                 with torch.amp.autocast('cuda'):
                     
                     # Adding gaussian noise to the feature matrix
-                    noisy_x = original_device['x'] + torch.randn_like(original_device['x']) * 0.01
+                    noisy_x = original_device['x'] + torch.randn_like(original_device['x']) * 0.01          # Gaussian noise on original features; prevents the ranking head from memorizing exact feature values
                     
                     orig_scores, _ = model.forward(
                         noisy_x,
@@ -1018,7 +1021,7 @@ def train_single_fold(
                         return_all_layers=return_all_layers
                     )
                     orig_ranking_loss = ranking_criterion(orig_scores, labels, train_mask_original)
-                    orig_loss = (1 - contrastive_weight) * ranking_loss_scale * orig_ranking_loss
+                    orig_loss = (1 - contrastive_weight) * ranking_loss_scale * orig_ranking_loss           # Ranking component; scale compensates for magnitude difference vs contrastive loss
                 scaler.scale(orig_loss).backward()
             else:
                 
@@ -1054,40 +1057,40 @@ def train_single_fold(
             logger.error(f"Epoch {epoch}: All steps failed with OOM. Skipping epoch.")
             optimizer.zero_grad()
             torch.cuda.empty_cache()
-            continue
+            continue                                        # All accumulation steps failed with OOM; skip gradient update entirely
         
         # Average loss (combined contrastive + ranking for accurate reporting)
         avg_contrastive_raw = accumulated_contrastive_loss / max(successful_steps, 1)
         avg_loss = (contrastive_weight * avg_contrastive_raw +
-                    (1 - contrastive_weight) * ranking_loss_scale * accumulated_orig_ranking_loss)
+                    (1 - contrastive_weight) * ranking_loss_scale * accumulated_orig_ranking_loss)      # Combined loss for logging
         
         # Check for NaN
         if math.isnan(avg_loss):
             logger.error(f"Epoch {epoch}: NaN loss")
-            optimizer.zero_grad()
+            optimizer.zero_grad()                           # NaN loss means something exploded; skip this epoch's update
             continue
         
         # Gradient clipping
         if scaler is not None:
-            scaler.unscale_(optimizer)
+            scaler.unscale_(optimizer)                      # Unscale FP16 gradients before clipping so clip_grad_norm_ sees the true magnitudes
         
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)    # Gradient clipping; prevents single large update from destabilizing training
         
         # Optimizer step
         if scaler is not None:
-            scaler.step(optimizer)
-            scaler.update()
+            scaler.step(optimizer)                          # FP16-aware optimizer step; skips update if gradients contain Inf/NaN values
+            scaler.update()                                 # Adjust the loss scaling factor for the next step
         else:
             optimizer.step()
         
-        ema.update(actual_model)
+        ema.update(actual_model)                            # Blend current weights into shadow params: shadow = decay*shadow + (1-decay)*current
         
         optimizer.zero_grad()
         torch.cuda.empty_cache()
 
         # Compute training NDCG using EMA weights (matches validation evaluation)
         if epoch % validation_frequency == 0 or epoch == num_epochs - 1:
-            ema.apply_shadow(actual_model)
+            ema.apply_shadow(actual_model)                  # Swap live weights for EMA shadow weights before evaluation
             with torch.no_grad():
                 train_scores, _ = model.forward(
                     original_device['x'],
@@ -1098,8 +1101,8 @@ def train_single_fold(
                 accumulated_metrics['train_ndcg'] = compute_ndcg(
                     train_scores[train_mask_original],
                     labels[train_mask_original], k=50
-                )
-            ema.restore(actual_model)
+                )                                           # NDCG@50 on training set using EMA weights; tracks training progress without overfitting signal
+            ema.restore(actual_model)                       # Restore live weights after training metric computation
             torch.cuda.empty_cache()
         else:
             accumulated_metrics['train_ndcg'] = history['train_ndcg'][-1] if history['train_ndcg'] else 0.0
@@ -1108,7 +1111,7 @@ def train_single_fold(
         if epoch % validation_frequency == 0 or epoch == num_epochs - 1:
             
             # Apply EMA weights before validation
-            ema.apply_shadow(actual_model)
+            ema.apply_shadow(actual_model)                  # Swap to EMA weights again for validation
             
             val_metrics = evaluate_with_ranking_metrics(
                 actual_model, original_device, labels, val_mask_original,
@@ -1116,7 +1119,7 @@ def train_single_fold(
             )
             
             # Restore original weights after validation
-            ema.restore(actual_model)
+            ema.restore(actual_model)                       # Restore live weights; EMA weights only used for evaluation
 
             # CRITICAL: Clear validation activations immediately
             torch.cuda.empty_cache()
@@ -1137,21 +1140,22 @@ def train_single_fold(
             # Update smoothed NDCG (EMA of validation metric)
             current_ndcg = val_metrics.get('ndcg@50', 0)
             if smoothed_ndcg == 0.0:
-                smoothed_ndcg = current_ndcg  # Initialize with first observation
+                smoothed_ndcg = current_ndcg  # Initialize with first real observation
             else:
-                smoothed_ndcg = metric_ema_alpha * current_ndcg + (1 - metric_ema_alpha) * smoothed_ndcg
+                smoothed_ndcg = metric_ema_alpha * current_ndcg + (1 - metric_ema_alpha) * smoothed_ndcg        # EMA smoothing: reduces noise from single-epoch fluctuation
 
             # Use smoothed NDCG for scheduler and early stopping decisions
             if epoch >= 10:
-                scheduler.step(smoothed_ndcg)
+                scheduler.step(smoothed_ndcg)                   # Feed smoothed metric to ReduceLROnPlateau; skip warmup epochs to avoid premature LR reduction
 
             if early_stopping(smoothed_ndcg, epoch):
                 logger.info(f"Early stopping triggered at epoch {epoch}")
                 logger.info(f"Best smoothed NDCG@50: {early_stopping.best_score:.4f} at epoch {early_stopping.best_epoch}")
-                break
+                break                                           # Exit training loop; best model already saved to disk
             
         else:
             # Skip validation - reuse previous metrics as dict
+            # Reuse previous validation metrics dict to keep history arrays the same length
             if history['val_ndcg@50']:
                 val_metrics = {
                     'ndcg@50': history['val_ndcg@50'][-1],
@@ -1175,7 +1179,7 @@ def train_single_fold(
         history['val_ndcg@50'].append(val_metrics.get('ndcg@50', 0))
         history['val_precision@50'].append(val_metrics.get('precision@50', 0))
         history['val_mrr'].append(val_metrics.get('mrr', 0))
-        history['learning_rate'].append(optimizer.param_groups[0]['lr'])
+        history['learning_rate'].append(optimizer.param_groups[0]['lr'])        # Track LR to visualize scheduler behaviour
         
         # Logging
         if epoch % 10 == 0:
@@ -1196,7 +1200,7 @@ def train_single_fold(
                 str(model_path), epoch, optimizer, best_metrics,
                 metadata={
                     'fold': fold_idx,
-                    'ema_state': ema.state_dict()
+                    'ema_state': ema.state_dict()                       # Save EMA state alongside weights for exact reproducibility
                     }
             )
 
@@ -1209,12 +1213,12 @@ def train_single_fold(
         # validation epochs and increment on stale metrics for non-validation epochs.
     
     # Load best model
-    checkpoint = actual_model.load_checkpoint(str(model_path), optimizer, device)
+    checkpoint = actual_model.load_checkpoint(str(model_path), optimizer, device)           # Reload best checkpoint; discards any improvement-free epochs after the best 
     epoch_loaded = checkpoint['epoch']
     
     # Restore EMA state if available
     if 'metadata' in checkpoint and 'ema_state' in checkpoint['metadata']:
-        ema.load_state_dict(checkpoint['metadata']['ema_state'])
+        ema.load_state_dict(checkpoint['metadata']['ema_state'])                            # Restore EMA shadow params to match the best epoch's state
     
     print(f"\n✓ Loaded best model from epoch {epoch_loaded}")
     print(f"  Best Val NDCG@50: {best_val_ndcg:.4f}")
@@ -1232,7 +1236,7 @@ def train_single_fold(
         labels=labels,
         node_names=node_names,  # <-- Pass node names here
         curvature_type='ollivier',
-        num_permutations=1000,
+        num_permutations=1000,                                                              # Permutation test: 1000 shuffles give stable empirical p-values
         device=device,
         save_path=results_dir,
         save_prefix=f"{model_prefix}_fold_{fold_idx}" if model_prefix else f"fold_{fold_idx}"
@@ -1253,16 +1257,16 @@ def plot_training_curves(histories: List[Dict], save_dir: Path, prefix: str = ""
             ('val_auroc', 'Validation AUROC', 'upper'),
             ('val_ndcg@50', 'Validation NDCG@50', 'upper'),
             ('val_precision@50', 'Validation Precision@50', 'upper'),
-            ('learning_rate', 'Learning Rate', 'log')
+            ('learning_rate', 'Learning Rate', 'log')                                               # Log scale reveals LR decay steps clearly
         ]
         
         for idx, (metric_key, title, scale) in enumerate(metrics_to_plot):
-            ax = axes[idx // 3, idx % 3]
+            ax = axes[idx // 3, idx % 3]                                                            # Fill a 2x3 grid row by row
             
             for fold_idx, history in enumerate(histories, 1):
                 if metric_key in history and len(history[metric_key]) > 0:
                     epochs = range(1, len(history[metric_key]) + 1)
-                    ax.plot(epochs, history[metric_key], label=f'Fold {fold_idx}', alpha=0.7)
+                    ax.plot(epochs, history[metric_key], label=f'Fold {fold_idx}', alpha=0.7)       # Alpha reduces visual clutter when folds overlap
             
             ax.set_xlabel('Epoch')
             ax.set_ylabel(metric_key)
@@ -1271,7 +1275,7 @@ def plot_training_curves(histories: List[Dict], save_dir: Path, prefix: str = ""
             ax.grid(True, alpha=0.3)
             
             if scale == 'log':
-                ax.set_yscale('log')
+                ax.set_yscale('log')                                                                # Log scale for learning rate so plateau drops are visible
         
         plt.tight_layout()
         
@@ -1294,11 +1298,11 @@ def plot_metrics_comparison(metrics_data: List[Dict], save_dir: Path, prefix: st
         
         # Bar plot
         metrics_cols = ['NDCG@50', 'AUROC', 'AUPRC', 'Precision@50', 'MRR']
-        x = np.arange(len(metrics_cols))
-        width = 0.15
+        x = np.arange(len(metrics_cols))                                                    # x-axis positions for metric groups
+        width = 0.15                                                                        # Bar width; 5 folds x 0.15 = 0.75 total width per group
         
         for idx, fold_idx in enumerate(df['Fold']):
-            offset = (idx - len(df) / 2) * width
+            offset = (idx - len(df) / 2) * width                                            # Center the group of bars around each x position
             values = [df.loc[idx, col] for col in metrics_cols]
             axes[0].bar(x + offset, values, width, label=f'Fold {fold_idx}', alpha=0.8)
         
@@ -1317,7 +1321,7 @@ def plot_metrics_comparison(metrics_data: List[Dict], save_dir: Path, prefix: st
         
         for patch in bp['boxes']:
             patch.set_facecolor('lightblue')
-            patch.set_alpha(0.7)
+            patch.set_alpha(0.7)                                                            # Semi-transparent boxes show underlying data distribution better
         
         axes[1].set_xlabel('Metrics')
         axes[1].set_ylabel('Score')
@@ -1351,26 +1355,26 @@ def aggregate_gene_scores(all_fold_dfs: List[pd.DataFrame], save_dir: Path, pref
         print(f"\nAggregating scores from {len(all_fold_dfs)} folds...")
         
         # Get gene IDs from first fold (should be same across all folds)
-        gene_ids = all_fold_dfs[0]['gene_id'].values
-        gene_names = all_fold_dfs[0]['gene_name'].values
-        true_labels = all_fold_dfs[0]['true_label'].values
+        gene_ids = all_fold_dfs[0]['gene_id'].values                                            # Gene IDs are the same cross all folds; use fold 0 as reference
+        gene_names = all_fold_dfs[0]['gene_name'].values                                        # Gene names likewise identifcal across folds
+        true_labels = all_fold_dfs[0]['true_label'].values                                      # Ground truth labels do not change across folds
         
         # Collect scores from each fold
-        scores_matrix = np.array([df['driver_score'].values for df in all_fold_dfs])
-        pvalues_matrix = np.array([df['adjusted_pvalue'].values for df in all_fold_dfs])
-        ranks_matrix = np.array([df['rank'].values for df in all_fold_dfs])
+        scores_matrix = np.array([df['driver_score'].values for df in all_fold_dfs])            # [num_folds, num_genes] raw driver scores
+        pvalues_matrix = np.array([df['adjusted_pvalue'].values for df in all_fold_dfs])        # [num_folds, num_genes] BH-adjusted p-values
+        ranks_matrix = np.array([df['rank'].values for df in all_fold_dfs])                     # [num_folds, num_genes] within-fold ranks
         
         # Compute aggregate statistics
-        mean_scores = scores_matrix.mean(axis=0)
-        std_scores = scores_matrix.std(axis=0)
-        median_scores = np.median(scores_matrix, axis=0)
+        mean_scores = scores_matrix.mean(axis=0)                                                # Average driver score across all folds; primary ranking criterion
+        std_scores = scores_matrix.std(axis=0)                                                  # Spread across folds; high std = inconsistent prediction
+        median_scores = np.median(scores_matrix, axis=0)                                        # Robust central tendency; less sensitive to outlier folds
         
-        mean_pvalues = pvalues_matrix.mean(axis=0)
-        median_ranks = np.median(ranks_matrix, axis=0)
+        mean_pvalues = pvalues_matrix.mean(axis=0)                                              # Mean adjusted p-value; supplementary significance measure
+        median_ranks = np.median(ranks_matrix, axis=0)                                          # Borda count-stype rank aggregation; median rank is more robust than mean
         
         # Count how many folds each gene was significant in
-        significant_counts = (pvalues_matrix < 0.05).sum(axis=0)
-        consensus_significant = significant_counts >= (len(all_fold_dfs) / 2)
+        significant_counts = (pvalues_matrix < 0.05).sum(axis=0)                                # Number of folds where this gene was FDR-significant
+        consensus_significant = significant_counts >= (len(all_fold_dfs) / 2)                   # Gene must be significant in atleast half the folds
         
         # Create aggregate DataFrame
         aggregate_df = pd.DataFrame({
@@ -1389,8 +1393,8 @@ def aggregate_gene_scores(all_fold_dfs: List[pd.DataFrame], save_dir: Path, pref
         })
         
         # Sort by mean score
-        aggregate_df = aggregate_df.sort_values('mean_score', ascending=False)
-        aggregate_df['aggregate_rank'] = range(1, len(aggregate_df) + 1)
+        aggregate_df = aggregate_df.sort_values('mean_score', ascending=False)                  # Rank genes by mean score across folds
+        aggregate_df['aggregate_rank'] = range(1, len(aggregate_df) + 1)                        # 1-indexed global rank
         
         # Reorder columns
         aggregate_df = aggregate_df[[
@@ -1401,7 +1405,7 @@ def aggregate_gene_scores(all_fold_dfs: List[pd.DataFrame], save_dir: Path, pref
         ]]
         
         # Get consensus significant genes
-        consensus_genes = aggregate_df[aggregate_df['consensus_significant']]
+        consensus_genes = aggregate_df[aggregate_df['consensus_significant']]                   # Subset: unknown genes significant in majority of folds = most robust novel predictions
         
         print(f"\n{'='*80}")
         print("AGGREGATE RESULTS")
@@ -1570,12 +1574,12 @@ def main():
     # ============================================================================
     if args.emergency_mode:
         logger.warning("⚠️  EMERGENCY MODE ACTIVATED - Using aggressive memory optimizations")
-        args.reduce_model_size = True
-        args.max_augmented_views = 2
-        args.gradient_accumulation_steps = 8
-        args.attention_chunk_size = 500
-        args.mixed_precision = True
-        args.validation_frequency = 20
+        args.reduce_model_size = True                                                       # Cut hidden=64, proj=32, layers=2, heads=1
+        args.max_augmented_views = 2                                                        # Keep only 2 views
+        args.gradient_accumulation_steps = 8                                                # Accumulate more steps to compensate for smaller effective batch
+        args.attention_chunk_size = 500                                                     # Process fewer nodes per chunk in MultiLayerAttention
+        args.mixed_precision = True                                                         # FP16 halves activation memory
+        args.validation_frequency = 20                                                      # Validate less often to reduce peak memory during eval
         logger.warning(f"  → Hidden channels: 64, Projection: 32, Layers: 2, Heads: 1")
         logger.warning(f"  → Max views: 2, Chunk size: 500, Grad accum: 8")
         logger.warning(f"  → Mixed precision: ON, Validation frequency: 20")
@@ -1584,13 +1588,13 @@ def main():
     # Create directories
     models_dir = Path(args.model_out_dir)
     results_dir = Path(args.train_metrics_dir)
-    models_dir.mkdir(exist_ok=True, parents=True)
+    models_dir.mkdir(exist_ok=True, parents=True)                                           # Create output directories if they don't exist
     results_dir.mkdir(exist_ok=True, parents=True)
     
     if args.model_out_prefix:
         results_subdir = results_dir / args.model_out_prefix
         results_subdir.mkdir(exist_ok=True, parents=True)
-        results_dir = results_subdir
+        results_dir = results_subdir                                                        # Namespace results under the prefix subdirectory to avoid collisions between runs
     
     set_seed(args.seed)
 
@@ -1611,17 +1615,17 @@ def main():
     
     # Load data
     with open(args.dataset_file, 'rb') as f:
-        data = pickle.load(f)
+        data = pickle.load(f)                                                               # Load the pre-processed pickle produced by curvature_pipeline.py
     
-    original = data['original']
-    augmented_views = data['augmented_views']
+    original = data['original']                                                             # Original graph with features, edge_index, labels, curvature, kfold_splits
+    augmented_views = data['augmented_views']                                               # List of Schur Complement augmented graph dicts
 
     # ============================================================================
     # LIMIT AUGMENTED VIEWS (Memory Optimization)
     # ============================================================================
     if len(augmented_views) > args.max_augmented_views:
         logger.warning(f"Limiting augmented views from {len(augmented_views)} to {args.max_augmented_views} to save memory")
-        augmented_views = augmented_views[:args.max_augmented_views]
+        augmented_views = augmented_views[:args.max_augmented_views]                        # Trim to memory budget; earlier views are kept
     logger.info(f"Using {len(augmented_views)} augmented views for training")
     # ============================================================================
 
@@ -1630,22 +1634,22 @@ def main():
     print("VALIDATING AND PREPROCESSING DATA")
     print("="*80)
     
-    validate_graph_data(original, "Original Graph")
+    validate_graph_data(original, "Original Graph")                                         # Check for Inf/NaN/invalid edge indices before any training
     
     # Sanitize features
     features = original.get('feature', original.get('x'))
     if torch.isnan(features).any() or torch.isinf(features).any():
-        features = torch.nan_to_num(features, nan=0.0, posinf=1.0, neginf=-1.0)
+        features = torch.nan_to_num(features, nan=0.0, posinf=1.0, neginf=-1.0)             # Clean raw features in place before scaler fitting
         if 'feature' in original:
             original['feature'] = features
         else:
             original['x'] = features
     
     # Preprocess curvature
-    original = preprocess_curvature_data(original, curvature_type='ollivier')
+    original = preprocess_curvature_data(original, curvature_type='ollivier')               # Align curvature tensor dimensions to edge_index
     
     for i, view in enumerate(augmented_views):
-        augmented_views[i] = preprocess_curvature_data(view, curvature_type='ollivier')
+        augmented_views[i] = preprocess_curvature_data(view, curvature_type='ollivier')     # Same alignment for each augmented view
     
     print("✓ Data validation and preprocessing complete")
     print("="*80 + "\n")
@@ -1656,20 +1660,20 @@ def main():
     # Filter folds if specified
     if args.specific_folds:
         num_folds = len(kfold_splits)
-        folds_to_train = [i-1 for i in args.specific_folds if 1 <= i <= num_folds]
-        kfold_splits = [kfold_splits[i] for i in folds_to_train]
+        folds_to_train = [i-1 for i in args.specific_folds if 1 <= i <= num_folds]          # Convert 1-indexed CLI input to 0-indexed list
+        kfold_splits = [kfold_splits[i] for i in folds_to_train]                            # Select only the requested folds
     elif args.num_folds:
-        kfold_splits = kfold_splits[:args.num_folds]
+        kfold_splits = kfold_splits[:args.num_folds]                                        # Take the first N folds
     
     print(f"\n{'='*80}")
     print(f"K-FOLD CROSS-VALIDATION: {len(kfold_splits)} FOLDS")
     print(f"{'='*80}")
     
     # Train each fold
-    all_fold_metrics = []
-    all_fold_histories = []
-    fold_models = []
-    all_fold_scored_genes = []
+    all_fold_metrics = []                                                                   # Collect best_metrics dict from each fold
+    all_fold_histories = []                                                                 # Collects training history dict from each fold for plotting    
+    fold_models = []                                                                        # Collects trained model objects (kept in memory for potential ensemble use)
+    all_fold_scored_genes = []                                                              # Collects scored gene DataFrames for cross-fold aggregation
     
     for fold_idx, fold_data in enumerate(kfold_splits, 1):
         model, best_metrics, history, scored_genes_df = train_single_fold(
@@ -1708,7 +1712,7 @@ def main():
             pathway_aggregator=args.pathway_aggregator,
             negative_slope=args.negative_slope,
             scheduler_factor=args.scheduler_factor
-        )
+        )                                                                                   # Train one fold end-to-end
         
         all_fold_metrics.append(best_metrics)
         all_fold_histories.append(history)
@@ -1716,7 +1720,7 @@ def main():
         all_fold_scored_genes.append(scored_genes_df)
         
         if torch.cuda.is_available():
-            torch.cuda.empty_cache()
+            torch.cuda.empty_cache()                                                        # Release GPU memory between folds; previous fold's model stays reference by fold_models
         gc.collect()
     
     # Aggregate results
@@ -1746,12 +1750,12 @@ def main():
     mean_metrics = {
         key: np.mean([m.get(key, 0) for m in all_fold_metrics])
         for key in ['ndcg@50', 'auroc', 'auprc', 'precision@50', 'mrr']
-    }
+    }                                                                                       # Mean of each metric across folds
     
     std_metrics = {
         key: np.std([m.get(key, 0) for m in all_fold_metrics])
         for key in ['ndcg@50', 'auroc', 'auprc', 'precision@50', 'mrr']
-    }
+    }                                                                                       # Std of each metric across folds
     
     print(f"\n{'='*80}")
     print("AGGREGATE STATISTICS")
@@ -1765,7 +1769,7 @@ def main():
     print(f"{'='*80}\n")
     
     # Save metrics to CSV
-    metrics_df = pd.DataFrame(metrics_df_data)
+    metrics_df = pd.DataFrame(metrics_df_data)                                              # Append mean and std as summary rows at the bottom of the per-fold table
     
     # Add mean and std rows
     mean_row = {
@@ -1794,27 +1798,27 @@ def main():
     # Save metrics
     prefix = f"{args.model_out_prefix}_" if args.model_out_prefix else ""
     metrics_file = results_dir / f"{prefix}kfold_metrics.csv"
-    metrics_df.to_csv(metrics_file, index=False)
+    metrics_df.to_csv(metrics_file, index=False)                                            # Save per-fold metrics + summary rows
     print(f"✓ Saved metrics to: {metrics_file}")
     
     # Save training histories
     history_file = results_dir / f"{prefix}training_history.pkl"
     with open(history_file, 'wb') as f:
-        pickle.dump(all_fold_histories, f)
+        pickle.dump(all_fold_histories, f)                                                  # Save training curves for offline plotting
     print(f"✓ Saved training histories to: {history_file}")
     
     # Plot training curves
-    plot_training_curves(all_fold_histories, results_dir, prefix)
+    plot_training_curves(all_fold_histories, results_dir, prefix)                           # Generate loss/metric curve plots
     
     # Plot metrics comparison
-    plot_metrics_comparison(metrics_df_data, results_dir, prefix)
+    plot_metrics_comparison(metrics_df_data, results_dir, prefix)                           # Generate bar and box plots across folds
     
     # Aggregate gene scores across folds
     print(f"\n{'='*80}")
     print("AGGREGATING GENE SCORES ACROSS FOLDS")
     print(f"{'='*80}")
     
-    aggregate_gene_scores(all_fold_scored_genes, results_dir, prefix)
+    aggregate_gene_scores(all_fold_scored_genes, results_dir, prefix)                       # Compute cross-fold consensus driver predictions
     
     print(f"\n{'='*80}")
     print("TRAINING COMPLETE")
