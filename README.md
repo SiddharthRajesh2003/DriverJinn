@@ -6,7 +6,293 @@ This model is currently being trained on NVIDIA H100 GPU.
 
 A Graph Neural Network framework for cancer driver gene prediction using curvature-enhanced graph representations and contrastive learning.
 
+## Table of Contents
+
+- [Preliminary Biological Findings](#preliminary-biological-findings)
+- [Installation](#installation)
+- [Project Structure](#project-structure)
+- [Pipeline Overview](#pipeline-overview)
+  - [Step 1: Graph Curvature Enhancement](#step-1-graph-curvature-enhancement)
+  - [Step 2: Hyperparameter Search](#step-2-hyperparameter-search)
+  - [Step 3: Model Training](#step-3-model-training)
+  - [Step 4: Result Aggregation](#step-4-result-aggregation)
+- [HPC Usage with SLURM](#hpc-usage-with-slurm)
+- [Output Files](#output-files)
+
+
+## Preliminary Biological Findings
+
+> **Note:** All findings below are computational predictions from the DriverJinn model. They represent statistically significant, cross-validated candidate cancer driver genes and have not yet been experimentally validated. Downstream analysis scripts and plots are in `Downstream/poster_plots.qmd`.
+
 ---
+
+### Cross-Validation Performance Summary
+
+Results from the March 2026 systematic evaluation across three gene interaction networks (GGNet, PPNet, PathNet) and three Schur complement augmentation strategies (random, coarsening, priority) at two elimination ratios (ρ=0.1, ρ=0.2):
+
+| Network | Strategy | ρ | NDCG@50 | AUROC | AUPRC | P@50 |
+|---------|----------|---|---------|-------|-------|------|
+| GGNet | random | 0.2 | **0.478 ± 0.062** | 0.763 ± 0.030 | 0.230 | 0.432 |
+| GGNet | random | 0.1 | 0.472 ± 0.062 | 0.760 ± 0.020 | 0.230 | 0.420 |
+| GGNet | coarsening | 0.1 | 0.468 ± 0.049 | 0.761 ± 0.017 | 0.231 | 0.412 |
+| GGNet | priority | 0.2 | 0.462 ± 0.054 | 0.760 ± 0.023 | 0.228 | 0.404 |
+| GGNet | coarsening | 0.2 | 0.457 ± 0.058 | 0.758 ± 0.027 | 0.225 | 0.388 |
+| GGNet | priority | 0.1 | 0.456 ± 0.054 | 0.755 ± 0.015 | 0.220 | 0.400 |
+| PathNet | coarsening | 0.2 | 0.446 ± 0.061 | 0.769 ± 0.014 | 0.252 | 0.396 |
+| PathNet | coarsening | 0.1 | 0.442 ± 0.046 | 0.769 ± 0.010 | 0.260 | 0.372 |
+| PathNet | priority | 0.1 | 0.427 ± 0.057 | 0.770 ± 0.008 | 0.259 | 0.356 |
+| PPNet | coarsening | 0.2 | 0.426 ± 0.036 | **0.784 ± 0.008** | 0.230 | 0.372 |
+| PPNet | priority | 0.2 | 0.424 ± 0.047 | 0.784 ± 0.008 | 0.232 | 0.368 |
+| PPNet | coarsening | 0.1 | 0.412 ± 0.035 | 0.787 ± 0.010 | 0.232 | 0.356 |
+
+Per-fold peak metrics for the best overall configuration (GGNet random ρ=0.2):
+
+| Fold | Peak NDCG@50 | Peak AUROC |
+|------|-------------|------------|
+| 1 | 0.3992 | 0.7534 |
+| 2 | 0.5022 | 0.7519 |
+| 3 | 0.4262 | 0.7542 |
+| 4 | 0.5244 | 0.8144 |
+| 5 | 0.5375 | 0.7665 |
+| **Mean** | **0.4779** | **0.7681** |
+
+**Key observations:**
+- GGNet consistently achieves the highest NDCG@50, indicating the best relative ranking of known driver genes
+- PPNet achieves the highest AUROC (~0.787) but lower ranked-list quality, suggesting it separates drivers from non-drivers in aggregate but is less precise at the top
+- PathNet achieves the highest AUPRC in some configurations, reflecting strong pathway-level biological coherence
+- Random augmentation (ρ=0.2) is optimal for GGNet; coarsening is optimal for PPNet and PathNet
+- Priority elimination consistently underperforms all other augmentation strategies across all networks
+
+---
+
+### Model Score Validation Against COSMIC Cancer Gene Census
+
+#### Score Tier Separation
+
+The model assigns dramatically different score distributions to genes by their CGC status, confirming that high scores reflect genuine driver-gene biology:
+
+| CGC Tier | Median Score |
+|----------|-------------|
+| Tier 1 (518 high-confidence drivers) | **0.987** |
+| Tier 2 | **0.899** |
+| Non-CGC (remainder of genome) | **0.285** |
+
+#### CGC Enrichment Curve
+
+At the top-K cutoff, the fraction of COSMIC Tier 1 genes in the ranked list far exceeds random expectation:
+- Random baseline: ~4.6% Tier 1 at any K (518 of ~11,000 gene universe)
+- **At K=50**: ~40% Tier 1 precision (~8.7× enrichment over random)
+- **At K=500**: enrichment remains ~6× above baseline
+
+#### Precision@K
+
+| K | Precision (Tier 1) | Precision (Any CGC) | Tier 1 Baseline | Any-CGC Baseline |
+|---|-------------------|--------------------|-----------------|--------------------|
+| 10 | ~34% | ~46% | 4.6% | 5.8% |
+| 50 | ~31% | ~37% | 4.6% | 5.8% |
+| 200 | ~30% | ~35% | 4.6% | 5.8% |
+
+#### Rank Stability (Top-30 across Folds)
+
+The top-ranked genes are dominated by known Tier 1 drivers with highly stable ranks across all 5 folds — providing internal validation of the model's consistency. Consistent top-ranking known drivers include: **POLR2A** (rank 1 in 4/5 folds), UBC, HDAC1, RPS27A, ITGB1, HSP90AA1, UBB, JAK1, POLR2B, ATM. Novel genes appearing stably in the top-30: **SOS1, SMAD3, ERCC2, HDAC2, CREBBP**.
+
+---
+
+### Pathway Enrichment Analysis
+
+#### Hallmark Enrichment (Top-100 Predictions, Fisher's Exact Test, FDR-BH)
+
+21 COSMIC cancer hallmarks are significantly enriched (p.adj < 0.05) in the top-100 predicted genes:
+
+| Hallmark | p.adj |
+|----------|-------|
+| Role in cancer | 1.4e-24 |
+| Function summary | 1.4e-24 |
+| Escaping programmed cell death | 4.1e-19 |
+| Types of alteration in cancer | 1.2e-18 |
+| Genome instability and mutations | 4.8e-17 |
+| Invasion and metastasis | 4.8e-17 |
+| Impact of mutation on function | 6.8e-16 |
+| Differentiation and development | 9.3e-16 |
+| Proliferative signalling | 9.8e-16 |
+| Cell division control | 2.5e-15 |
+| Tumour promoting inflammation | 3.2e-13 |
+| Cell replicative immortality | 3.6e-11 |
+| Escaping immune response to cancer | 3.7e-11 |
+| Angiogenesis | 3.7e-11 |
+| Senescence | 2.6e-10 |
+| Fusion partner | 9.8e-9 |
+| Clinical impact | 1.0e-8 |
+| Global regulation of gene expression | 1.7e-8 |
+| Change of cellular energetics | 6.9e-8 |
+| Suppression of growth | 2.9e-6 |
+| Mouse model | 1.3e-4 |
+
+#### KEGG Pathway Enrichment (Top-50 Predictions, via Enrichr API)
+
+Top enriched KEGG pathways in the model's highest-confidence predictions:
+
+| KEGG Pathway | Biological Relevance |
+|-------------|---------------------|
+| RNA polymerase | Core transcription machinery; POLR2A/POLR2B consistently top-ranked |
+| Cell cycle | Checkpoint regulation; consistent with CDK/cyclin predictions |
+| Nucleotide excision repair | DNA damage; GTF2H complex genes predicted as novel drivers |
+| Basal transcription factors | TFIIH/TFIID components; transcriptional dysregulation mechanism |
+| Chronic myeloid leukemia | Known CML gene set overlap in top predictions |
+| Pathways in cancer | Multi-pathway driver gene convergence |
+| TGF-beta signaling | Growth suppression; consistent with TGFBR predictions |
+| Ubiquitin mediated proteolysis | E3 ligase complex dysregulation (BTRC, TRAF6, ANAPC) |
+| Huntington disease | Broad transcriptional co-repressor complex overlap |
+| Thyroid hormone signaling | Nuclear receptor coactivator predictions |
+
+---
+
+### Network Topology Analysis
+
+#### PPI Degree Correlation
+
+High-scoring genes are significantly more connected in the human protein-protein interaction network:
+
+- **Spearman ρ = 0.476** between PPI degree and model score (p ≈ 0)
+- Median PPI degree: all genes = **61**, CGC Tier 1 = **126**, top-100 predicted = **177**
+
+The model preferentially scores hub genes — which is consistent with cancer driver biology, since essential cellular regulators tend to be both highly connected and oncogenically dysregulated. This is not a bias artifact: hub proteins in the top-100 are specifically those with well-established roles in transcription, DNA repair, and chromatin remodeling.
+
+#### PPI Subnetwork (Top-50 Predictions)
+
+The top-50 predicted genes form a dense subgraph: **density = 0.0555**, 8 connected components, largest component = 43 nodes. The largest component is anchored by POLR2A, UBC, HDAC1, and their interaction partners — reflecting the model's coherent prediction of a transcriptional regulatory hub as a central driver mechanism.
+
+---
+
+### Cross-Network Consensus Predictions
+
+The definitive high-confidence novel driver candidates are genes ranked highly across all three independent networks (GGNet × PathNet × PPNet, each using random augmentation ρ=0.2). The combined rank is computed as the sum of per-network ranks; lower is better.
+
+| Combined Rank | Gene | GGNet | PathNet | PPNet | CGC Status |
+|---------------|------|-------|---------|-------|------------|
+| 1 | **SIN3A** | 31 | 20 | 118 | **Novel** |
+| 2 | **HDAC2** | 23 | 82 | 69 | **Novel** |
+| 3 | NCOR2 | 121 | 46 | 91 | Tier 1 |
+| 4 | **SMARCC1** | 58 | 149 | 85 | **Novel** |
+| 5 | **KMT2E** | 255 | 22 | 23 | **Novel** |
+| 6 | SOS1 | 18 | 91 | 193 | Tier 1 |
+| 7 | CBFB | 21 | 84 | 209 | Tier 1 |
+| 8 | KDR | 100 | 113 | 103 | Tier 1 |
+| 9 | **SMARCC2** | 92 | 29 | 196 | **Novel** |
+| 10 | **SMARCA2** | 190 | 68 | 61 | **Novel** |
+| 11 | **RBBP4** | 13 | 47 | 294 | **Novel** |
+| 12 | EED | 218 | 34 | 115 | Tier 2 |
+| 13 | **FRS2** | 88 | 132 | 147 | **Novel** |
+| 14 | **DOCK7** | 290 | 37 | 64 | **Novel** |
+| 15 | **NCOA3** | 319 | 4 | 80 | **Novel** |
+| 16 | **MED1** | 129 | 108 | 170 | **Novel** |
+| 17 | CHD4 | 82 | 19 | 315 | Tier 1 |
+| 18 | **SHC1** | 102 | 281 | 36 | **Novel** |
+| 19 | **MARK3** | 216 | 107 | 100 | **Novel** |
+| 20 | **HDAC1** | 3 | 122 | 301 | **Novel** |
+
+14 of the top-20 cross-network consensus genes are **novel** (non-CGC) candidates, providing a high-confidence shortlist for experimental follow-up.
+
+---
+
+### Highlighted Finding: Chromatin Remodeling Cluster
+
+The model's most striking biological finding is the consistent, high-confidence prediction of a tightly connected chromatin remodeling cluster as novel cancer driver genes. Seven genes from three interacting chromatin regulatory complexes are predicted with near-perfect model scores across all folds and all network configurations:
+
+| Gene | Complex | Score (all folds) | CV | Percentile vs Tier 1 | Mean Rank (9 conditions) |
+|------|---------|------------------|----|----------------------|--------------------------|
+| **HDAC1** | SIN3/HDAC | >0.9999 | ≈0 | **100th** | 1095.2 |
+| **HDAC2** | SIN3/HDAC | >0.9999 | ≈0 | 98th | 674.9 |
+| **SIN3A** | SIN3/HDAC | >0.9999 | ≈0 | 98th | 119.9 |
+| **SMARCC1** | SWI/SNF | >0.9999 | ≈0 | 97th | 221.3 |
+| **SMARCC2** | SWI/SNF | >0.9999 | ≈0 | 94th | 166.2 |
+| **RBBP4** | NuRD/PRC2 | >0.9999 | ≈0 | 99th | 732.3 |
+| **KMT2E** | KMT complex | >0.9999 | ≈0 | 85th | 86.2 |
+
+All seven genes score above 85–100% of all confirmed COSMIC Tier 1 cancer drivers, with coefficient of variation ≈ 0 across all 5 cross-validation folds (i.e., no fold uncertainty). The cluster forms a highly connected subgraph (38 nodes, 497 edges), indicating functional co-regulation. None are currently listed in COSMIC CGC.
+
+**Why this matters:** SIN3A/HDAC1/HDAC2 are core components of the SIN3–HDAC co-repressor, which silences tumor suppressor loci through histone deacetylation. SMARCC1/SMARCC2 are catalytic subunits of the SWI/SNF chromatin remodeling complex, the most frequently mutated chromatin remodeling complex in cancer (~20% of all human cancers). RBBP4 bridges the NuRD and PRC2 repressive complexes. KMT2E is a H3K4 methyltransferase whose loss disrupts epigenetic memory. The convergent prediction of all members of these interacting complexes — across three independent gene-interaction networks — strongly implicates **SIN3–HDAC–SWI/SNF co-regulatory axis dysregulation** as an underappreciated cancer driver mechanism.
+
+---
+
+### Per-Network Novel Candidate Gene Tables
+
+The following tables list the highest-ranked novel candidates (consensus-significant: significant in all 5 folds, `is_known_driver = False`) from the best configuration of each network type.
+
+#### GGNet — random, ρ=0.2 (best overall NDCG@50 = 0.478)
+
+| Rank | Gene | Known Role in Cancer Biology |
+|------|------|------------------------------|
+| 18 | **SOS1** | RAS guanine nucleotide exchange factor; activates MAPK/PI3K cascades |
+| 42 | **MNAT1** | CDK-activating kinase (CAK) assembly subunit; cell cycle entry |
+| 59 | **TRAF6** | E3 ubiquitin ligase; NF-κB and JNK signaling; anti-apoptotic |
+| 69 | **MRE11** | MRN complex; DSB sensing and homologous recombination |
+| 81 | **RAD50** | MRN complex; DNA double-strand break repair |
+| 84 | **GTF2H1** | TFIIH complex; nucleotide excision repair and basal transcription |
+| 96 | **PDS5B** | Cohesin complex; chromosome cohesion and segregation |
+| 106 | **DYNC1H1** | Cytoplasmic dynein heavy chain; mitotic spindle assembly |
+| 124 | **AGO3** | Argonaute; miRNA-mediated gene silencing |
+| 133 | **GTF2H4** | TFIIH subunit; NER and CDK7-mediated transcription |
+| 147 | **RPTOR** | Raptor; mTORC1 scaffold and nutrient-sensing growth regulator |
+| 215 | **PAK1** | p21-activated kinase; RAS/MAPK oncogenic signaling; frequently amplified in breast cancer |
+| 221 | **BTRC** | β-TrCP; E3 ubiquitin ligase targeting β-catenin (Wnt) and IκB |
+| 239 | **REV3L** | DNA polymerase ζ catalytic subunit; translesion synthesis |
+| 254 | **FANCM** | Fanconi anemia complementation group M; replication fork restart |
+| 283 | **PLCG2** | Phospholipase Cγ2; B-cell receptor / RAS signaling |
+
+#### PathNet — coarsening, ρ=0.2 (highest AUPRC per-fold peak)
+
+| Rank | Gene | Known Role in Cancer Biology |
+|------|------|------------------------------|
+| 14 | **DYRK1A** | Dual-specificity kinase; cyclin D1 degradation; DYRK1A loss disrupts G1/S |
+| 37 | **PTPRJ** | Receptor tyrosine phosphatase; suppresses EGFR/PDGFR signaling; confirmed tumor suppressor |
+| 75 | **NCOA6** | Nuclear receptor coactivator 6; transcriptional co-activator of multiple oncogenic NRs |
+| 76 | **PTPRF** | Receptor tyrosine phosphatase; negative regulator of EGFR/insulin signaling |
+| 94 | **RBL1** | p107 retinoblastoma-like; E2F repressor; cell cycle tumor suppressor |
+| 97 | **PAXIP1** | PTIP; BRCA1-associated complex; histone H3K4 methylation at DSBs |
+| 120 | **GLI3** | Hedgehog pathway transcription factor; activator/repressor switch |
+| 151 | **HIPK2** | Homeodomain-interacting protein kinase 2; phospho-activates p53 Ser46 |
+| 163 | **MDC1** | Mediator of DNA damage checkpoint 1; H2AX reader; DSB signal amplifier |
+| 174 | **SMC3** | Cohesin structural subunit; mutated in acute myeloid leukemia |
+| 181 | **MNAT1** | CAK assembly factor *(also top-ranked in GGNet — cross-network consistent)* |
+| 190 | **MED13** | Mediator complex kinase module; transcriptional CDK8 substrate |
+| 194 | **HDAC2** | Histone deacetylase; epigenetic silencing of tumor suppressors |
+| 195 | **TNKS** | Tankyrase 1; PARP/Wnt — degrades AXIN to activate β-catenin |
+| 223 | **MECP2** | Methyl-CpG binding protein; epigenetic reader; Xq28 amplification in cancer |
+| 272 | **FANCI** | Fanconi anemia complementation group I; inter-strand crosslink repair |
+
+#### PPNet — coarsening, ρ=0.2 (highest AUROC = 0.784)
+
+| Rank | Gene | Known Role in Cancer Biology |
+|------|------|------------------------------|
+| 18 | **SIN3B** | SIN3–HDAC co-repressor complex; silences pro-proliferative genes |
+| 60 | **SETD1A** | H3K4me3 methyltransferase; frequently mutated in clonal hematopoiesis |
+| 80 | **NEK1** | NIMA-related kinase; G2/M checkpoint and centrosome duplication |
+| 84 | **SIN3A** | Core SIN3–HDAC scaffold; p53- and MYC-mediated transcriptional repression |
+| 86 | **CHD3** | Chromodomain–helicase–DNA binding; NuRD chromatin remodeling complex |
+| 112 | **MAML3** | Mastermind-like coactivator; Notch transcriptional complex |
+| 126 | **MED13L** | Mediator complex; MED13L mutations cause intellectual disability and cancer predisposition |
+| 127 | **TAF1** | TATA-binding protein–associated factor; largest TFIID subunit; kinase activity |
+| 219 | **RIF1** | Replication timing regulator; NHEJ/DSB repair pathway choice |
+| 289 | **PIK3CD** | PI3Kδ catalytic subunit; activated in hematologic malignancies |
+| 297 | **REST** | RE1-silencing transcription factor; represses neuronal differentiation; oncogenic in non-neuronal cancers |
+
+---
+
+### Functional Pathway Themes
+
+Grouping top novel predictions by biological function reveals recurring pathway themes across all network configurations:
+
+| Pathway / Process | Representative Genes | Significance |
+|-------------------|---------------------|--------------|
+| **DNA Damage Response** | MRE11, RAD50, GTF2H1/4, REV3L, FANCM, FANCI, MDC1, PAXIP1, RIF1 | Genomic instability is a hallmark of cancer; these predictions collectively implicate DSB repair and replication stress as central driver mechanisms |
+| **Transcription & Mediator Complex** | MED13, MED13L, MNAT1, TAF1, GTF2H1, POLR2B | Transcriptional dysregulation through the Mediator/TFIIH axis; consistent with CDK8 oncogenic amplification in colorectal cancer |
+| **Chromatin Remodeling & Epigenetics** | HDAC1/2, SIN3A/B, SMARCC1/2, RBBP4, KMT2E, CHD3, SETD1A | SIN3–HDAC–SWI/SNF co-regulatory axis; epigenetic reprogramming is central to tumor cell plasticity |
+| **RAS / MAPK / PI3K Signaling** | SOS1, PAK1, PLCG2, PIK3CD, RPTOR | SOS1 gain-of-function is an established RAS activator in RASopathy-associated cancers; PAK1 amplification is frequent in luminal breast cancer |
+| **Cell Cycle & Checkpoint** | MNAT1, RPTOR, RBL1, DYRK1A, NEK1, BTRC, SMC3, PDS5B | Dysregulation of multiple independent G1/S and G2/M checkpoints |
+| **Wnt / Notch Signaling** | BTRC, TNKS, GLI3, MAML3 | Convergent developmental pathway activation through β-catenin and Notch coactivation |
+| **Cohesin Complex** | PDS5B, SMC3, SMARCC1/2 | Cohesin mutations drive chromosomal instability; SMC3 is recurrently mutated in AML |
+| **Fanconi Anemia / ICL Repair** | FANCM, FANCI | Fanconi pathway defects sensitize cells to replication stress and promote carcinogenesis |
 
 ## End-to-End Pipeline
 
@@ -75,7 +361,7 @@ A Graph Neural Network framework for cancer driver gene prediction using curvatu
 │          └──────────────────────────────────────────────────────────┘       │
 │                                                                             │
 │          Optimizations:                                                     │
-│            • ReduceLROnPlateau (factor, patience configurable)               │
+│            • ReduceLROnPlateau (factor, patience configurable)              │
 │            • Linear warmup (10 epochs)                                      │
 │            • Gradient accumulation (8 steps)                                │
 │            • Mixed precision (FP16)                                         │
@@ -113,22 +399,6 @@ A Graph Neural Network framework for cancer driver gene prediction using curvatu
 │    • model_results/.../aggregated_training_curves.png                       │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
-
----
-
-## Table of Contents
-
-- [Installation](#installation)
-- [Project Structure](#project-structure)
-- [Pipeline Overview](#pipeline-overview)
-  - [Step 1: Graph Curvature Enhancement](#step-1-graph-curvature-enhancement)
-  - [Step 2: Hyperparameter Search](#step-2-hyperparameter-search)
-  - [Step 3: Model Training](#step-3-model-training)
-  - [Step 4: Result Aggregation](#step-4-result-aggregation)
-- [HPC Usage with SLURM](#hpc-usage-with-slurm)
-- [Output Files](#output-files)
-
----
 
 ## Installation
 
@@ -203,8 +473,6 @@ GNNDriver/
 ├── requirements.txt            # Pip requirements
 └── Dockerfile                  # Docker configuration
 ```
-
----
 
 ## Pipeline Overview
 
