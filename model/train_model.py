@@ -1492,30 +1492,30 @@ def main():
                         help='Number of folds to use')
     parser.add_argument('--specific_folds', type=int, nargs='+', default=None,
                         help='Train only specific folds')
-    parser.add_argument('--num_epochs', type=int, default=200,
+    parser.add_argument('--num_epochs', type=int, default=1200,
                         help='Number of training epochs per fold')
-    parser.add_argument('--hidden_channels', type=int, default=256,
+    parser.add_argument('--hidden_channels', type=int, default=128,
                         help='Hidden layer channels')
-    parser.add_argument('--projection_dim', type=int, default=128,
+    parser.add_argument('--projection_dim', type=int, default=96,
                         help = 'Projection Dimensions')
-    parser.add_argument('--temperature', type=float, default=0.4,
+    parser.add_argument('--temperature', type=float, default=0.3,
                         help = 'Choose the temperature for contrastive loss.')
-    parser.add_argument('--dropout', type=float, default=0.2,
+    parser.add_argument('--dropout', type=float, default=0.3,
                         help='Choose the proportion of neurons to drop')
     parser.add_argument('--attention_mode', type=str, default='hybrid',
                         choices=['standard', 'edge_feature', 'bias', 'gated', 'hybrid'],
                         help='Attention mode for message passing')
     parser.add_argument('--pathway_aggregator', type = str, default='attention',
                         choices= ['attention','concat', 'hierarchical', 'mean'])
-    parser.add_argument('--aggregation', type=str, default='add',
+    parser.add_argument('--aggregation', type=str, default='max',
                         help = 'Aggregation Method')
-    parser.add_argument('--learning_rate', type=float, default=1e-3,
+    parser.add_argument('--learning_rate', type=float, default=5e-4,
                         help='Set the learning rate')
-    parser.add_argument('--weight_decay', type=float, default=1e-5,
+    parser.add_argument('--weight_decay', type=float, default=5e-4,
                         help='Weight decay for AdamW optimizer')
     parser.add_argument('--num_heads', type=int, default=4,
                         help='Number of attention heads')
-    parser.add_argument('--num_layers', type = int, default = 3,
+    parser.add_argument('--num_layers', type = int, default = 2,
                         help = 'Choose the number of GNN layers')
     parser.add_argument('--concat_heads', action='store_true', default=False,
                         help='Concatenate attention heads (vs average)')
@@ -1524,23 +1524,23 @@ def main():
                         help='Type of ranking loss (bpr is most stable)')
     parser.add_argument('--ranking_margin', type=float, default=0.5,
                         help='Margin for pairwise ranking loss')
-    parser.add_argument('--ranking_loss_samples', type=int, default=256,
+    parser.add_argument('--ranking_loss_samples', type=int, default=512,
                         help='Number of pairs to sample for calculating ranking loss')
     parser.add_argument('--focal_gamma', type=float, default=2.0,
                         help='Focal loss gamma (higher = more focus on hard examples)')
     parser.add_argument('--use_focal', action='store_true', default=False,
                         help='Use focal weighting in ranking loss')
-    parser.add_argument('--contrastive_weight', type=float, default=0.1,
+    parser.add_argument('--contrastive_weight', type=float, default=0.2,
                         help='Weight for contrastive loss (0-1, reduced to 0.1 for better balance). Ranking weight = 1 - contrastive_weight')
-    parser.add_argument('--scheduler_patience', type=int, default=50,
+    parser.add_argument('--scheduler_patience', type=int, default=5,
                         help = 'Patience for scheduler to stop training on learning rate plateau')
-    parser.add_argument('--early_stopping_patience', type=int, default=50,
+    parser.add_argument('--early_stopping_patience', type=int, default=15,
                         help='Early stopping patience')
-    parser.add_argument('--ranking_loss_scale', type=float, default=10.0,
+    parser.add_argument('--ranking_loss_scale', type=float, default=5.0,
                         help = 'Scale the ranking loss to prevent sharp increase due to contrastive loss')
     parser.add_argument('--gradient_accumulation_steps', type=int, default=8,
                     help='Number of gradient accumulation steps (increased for stability)')
-    parser.add_argument('--mixed_precision', action='store_true',
+    parser.add_argument('--mixed_precision', action='store_true', default=False,
                         help='Use mixed precision training')
     parser.add_argument('--max_views_per_step', type=int, default=2,
                         help='Maximum augmented views to use per training step')
@@ -1555,7 +1555,7 @@ def main():
     # ============================================================================
     parser.add_argument('--emergency_mode', action='store_true',
                         help='Use drastically reduced model for OOM issues (auto-sets optimal params)')
-    parser.add_argument('--max_augmented_views', type=int, default=3,
+    parser.add_argument('--max_augmented_views', type=int, default=2,
                         help='Maximum number of augmented views to keep in memory (default: 3, recommended: 2)')
     parser.add_argument('--reduce_model_size', action='store_true', default=False,
                         help='Reduce model dimensions (hidden=64, proj=32, layers=2, heads=1)')

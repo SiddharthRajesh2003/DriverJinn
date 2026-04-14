@@ -16,6 +16,7 @@ A Graph Neural Network framework for cancer driver gene prediction using curvatu
   - [Step 2: Hyperparameter Search](#step-2-hyperparameter-search)
   - [Step 3: Model Training](#step-3-model-training)
   - [Step 4: Result Aggregation](#step-4-result-aggregation)
+- [Docker Usage](#docker-usage)
 - [HPC Usage with SLURM](#hpc-usage-with-slurm)
 - [Output Files](#output-files)
 
@@ -539,7 +540,7 @@ Runs Optuna-based Bayesian optimization using TPE sampling and Hyperband pruning
 
 ```bash
 python -m model.hyperparameter_search \
-    --dataset curvature_output/GGNet_contrastive_v2_random_r0.1.pkl \
+    --dataset curvature_output/GGNet_contrastive_v2_random_r0.2_stratified5CV.pkl \
     --output_dir hyperparam_results \
     --n_trials 50 \
     --n_folds 1 \
@@ -641,34 +642,36 @@ Trains the contrastive driver gene predictor with ranking-based loss. Supports t
 
 ```bash
 python -m model.train_model \
-    --dataset_file curvature_output/GGNet_contrastive_v2_random_r0.2.pkl \
-    --num_epochs 1000 \
-    --hidden_channels 144 \
+    --dataset_file curvature_output/GGNet_contrastive_v2_random_r0.2_stratified5CV.pkl \
+--num_epochs 1200 \
+    --hidden_channels 128 \
     --projection_dim 96 \
-    --num_layers 3 \
+    --num_layers 2 \
     --num_heads 4 \
-    --specific_folds 1 \
-    --model_out_prefix GGNet_random_r0.2_fold1 \
-    --temperature 0.31 \
-    --dropout 0.325 \
-    --negative_slope 0.285 \
-    --attention_mode standard \
+    --num_folds 5 \
+    --train_metrics_dir model_results_$(date +%F) \
+    --model_out_dir trained_models_$(date +%F) \
+    --model_out_prefix PathNet_priority_r0.2 \
+    --temperature 0.3 \
+    --dropout 0.3 \
+    --attention_mode hybrid \
     --pathway_aggregator hierarchical \
-    --gradient_accumulation_steps 64 \
-    --ranking_margin 0.516 \
-    --ranking_loss_scale 6.17 \
+    --aggregation max \
+    --negative_slope 0.25 \
+    --attention_chunk_size 1000 \
+    --gradient_accumulation_steps 8 \
     --mixed_precision \
-    --scheduler_patience 300 \
-    --scheduler_factor 0.786 \
-    --early_stopping_patience 300 \
+    --early_stopping_patience 15 \
+    --validation_frequency 20 \
+    --scheduler_patience 5 \
+    --scheduler_factor 0.5 \
     --concat_heads \
     --ranking_loss_type bpr \
-    --focal_gamma 2.7 \
-    --use_focal \
-    --contrastive_weight 0.35 \
-    --weight_decay 1e-5 \
+    --ranking_loss_scale 5 \
+    --ranking_loss_samples 512 \
+    --contrastive_weight 0.2 \
     --learning_rate 5e-4 \
-    --seed 42
+    --weight_decay 5e-4
 ```
 
 #### Arguments
@@ -777,6 +780,58 @@ python -m model.aggregate_fold_results \
 - Aggregated gene scores with consensus significance analysis
 - Combined training curves across all folds
 - Metrics comparison bar and box plots
+
+---
+
+## Docker Usage
+
+1. Download the docker image
+
+```bash
+docker pull cydarthvader/driverjinn
+```
+
+1. Run the preprocessing script with the following command
+
+```bash
+docker run -v "your/working/directory:/app" cydarthvader/driverjinn preprocess --dataset_file data/dataset_PathNet.pkl --method both --augment --num_views 2 --elimination_ratio --strategy random --use_kfold
+```
+
+1. Run the training script with this command
+
+```bash
+docker run --gpus all -v "your/working/director:/app" cydarthvader/driverjinn \
+    train_model \
+     --dataset_file curvature_output/PathNet_contrastive_v2_random_r0.1_stratified5CV.pkl  \
+     --num_epochs 100 \
+     --hidden_channels 32 \
+     --projection_dim 16 \
+     --num_layers 1 \
+     --num_heads 4 \
+     --concat_heads \
+     --num_folds 5
+     --model_out_prefix PathNet_random_r0.1 \
+     --temperature 0.3 \
+     --model_out_dir trained_model_$(date +%F) \
+     --train_metrics_dir model_results_$(date +%F) \
+     --dropout 0.3 \
+     --attention_mode hybrid \
+     --pathway_aggregator hierarchical \
+     --aggregation max \
+     --negative_slope 0.25 \
+     --attention_chunk_size 1000 \
+     --gradient_accumulation_steps 8 \
+     --early_stopping_patience 15 \
+     --validation_frequency 20 \
+     --scheduler_patience 5 \
+     --scheduler_factor 0.5 \
+     --ranking_loss_type bpr \
+     --ranking_loss_scale 5 \
+     --ranking_loss_samples 512 \
+     --contrastive_weight 0.2 \
+     --learning_rate 5e-4 \
+     --weight_decay 5e-4
+```
 
 ---
 

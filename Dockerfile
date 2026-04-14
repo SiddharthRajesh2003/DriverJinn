@@ -46,4 +46,5 @@ COPY . .
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
 
-CMD ["/bin/bash"]
+RUN chmod +x /app/entrypoint.sh
+ENTRYPOINT [ "/app/entrypoint.sh" ]

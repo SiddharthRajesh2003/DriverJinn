@@ -416,7 +416,8 @@ class CurvaturePipeline:
         
         self.network = Network(self.data_dict['edge_index'], 
                                self.data_dict['node_name'],
-                               len(self.data_dict['node_name'])
+                               len(self.data_dict['node_name']),
+                               self.data_dict['node_name']
                         )
         
         if self.network is not None:

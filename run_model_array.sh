@@ -26,7 +26,7 @@ export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 echo "Running fold ${SLURM_ARRAY_TASK_ID} on $(hostname)"
 
 python -m model.train_model \
-    --dataset_file curvature_output/GGNet_contrastive_v2_random_r0.2.pkl \
+    --dataset_file curvature_output/GGNet_contrastive_v2_random_r0.2_stratified5CV.pkl \
     --num_epochs 1000 \
     --hidden_channels 128 \
     --projection_dim 96 \
