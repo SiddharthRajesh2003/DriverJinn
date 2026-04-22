@@ -70,7 +70,7 @@ Per-fold peak metrics for the best overall configuration (GGNet random ρ=0.2):
 
 #### Score Tier Separation
 
-The model assigns dramatically different score distributions to genes by their CGC status, confirming that high scores reflect genuine driver-gene biology:
+The model assigns dramatically different score distributions to genes by their CGC (v103) status, confirming that high scores reflect genuine driver-gene biology:
 
 | CGC Tier | Median Score |
 |----------|-------------|
@@ -80,7 +80,7 @@ The model assigns dramatically different score distributions to genes by their C
 
 #### CGC Enrichment Curve
 
-At the top-K cutoff, the fraction of COSMIC Tier 1 genes in the ranked list far exceeds random expectation:
+At the top-K cutoff, the fraction of COSMIC (v103) Tier 1 genes in the ranked list far exceeds random expectation:
 - Random baseline: ~4.6% Tier 1 at any K (518 of ~11,000 gene universe)
 - **At K=50**: ~40% Tier 1 precision (~8.7× enrichment over random)
 - **At K=500**: enrichment remains ~6× above baseline
@@ -643,7 +643,7 @@ Trains the contrastive driver gene predictor with ranking-based loss. Supports t
 ```bash
 python -m model.train_model \
     --dataset_file curvature_output/GGNet_contrastive_v2_random_r0.2_stratified5CV.pkl \
---num_epochs 1200 \
+    --num_epochs 1200 \
     --hidden_channels 128 \
     --projection_dim 96 \
     --num_layers 2 \
@@ -802,7 +802,7 @@ docker run -v "your/working/directory:/app" cydarthvader/driverjinn preprocess -
 ```bash
 docker run --gpus all -v "your/working/director:/app" cydarthvader/driverjinn \
     train_model \
-     --dataset_file curvature_output/PathNet_contrastive_v2_random_r0.1_stratified5CV.pkl  \
+     --dataset_file curvature_output/GGNet_contrastive_v2_random_r0.2_stratified5CV.pkl  \
      --num_epochs 100 \
      --hidden_channels 32 \
      --projection_dim 16 \
@@ -810,7 +810,43 @@ docker run --gpus all -v "your/working/director:/app" cydarthvader/driverjinn \
      --num_heads 4 \
      --concat_heads \
      --num_folds 5
-     --model_out_prefix PathNet_random_r0.1 \
+     --model_out_prefix GGNet_random_r0.1 \
+     --temperature 0.3 \
+     --model_out_dir trained_model_$(date +%F) \
+     --train_metrics_dir model_results_$(date +%F) \
+     --dropout 0.3 \
+     --attention_mode hybrid \
+     --pathway_aggregator hierarchical \
+     --aggregation max \
+     --negative_slope 0.25 \
+     --attention_chunk_size 1000 \
+     --gradient_accumulation_steps 8 \
+     --early_stopping_patience 15 \
+     --validation_frequency 20 \
+     --scheduler_patience 5 \
+     --scheduler_factor 0.5 \
+     --ranking_loss_type bpr \
+     --ranking_loss_scale 5 \
+     --ranking_loss_samples 512 \
+     --contrastive_weight 0.2 \
+     --learning_rate 5e-4 \
+     --weight_decay 5e-4
+```
+
+## Apptainer Usage
+
+```bash
+apptainer run --nv docker://cydarthvader/driverjinn \
+    train_model \
+     --dataset_file curvature_output/GGNet_contrastive_v2_random_r0.2_stratified5CV.pkl  \
+     --num_epochs 100 \
+     --hidden_channels 32 \
+     --projection_dim 16 \
+     --num_layers 1 \
+     --num_heads 4 \
+     --concat_heads \
+     --num_folds 5
+     --model_out_prefix GGNet_random_r0.2 \
      --temperature 0.3 \
      --model_out_dir trained_model_$(date +%F) \
      --train_metrics_dir model_results_$(date +%F) \

@@ -17,3 +17,4 @@ Downstream/cosmic/
 # pixi environments
 .pixi/*
 !.pixi/config.toml
+trained_models_*/
