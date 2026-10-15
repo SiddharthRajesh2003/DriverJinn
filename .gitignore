@@ -12,9 +12,13 @@ hyperparam_results_*/
 CLAUDE.md
 WORKFLOW.md
 .vscode/
-Downstream/cosmic/
+Downstream/
 *.docx
 # pixi environments
 .pixi/*
 !.pixi/config.toml
 trained_models_*/
+reference_papers/
+baseline_comparison/
+graphify-out/
+Downstream/

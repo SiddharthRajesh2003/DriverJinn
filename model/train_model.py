@@ -16,10 +16,12 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
 
 from utils.logging_manager import get_logger
 from model.DriverGenePredictor import ContrastiveDriverGenePredictor, compute_ndcg
 from model.support_models import WarmupScheduler, EarlyStopping, RankingLoss, EMA
+from model.aggregate_fold_results import aggregate_gene_scores
 
 # Memory optimization
 torch.cuda.empty_cache()                                                        # Flush any GPU memory allocated from previous runs before training starts
@@ -435,6 +437,34 @@ def align_and_verify_labels(node_id_to_name_full, original_labels, num_nodes):
     return aligned_labels
 
 
+def load_hgdc_splits(split_file, repeat, node_names, labels, inner_val_size=0.15, seed=42):
+    """Folds from HGDC's released 10x5CV split_set (train/test over HGDC's labelled genes only).
+
+    Each fold's training part is split again (stratified) into inner train / inner validation. The inner
+    validation set drives early stopping and checkpoint selection, so the test fold is evaluated once, at the end.
+    Unlabelled genes are in no mask: they are never used as labels, only scored.
+    """
+    with open(split_file, 'rb') as f:
+        hgdc = pickle.load(f)
+    labels_np = np.asarray(labels).ravel()
+    if not np.array_equal(np.asarray(hgdc['node_name']), np.asarray(node_names)):
+        raise ValueError(f"Gene order in {split_file} differs from the dataset")
+    if not np.array_equal(np.asarray(hgdc['label']).ravel(), labels_np):
+        raise ValueError(f"Labels in {split_file} differ from the dataset")
+
+    folds = []
+    for train_part, test_part in hgdc['split_set'][repeat]:
+        train_idx = np.where(np.asarray(train_part, dtype=bool))[0]
+        inner_train_idx, inner_val_idx = train_test_split(
+            train_idx, test_size=inner_val_size, stratify=labels_np[train_idx], random_state=seed)
+        masks = {name: np.zeros(len(labels_np), dtype=bool) for name in ('train_mask', 'val_mask')}
+        masks['train_mask'][inner_train_idx] = True
+        masks['val_mask'][inner_val_idx] = True
+        masks['test_mask'] = np.asarray(test_part, dtype=bool)
+        folds.append(masks)
+    return folds
+
+
 def normalize_features_per_fold(features, augmented_views, train_mask, fold_idx):
     """Fit StandardScaler on this fold's training data and normalize all features.
 
@@ -608,7 +638,9 @@ def train_single_fold(
     
     # Extract masks
     train_mask_original = torch.from_numpy(fold_data['train_mask'])                 # Convert numpy bool array to torch tensor
-    val_mask_original = torch.from_numpy(fold_data['val_mask'])
+    val_mask_original = torch.from_numpy(fold_data['val_mask'])                     # With HGDC splits: inner validation, used only for early stopping / checkpoint selection
+    test_mask_original = (torch.from_numpy(fold_data['test_mask'])
+                          if fold_data.get('test_mask') is not None else None)      # Held-out test fold; evaluated once after training
     
     # Get features - handle both 'feature' and 'x' keys
     features = original.get('feature', original.get('x'))                           # Support both key naming conventions
@@ -634,10 +666,12 @@ def train_single_fold(
             f"original graph nodes ({num_original_nodes})"
         )                                                                           # Mask must cover exactly the original graph's nodes
 
-    # Per-fold normalization: fit scaler on this fold's training data only
+    # Per-fold normalization. With a test fold, fit on every gene outside it (unlabelled genes included; no labels
+    # are used) rather than only the small, driver-enriched labelled training set.
     raw_features = original.get('x_raw', features)                                  # Prefer x_raw (un-normalized) to avoid double normalization
+    scaler_mask = ~test_mask_original if test_mask_original is not None else train_mask_original
     features, augmented_views = normalize_features_per_fold(
-        raw_features, augmented_views, train_mask_original, fold_idx
+        raw_features, augmented_views, scaler_mask, fold_idx
     )
 
     # Analyze class distribution
@@ -652,6 +686,8 @@ def train_single_fold(
     print(f"  Negative: {num_neg} ({100*num_neg/len(train_labels):.2f}%)")
     print(f"  Imbalance ratio: 1:{imbalance_ratio:.1f}")
     print(f"  Val samples: {val_mask_original.sum().item()}")
+    if test_mask_original is not None:
+        print(f"  Test samples: {test_mask_original.sum().item()} (positives: {int(labels[test_mask_original].sum().item())})")
     
     # EMERGENCY: Reduce model size if still OOM
     if reduce_model_size:
@@ -1219,30 +1255,47 @@ def train_single_fold(
     # Restore EMA state if available
     if 'metadata' in checkpoint and 'ema_state' in checkpoint['metadata']:
         ema.load_state_dict(checkpoint['metadata']['ema_state'])                            # Restore EMA shadow params to match the best epoch's state
-    
+        ema.apply_shadow(actual_model)                                                      # Score with the EMA weights the best checkpoint was selected and reported on
+
     print(f"\n✓ Loaded best model from epoch {epoch_loaded}")
     print(f"  Best Val NDCG@50: {best_val_ndcg:.4f}")
     print(f"  Best Val AUROC: {best_metrics.get('auroc', 0):.4f}")
     print(f"  Best Val MRR: {best_metrics.get('mrr', 0):.4f}")
     print(f"  Saved to: {model_path}")
-    
-    # Score all genes with statistical significance
+
+    history['best_epoch'] = epoch_loaded                                                    # Selection info kept with the curves for plotting
+    history['selection_metrics'] = best_metrics
+    reported_metrics = best_metrics
+    labeled_mask = None
+    if test_mask_original is not None:
+        test_mask_original = test_mask_original.to(device)
+        reported_metrics = evaluate_with_ranking_metrics(
+            actual_model, original_device, labels, test_mask_original,
+            curvature_type='ollivier', device=device
+        )                                                                                   # Single evaluation of the untouched test fold; this is what gets reported
+        history['test_metrics'] = reported_metrics
+        labeled_mask = (train_mask_original | val_mask_original | test_mask_original).cpu() # HGDC's labelled genes
+        print(f"  Test NDCG@50: {reported_metrics.get('ndcg@50', 0):.4f} | "
+              f"Test AUROC: {reported_metrics.get('auroc', 0):.4f} | "
+              f"Test AUPRC: {reported_metrics.get('auprc', 0):.4f}")
+
+    # Score all genes
     print(f"\n{'='*80}")
     print(f"SCORING ALL GENES - FOLD {fold_idx}")
     print(f"{'='*80}")
-    
+
     scored_genes_df = actual_model.score_genes_with_statistics(
         data=original_device,
         labels=labels,
         node_names=node_names,  # <-- Pass node names here
         curvature_type='ollivier',
-        num_permutations=1000,                                                              # Permutation test: 1000 shuffles give stable empirical p-values
+        labeled_mask=labeled_mask,
         device=device,
         save_path=results_dir,
         save_prefix=f"{model_prefix}_fold_{fold_idx}" if model_prefix else f"fold_{fold_idx}"
     )
-    
-    return model, best_metrics, history, scored_genes_df
+
+    return model, reported_metrics, history, scored_genes_df
 
 def plot_training_curves(histories: List[Dict], save_dir: Path, prefix: str = ""):
     """Plot training curves for all folds"""
@@ -1341,139 +1394,6 @@ def plot_metrics_comparison(metrics_data: List[Dict], save_dir: Path, prefix: st
     except Exception as e:
         logger.error(f"Error plotting metrics comparison: {e}")
 
-def aggregate_gene_scores(all_fold_dfs: List[pd.DataFrame], save_dir: Path, prefix: str = ""):
-    """
-    Aggregate gene scores across all folds.
-    
-    For each gene, compute:
-    - Mean score across folds
-    - Std score across folds
-    - Number of folds where gene was significant
-    - Consensus significance (significant in majority of folds)
-    """
-    try:
-        print(f"\nAggregating scores from {len(all_fold_dfs)} folds...")
-        
-        # Get gene IDs from first fold (should be same across all folds)
-        gene_ids = all_fold_dfs[0]['gene_id'].values                                            # Gene IDs are the same cross all folds; use fold 0 as reference
-        gene_names = all_fold_dfs[0]['gene_name'].values                                        # Gene names likewise identifcal across folds
-        true_labels = all_fold_dfs[0]['true_label'].values                                      # Ground truth labels do not change across folds
-        
-        # Collect scores from each fold
-        scores_matrix = np.array([df['driver_score'].values for df in all_fold_dfs])            # [num_folds, num_genes] raw driver scores
-        pvalues_matrix = np.array([df['adjusted_pvalue'].values for df in all_fold_dfs])        # [num_folds, num_genes] BH-adjusted p-values
-        ranks_matrix = np.array([df['rank'].values for df in all_fold_dfs])                     # [num_folds, num_genes] within-fold ranks
-        
-        # Compute aggregate statistics
-        mean_scores = scores_matrix.mean(axis=0)                                                # Average driver score across all folds; primary ranking criterion
-        std_scores = scores_matrix.std(axis=0)                                                  # Spread across folds; high std = inconsistent prediction
-        median_scores = np.median(scores_matrix, axis=0)                                        # Robust central tendency; less sensitive to outlier folds
-        
-        mean_pvalues = pvalues_matrix.mean(axis=0)                                              # Mean adjusted p-value; supplementary significance measure
-        median_ranks = np.median(ranks_matrix, axis=0)                                          # Borda count-stype rank aggregation; median rank is more robust than mean
-        
-        # Count how many folds each gene was significant in
-        significant_counts = (pvalues_matrix < 0.05).sum(axis=0)                                # Number of folds where this gene was FDR-significant
-        consensus_significant = significant_counts >= (len(all_fold_dfs) / 2)                   # Gene must be significant in atleast half the folds
-        
-        # Create aggregate DataFrame
-        aggregate_df = pd.DataFrame({
-            'gene_id': gene_ids,
-            'gene_name': gene_names,
-            'true_label': true_labels,
-            'is_known_driver': true_labels == 1,
-            'mean_score': mean_scores,
-            'std_score': std_scores,
-            'median_score': median_scores,
-            'mean_adjusted_pvalue': mean_pvalues,
-            'median_rank': median_ranks,
-            'folds_significant': significant_counts,
-            'total_folds': len(all_fold_dfs),
-            'consensus_significant': consensus_significant & (true_labels == 0)  # Only unknowns
-        })
-        
-        # Sort by mean score
-        aggregate_df = aggregate_df.sort_values('mean_score', ascending=False)                  # Rank genes by mean score across folds
-        aggregate_df['aggregate_rank'] = range(1, len(aggregate_df) + 1)                        # 1-indexed global rank
-        
-        # Reorder columns
-        aggregate_df = aggregate_df[[
-            'aggregate_rank', 'gene_id', 'gene_name', 'is_known_driver',
-            'mean_score', 'std_score', 'median_score', 
-            'mean_adjusted_pvalue', 'median_rank',
-            'folds_significant', 'total_folds', 'consensus_significant'
-        ]]
-        
-        # Get consensus significant genes
-        consensus_genes = aggregate_df[aggregate_df['consensus_significant']]                   # Subset: unknown genes significant in majority of folds = most robust novel predictions
-        
-        print(f"\n{'='*80}")
-        print("AGGREGATE RESULTS")
-        print(f"{'='*80}")
-        print(f"\nTotal genes: {len(aggregate_df)}")
-        print(f"Known drivers: {(aggregate_df['is_known_driver']).sum()}")
-        print(f"Consensus significant genes: {len(consensus_genes)}")
-        
-        if len(consensus_genes) > 0:
-            print(f"\nTop 20 Consensus Significant Genes:")
-            print("-" * 80)
-            display_cols = ['aggregate_rank', 'gene_name', 'mean_score', 'std_score',
-                            'folds_significant', 'total_folds', 'mean_adjusted_pvalue']
-            print(consensus_genes[display_cols].head(20).to_string(index=False))
-        
-        # Save aggregate results
-        output_prefix = f"{prefix}_" if prefix else ""
-        
-        # Save all aggregated scores
-        all_file = save_dir / f"{output_prefix}aggregated_all_genes.csv"
-        aggregate_df.to_csv(all_file, index=False)
-        print(f"\n✓ Saved aggregated scores to: {all_file}")
-        
-        # Save consensus significant genes
-        if len(consensus_genes) > 0:
-            consensus_file = save_dir / f"{output_prefix}aggregated_consensus_significant.csv"
-            consensus_genes.to_csv(consensus_file, index=False)
-            print(f"✓ Saved {len(consensus_genes)} consensus genes to: {consensus_file}")
-        
-        # Save summary
-        summary_file = save_dir / f"{output_prefix}aggregated_summary.txt"
-        with open(summary_file, 'w') as f:
-            f.write("="*80 + "\n")
-            f.write("AGGREGATED GENE SCORING SUMMARY (ACROSS ALL FOLDS)\n")
-            f.write("="*80 + "\n\n")
-            
-            f.write(f"Number of folds: {len(all_fold_dfs)}\n")
-            f.write(f"Total genes: {len(aggregate_df)}\n")
-            f.write(f"Known driver genes: {(aggregate_df['is_known_driver']).sum()}\n")
-            f.write(f"Unknown genes: {(~aggregate_df['is_known_driver']).sum()}\n\n")
-            
-            f.write(f"Consensus significant genes (sig in ≥{len(all_fold_dfs)/2:.0f} folds): {len(consensus_genes)}\n\n")
-            
-            if len(consensus_genes) > 0:
-                f.write("Score Statistics for Consensus Genes:\n")
-                f.write(f"  Mean score: {consensus_genes['mean_score'].mean():.4f}\n")
-                f.write(f"  Median score: {consensus_genes['mean_score'].median():.4f}\n")
-                f.write(f"  Min rank: {consensus_genes['aggregate_rank'].min()}\n")
-                f.write(f"  Max rank: {consensus_genes['aggregate_rank'].max()}\n\n")
-                
-                f.write("Top 20 Consensus Significant Genes:\n")
-                f.write("-"*80 + "\n")
-                top_20 = consensus_genes.head(20)[
-                    ['aggregate_rank', 'gene_name', 'mean_score', 'folds_significant', 'mean_adjusted_pvalue']
-                ]
-                f.write(top_20.to_string(index=False))
-        
-        print(f"✓ Saved aggregate summary to: {summary_file}")
-        print(f"\n{'='*80}\n")
-        
-        return aggregate_df
-        
-    except Exception as e:
-        logger.error(f"Error aggregating gene scores: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
-
 def main():
     parser = argparse.ArgumentParser(
         description='Train Contrastive Driver Gene Predictor with Advanced Attention'
@@ -1567,6 +1487,14 @@ def main():
                         help='Factor by which LR is reduced on plateau')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for reproducibility')
+    parser.add_argument('--split_file', type=str, default=None,
+                        help="HGDC dataset with released 10x5CV splits (e.g. baseline_comparison/HGDC/data/GGNet/"
+                             "dataset_GGNet_ten_5CV.pkl). Replaces the dataset's own kfold_splits: train/test over "
+                             "HGDC's labelled genes only, with an inner validation split for model selection")
+    parser.add_argument('--split_repeat', type=int, default=0,
+                        help='Which of the 10 HGDC 5-fold repeats to use (default: 0)')
+    parser.add_argument('--inner_val_size', type=float, default=0.15,
+                        help='Fraction of each training fold held out for early stopping (default: 0.15)')
     args = parser.parse_args()
 
     # ============================================================================
@@ -1655,7 +1583,12 @@ def main():
     print("="*80 + "\n")
     
     labels = original['label']
-    kfold_splits = original['kfold_splits']
+    if args.split_file:
+        kfold_splits = load_hgdc_splits(args.split_file, args.split_repeat, original['node_name'], labels,
+                                        inner_val_size=args.inner_val_size, seed=args.seed)
+        print(f"Using HGDC splits from {args.split_file} (repeat {args.split_repeat})")
+    else:
+        kfold_splits = original['kfold_splits']
     
     # Filter folds if specified
     if args.specific_folds:
@@ -1818,7 +1751,7 @@ def main():
     print("AGGREGATING GENE SCORES ACROSS FOLDS")
     print(f"{'='*80}")
     
-    aggregate_gene_scores(all_fold_scored_genes, results_dir, prefix)                       # Compute cross-fold consensus driver predictions
+    aggregate_gene_scores(all_fold_scored_genes, results_dir, args.model_out_prefix)        # Compute cross-fold consensus driver predictions
     
     print(f"\n{'='*80}")
     print("TRAINING COMPLETE")

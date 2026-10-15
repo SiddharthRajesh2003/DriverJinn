@@ -81,16 +81,35 @@ case "$COMMAND" in
         fi
         python -m model.train_model "$@"
         ;;
+    hyperparam_search)
+        if [[ $# -eq 0 || "$1" == "--help" || "$1" == "-h" ]]; then
+            echo "Usage: docker run cydarthvader/driverjinn hyperparam_search [options]"
+            echo ""
+            echo "Options:"
+            echo "  --dataset              Path to preprocessed pickle file (required)"
+            echo "  --output_dir           Output directory for results [default: hyperparam_results]"
+            echo "  --n_trials             Number of Optuna trials [default: 50]"
+            echo "  --n_folds              CV folds per trial [default: 1]"
+            echo "  --epochs_per_trial     Max epochs per trial [default: 500]"
+            echo "  --patience             Early stopping patience [default: 30]"
+            echo "  --study_name           Optuna study name [default: None]"
+            echo "  --seed                 Random seed [default: 42]"
+            exit 0
+        fi
+        python -m model.hyperparameter_search "$@"
+        ;;
     *)
-        echo "Usage: docker run cydarthvader/driverjinn [preprocess|train_model] [options]"
+        echo "Usage: docker run cydarthvader/driverjinn [preprocess|train_model|hyperparam_search] [options]"
         echo ""
         echo "Commands:"
-        echo "  preprocess   Run curvature pipeline (graph_builder.curvature_pipeline)"
-        echo "  train_model  Run model training (model.train_model)"
+        echo "  preprocess        Run curvature pipeline (graph_builder.curvature_pipeline)"
+        echo "  train_model       Run model training (model.train_model)"
+        echo "  hyperparam_search Run hyperparameter search (model.hyperparameter_search)"
         echo ""
         echo "Run with --help for command-specific options:"
         echo "  docker run cydarthvader/driverjinn preprocess --help"
         echo "  docker run cydarthvader/driverjinn train_model --help"
+        echo "  docker run cydarthvader/driverjinn hyperparam_search --help"
         exit 1
         ;;
 esac

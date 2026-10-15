@@ -122,15 +122,18 @@ def compute_summary_statistics(metrics_df: pd.DataFrame) -> pd.DataFrame:
     return summary_df
 
 
+TOP_K = 100       # Candidate cut-off: rank among unlabelled genes within a fold
+MIN_FOLDS = 3     # Folds in which a gene must make the cut-off to be a consensus candidate
+
+
 def aggregate_gene_scores(score_dfs: List[pd.DataFrame], output_dir: Path, prefix: str):
     """
-    Aggregate gene scores across all folds - matches train_model.py structure.
+    Aggregate per-fold gene scores into one ranking.
 
-    For each gene, compute:
-    - Mean score across folds
-    - Std score across folds
-    - Number of folds where gene was significant
-    - Consensus significance (significant in majority of folds)
+    - Genes are aligned by gene_id: each fold's file is sorted by that fold's own scores.
+    - Genes are ranked by mean within-fold rank, because raw scores are not calibrated across folds.
+    - Candidates are unlabelled genes (is_labeled == False; true_label == 0 for older files without that
+      column) that rank in the top TOP_K unlabelled genes in at least MIN_FOLDS folds.
     """
     if not score_dfs:
         print("No gene scores to aggregate")
@@ -138,123 +141,91 @@ def aggregate_gene_scores(score_dfs: List[pd.DataFrame], output_dir: Path, prefi
 
     print(f"\nAggregating scores from {len(score_dfs)} folds...")
 
-    # Get gene IDs from first fold (should be same across all folds)
-    gene_ids = score_dfs[0]['gene_id'].values
-    gene_names = score_dfs[0]['gene_name'].values
-    true_labels = score_dfs[0]['true_label'].values
+    dfs = [df.set_index('gene_id').sort_index() for df in score_dfs]
+    ref = dfs[0]
+    for df in dfs[1:]:
+        if not df.index.equals(ref.index) or not (df['gene_name'] == ref['gene_name']).all():
+            raise ValueError("Folds contain different genes; cannot aggregate")
 
-    # Collect scores from each fold
-    scores_matrix = np.array([df['driver_score'].values for df in score_dfs])
-    pvalues_matrix = np.array([df['adjusted_pvalue'].values for df in score_dfs])
-    ranks_matrix = np.array([df['rank'].values for df in score_dfs])
+    is_driver = ref['true_label'].values == 1
+    labeled = ref['is_labeled'].values.astype(bool) if 'is_labeled' in ref else is_driver
+    unlabeled = ~labeled
 
-    # Compute aggregate statistics
-    mean_scores = scores_matrix.mean(axis=0)
-    std_scores = scores_matrix.std(axis=0)
-    median_scores = np.median(scores_matrix, axis=0)
+    scores = np.column_stack([df['driver_score'].values for df in dfs])     # [num_genes, num_folds], gene-aligned
+    ranks = np.column_stack([df['rank'].values for df in dfs])
 
-    mean_pvalues = pvalues_matrix.mean(axis=0)
-    median_ranks = np.median(ranks_matrix, axis=0)
+    unlabeled_rank = np.full(ranks.shape, np.inf)
+    for j in range(ranks.shape[1]):
+        order = np.argsort(ranks[unlabeled, j])
+        r = np.empty(len(order))
+        r[order] = np.arange(1, len(order) + 1)
+        unlabeled_rank[unlabeled, j] = r                                    # Rank among unlabelled genes only
+    folds_top = (unlabeled_rank <= TOP_K).sum(axis=1)
 
-    # Count how many folds each gene was significant in
-    significant_counts = (pvalues_matrix < 0.05).sum(axis=0)
-    consensus_significant = significant_counts >= (len(score_dfs) / 2)
-
-    # Create aggregate DataFrame
     aggregate_df = pd.DataFrame({
-        'gene_id': gene_ids,
-        'gene_name': gene_names,
-        'true_label': true_labels,
-        'is_known_driver': true_labels == 1,
-        'mean_score': mean_scores,
-        'std_score': std_scores,
-        'median_score': median_scores,
-        'mean_adjusted_pvalue': mean_pvalues,
-        'median_rank': median_ranks,
-        'folds_significant': significant_counts,
-        'total_folds': len(score_dfs),
-        'consensus_significant': consensus_significant & (true_labels == 0)  # Only unknowns
+        'gene_id': ref.index.values,
+        'gene_name': ref['gene_name'].values,
+        'is_known_driver': is_driver,
+        'is_labeled': labeled,
+        'mean_rank': ranks.mean(axis=1),
+        'median_rank': np.median(ranks, axis=1),
+        'std_rank': ranks.std(axis=1),
+        'mean_score': scores.mean(axis=1),
+        'std_score': scores.std(axis=1),
+        f'folds_top{TOP_K}': folds_top,
+        'total_folds': len(dfs),
+        f'consensus_top{TOP_K}': unlabeled & (folds_top >= MIN_FOLDS),
     })
+    aggregate_df = aggregate_df.sort_values(['mean_rank', 'median_rank'], kind='stable').reset_index(drop=True)
+    aggregate_df.insert(0, 'aggregate_rank', np.arange(1, len(aggregate_df) + 1))
 
-    # Sort by mean score
-    aggregate_df = aggregate_df.sort_values('mean_score', ascending=False)
-    aggregate_df['aggregate_rank'] = range(1, len(aggregate_df) + 1)
-
-    # Reorder columns
-    aggregate_df = aggregate_df[[
-        'aggregate_rank', 'gene_id', 'gene_name', 'is_known_driver',
-        'mean_score', 'std_score', 'median_score',
-        'mean_adjusted_pvalue', 'median_rank',
-        'folds_significant', 'total_folds', 'consensus_significant'
-    ]]
-
-    # Get consensus significant genes
-    consensus_genes = aggregate_df[aggregate_df['consensus_significant']]
+    consensus_genes = aggregate_df[aggregate_df[f'consensus_top{TOP_K}']]
+    display_cols = ['aggregate_rank', 'gene_name', 'is_known_driver', 'mean_rank', 'std_rank',
+                    f'folds_top{TOP_K}', 'total_folds']
 
     print(f"\n{'='*80}")
     print("AGGREGATE RESULTS")
     print(f"{'='*80}")
     print(f"\nTotal genes: {len(aggregate_df)}")
-    print(f"Known drivers: {(aggregate_df['is_known_driver']).sum()}")
-    print(f"Consensus significant genes: {len(consensus_genes)}")
-
-    # Print top 20 genes
-    print(f"\nTop 20 Predicted Driver Genes (by mean score):")
+    print(f"Known drivers: {aggregate_df['is_known_driver'].sum()} | Labelled genes: {aggregate_df['is_labeled'].sum()}")
+    print(f"Consensus candidates (top {TOP_K} unlabelled in >= {MIN_FOLDS} folds): {len(consensus_genes)}")
+    print(f"\nTop 20 genes (by mean within-fold rank):")
     print("-" * 80)
-    display_cols = ['aggregate_rank', 'gene_name', 'is_known_driver', 'mean_score',
-                    'std_score', 'folds_significant', 'total_folds']
     print(aggregate_df[display_cols].head(20).to_string(index=False))
-
     if len(consensus_genes) > 0:
-        print(f"\nTop 20 Consensus Significant Genes (novel predictions):")
+        print(f"\nTop 20 consensus candidates:")
         print("-" * 80)
         print(consensus_genes[display_cols].head(20).to_string(index=False))
 
-    # Save aggregate results
     output_prefix = f"{prefix}_" if prefix else ""
 
-    # Save all aggregated scores
     all_file = output_dir / f"{output_prefix}aggregated_all_genes.csv"
     aggregate_df.to_csv(all_file, index=False)
     print(f"\nSaved aggregated scores to: {all_file}")
 
-    # Save consensus significant genes
-    if len(consensus_genes) > 0:
-        consensus_file = output_dir / f"{output_prefix}aggregated_consensus_significant.csv"
-        consensus_genes.to_csv(consensus_file, index=False)
-        print(f"Saved {len(consensus_genes)} consensus genes to: {consensus_file}")
+    consensus_file = output_dir / f"{output_prefix}aggregated_consensus_top{TOP_K}.csv"
+    consensus_genes.to_csv(consensus_file, index=False)
+    print(f"Saved {len(consensus_genes)} consensus candidates to: {consensus_file}")
 
-    # Save summary
     summary_file = output_dir / f"{output_prefix}aggregated_summary.txt"
     with open(summary_file, 'w') as f:
         f.write("="*80 + "\n")
         f.write("AGGREGATED GENE SCORING SUMMARY (ACROSS ALL FOLDS)\n")
         f.write("="*80 + "\n\n")
-
-        f.write(f"Number of folds: {len(score_dfs)}\n")
+        f.write(f"Number of folds: {len(dfs)}\n")
         f.write(f"Total genes: {len(aggregate_df)}\n")
-        f.write(f"Known driver genes: {(aggregate_df['is_known_driver']).sum()}\n")
-        f.write(f"Unknown genes: {(~aggregate_df['is_known_driver']).sum()}\n\n")
-
-        f.write(f"Consensus significant genes (sig in >={len(score_dfs)/2:.0f} folds): {len(consensus_genes)}\n\n")
-
-        f.write("Top 20 Predicted Driver Genes:\n")
+        f.write(f"Known driver genes: {aggregate_df['is_known_driver'].sum()}\n")
+        f.write(f"Labelled genes: {aggregate_df['is_labeled'].sum()}\n")
+        f.write("Ranking: mean within-fold rank (raw scores are not calibrated across folds)\n\n")
+        f.write(f"Consensus candidates (top {TOP_K} unlabelled genes in >= {MIN_FOLDS} folds): {len(consensus_genes)}\n\n")
+        f.write("Top 20 genes:\n")
         f.write("-"*80 + "\n")
-        top_20 = aggregate_df.head(20)[display_cols]
-        f.write(top_20.to_string(index=False))
+        f.write(aggregate_df[display_cols].head(20).to_string(index=False))
         f.write("\n\n")
-
         if len(consensus_genes) > 0:
-            f.write("Score Statistics for Consensus Genes:\n")
-            f.write(f"  Mean score: {consensus_genes['mean_score'].mean():.4f}\n")
-            f.write(f"  Median score: {consensus_genes['mean_score'].median():.4f}\n")
-            f.write(f"  Min rank: {consensus_genes['aggregate_rank'].min()}\n")
-            f.write(f"  Max rank: {consensus_genes['aggregate_rank'].max()}\n\n")
-
-            f.write("Top 20 Consensus Significant Genes:\n")
+            f.write("Top 20 consensus candidates:\n")
             f.write("-"*80 + "\n")
-            top_consensus = consensus_genes.head(20)[display_cols]
-            f.write(top_consensus.to_string(index=False))
+            f.write(consensus_genes[display_cols].head(20).to_string(index=False))
 
     print(f"Saved aggregate summary to: {summary_file}")
     print(f"\n{'='*80}\n")

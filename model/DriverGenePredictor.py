@@ -10,7 +10,6 @@ import pandas as pd
 import time
 from torch.utils.checkpoint import checkpoint as gradient_checkpoint
 from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve
-from statsmodels.stats.multitest import multipletests
 
 
 from utils.logging_manager import get_logger
@@ -885,27 +884,32 @@ class ContrastiveDriverGenePredictor(nn.Module):
         labels: torch.Tensor,
         curvature_type: str = 'ollivier',
         node_names: List = None,
-        num_permutations: int = 1000,
+        labeled_mask: Optional[torch.Tensor] = None,
         device: torch.device = None,
         save_path: Optional[str] = None,
         save_prefix: str = ''
     ) -> pd.DataFrame:
         """
-        Score all genes and compute statistical significance via permutation testing.
-        
+        Score and rank all genes, with descriptive driver-likeness statistics.
+
+        No significance test is applied: an empirical p-value against ~700 known-driver scores has a floor of
+        ~1/700, which cannot survive multiple-testing correction over ~10,000 genes. Candidates are defined by
+        cross-fold rank instead (see model/aggregate_fold_results.py).
+
         Args:
             data: Graph data dictionary
             labels: True labels
             curvature_type: Type of curvature to use
             node_names: List of gene names corresponding to nodes
-            num_permutations: Number of permutations for p-value calculation
+            labeled_mask: Boolean mask of genes with a curated label (e.g. HGDC's labelled set); adds an
+                          'is_labeled' column so downstream code can separate labelled from unlabelled genes
             device: Device to use for computation
             save_path: Directory path to save CSV files (if None, no files saved)
             save_prefix: Prefix for output filenames (e.g., 'fold1', 'experiment_A')
-        
+
         Returns:
-            DataFrame with all genes scored and ranked with statistical significance
-        
+            DataFrame with all genes scored, sorted by score (rank 1 = highest)
+
         Example:
             >>> df = model.score_genes_with_statistics(
             ...     data, labels,
@@ -914,14 +918,14 @@ class ContrastiveDriverGenePredictor(nn.Module):
             ...     save_prefix='fold_1'
             ... )
             # Saves to: results/fold_1_all_genes_scored.csv
-            #           results/fold_1_significant_genes.csv
-            #           results/fold_1_known_drivers.csv
+            #           results/fold_1_known_drivers_scores.csv
+            #           results/fold_1_scoring_summary.txt
         """
         print("\n" + "="*80)
-        print("SCORING ALL GENES WITH STATISTICAL SIGNIFICANCE")
+        print("SCORING ALL GENES")
         print("="*80)
-        
-        print(f"Scoring {labels.shape[0]} genes with {num_permutations} permutations...")
+
+        print(f"Scoring {labels.shape[0]} genes...")
     
         # Get node names (stored as a list)
         num_genes = labels.shape[0]
@@ -970,153 +974,74 @@ class ContrastiveDriverGenePredictor(nn.Module):
                 logger.error("  ❌ TP53 alignment is BROKEN!")                                 # Mismatch indicates a node ordering bug
         logger.info("=" * 40 + "\n")
         
-        device = device if device else self.device
-        if device is None:
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        
-        labels = labels.to(device)
-        
-        known_drivers = labels == 1                                                             
-        known_driver_indices = torch.where(known_drivers)[0].cpu().numpy()                      # Integer indices of all known driver genes
-        unknown_indices = torch.where(~known_drivers)[0].cpu().numpy()                          # Integer indices of all non-driver genes
-        
-        print(f"\nKnown drivers: {len(known_driver_indices)}")
-        print(f"Unknown genes: {len(unknown_indices)}")
-        
-        driver_scores = df_scores.loc[known_driver_indices, 'driver_score'].values              # Raw scores of known drivers; used as reference distribution
+        # df_scores is sorted by score, so its row positions are ranks, not node ids: work from its columns only
+        is_driver = df_scores['true_label'].values == 1
+        driver_scores = np.sort(df_scores.loc[is_driver, 'driver_score'].values)
+        n_drivers = len(driver_scores)
         driver_mean = driver_scores.mean()                                                      # Mean driver score; used to compute z-scores
         driver_std = driver_scores.std()                                                        # Std of driver scores; used to compute z-scores
-        
+
+        print(f"\nKnown drivers: {n_drivers}")
+        print(f"Other genes: {len(df_scores) - n_drivers}")
         print(f"\nKnown Driver Score Statistics:")
         print(f"  Mean: {driver_mean:.4f}")
         print(f"  Std: {driver_std:.4f}")
         print(f"  Median: {np.median(driver_scores):.4f}")
-        
-        # Compute p-values via empirical comparison
-        print(f"\nComputing empirical p-values...")
-        
-        # Initialize p-values array
-        pvalues = np.ones(len(df_scores))                                                       # Initialize all p-values to 1.0 (non-significant)
-        
-        # For unknown genes, compute empirical p-value
-        # P-value = proportion of known drivers with score >= this gene's score
-        for idx in unknown_indices:
-            if idx % 500 == 0:
-                print(f"  Processing gene {idx}/{len(unknown_indices)}...", end='\r')
-            
-            observed_score = df_scores.loc[idx, 'driver_score']
-            
-            # Empirical p-value: what fraction of known drivers score as high or higher?
-            count_higher = (driver_scores >= observed_score).sum()                              # How many known drivers score atleast as high as this gene
-            pvalue = (count_higher + 1) / (len(driver_scores) + 1)                              # Laplace-smoothed empirical p-value; +1 numerator/denominator avoids p=0
-            pvalues[idx] = pvalue
-        
-        print(f"  Processing gene {len(unknown_indices)}/{len(unknown_indices)}... Done!")
-        
-        # Known drivers get p-value of 0 (they are the reference)
-        pvalues[known_driver_indices] = 0.0                                                     # Known drivers are the reference class; assign p=0 (not being tested)
-        
-        # Print p-value distribution
-        unknown_pvalues_for_stats = pvalues[unknown_indices]
-        print(f"\nP-value distribution for unknown genes:")
-        print(f"  Min: {unknown_pvalues_for_stats.min():.6f}")
-        print(f"  Max: {unknown_pvalues_for_stats.max():.6f}")
-        print(f"  Mean: {unknown_pvalues_for_stats.mean():.6f}")
-        print(f"  Median: {np.median(unknown_pvalues_for_stats):.6f}")
-        print(f"  P < 0.01: {(unknown_pvalues_for_stats < 0.01).sum()}")
-        print(f"  P < 0.05: {(unknown_pvalues_for_stats < 0.05).sum()}")
-        
-        # Multiple testing correction
-        unknown_pvalues = pvalues[unknown_indices]
-        _, adjusted_pvalues_unknown, _, _ = multipletests(unknown_pvalues, method='fdr_bh')    # Benjamini-Hochberg FDR correction; controls false discovery rate across all tested genes
-        
-        adjusted_pvalues = np.ones(len(df_scores))                                             # Initialize all p-adjusted values to 1.0
-        adjusted_pvalues[known_driver_indices] = 0.0                                           # Known drivers get adjusted to p=0
-        adjusted_pvalues[unknown_indices] = adjusted_pvalues_unknown                           # Fill in BH-corrected values for unknown genes
-        
-        df_scores['pvalue'] = pvalues                                                          # Raw empirical p-values
-        df_scores['adjusted_pvalue'] = adjusted_pvalues                                        # FDR-corrected p-values
-        df_scores['is_known_driver'] = df_scores['true_label'] == 1                            # Boolean flag for known drivers
-        df_scores['is_significant'] = (adjusted_pvalues < 0.05) & (~df_scores['is_known_driver'])   # Significant novel candidates: FDR < 0.05 AND not already a known driver
-        df_scores['z_score'] = (df_scores['driver_score'] - driver_mean) / driver_std          # How many std deviations above/below the mean driver scores
-        
-        print(f"\n" + "="*80)
-        print("RESULTS")
-        print("="*80)
-        
-        significant_unknowns = df_scores[df_scores['is_significant']]
-        print(f"\nSignificant unknown genes (FDR < 0.05): {len(significant_unknowns)}")
-        
-        if len(significant_unknowns) > 0:
-            print(f"\nTop 20 Significant Unknown Genes:")
-            print("-" * 80)
-            display_cols = ['rank', 'gene_name', 'driver_score', 'z_score', 
-                        'adjusted_pvalue', 'percentile']
-            print(significant_unknowns[display_cols].head(20).to_string(index=False))
-        
+
+        # Share of known drivers scoring at least as high as each gene (+1 smoothing); descriptive only
+        n_at_least = n_drivers - np.searchsorted(driver_scores, df_scores['driver_score'].values, side='left')
+        df_scores['driver_likeness_p'] = np.where(is_driver, np.nan, (n_at_least + 1) / (n_drivers + 1))
+        df_scores['is_known_driver'] = is_driver
+        if labeled_mask is not None:
+            labeled_np = np.asarray(labeled_mask.cpu() if isinstance(labeled_mask, torch.Tensor) else labeled_mask, dtype=bool)
+            df_scores['is_labeled'] = labeled_np[df_scores['original_index'].values]           # Look up by node id, not row position
+        df_scores['z_score'] = (df_scores['driver_score'] - driver_mean) / driver_std          # How many std deviations above/below the mean driver score
+
+        candidates = df_scores[~df_scores['is_labeled']] if 'is_labeled' in df_scores else df_scores[~is_driver]
+        print(f"\nTop 20 unlabelled genes by score:")
+        print("-" * 80)
+        display_cols = ['rank', 'gene_name', 'driver_score', 'z_score', 'driver_likeness_p', 'percentile']
+        print(candidates[display_cols].head(20).to_string(index=False))
+
         # Save to CSV if path provided
         if save_path is not None:
             from pathlib import Path
             save_dir = Path(save_path)
             save_dir.mkdir(exist_ok=True, parents=True)
-            
-            # Add prefix if provided
+
             prefix = f"{save_prefix}_" if save_prefix else ""
-            
-            # Save all genes
-            all_genes_file = save_dir / f"{prefix}all_genes_scored.csv"                     # Completed scored gene table
+
+            all_genes_file = save_dir / f"{prefix}all_genes_scored.csv"                     # Complete scored gene table
             df_scores.to_csv(all_genes_file, index=False)
             print(f"\n✓ Saved all genes to: {all_genes_file}")
-            
-            # Save significant genes only
-            if len(significant_unknowns) > 0:
-                sig_file = save_dir / f"{prefix}significant_genes.csv"                      # Subset: Only FDR-significant novel candidates
-                significant_unknowns.to_csv(sig_file, index=False)
-                print(f"✓ Saved {len(significant_unknowns)} significant genes to: {sig_file}")
-            
-            # Save known drivers for reference
-            known_drivers_df = df_scores[df_scores['is_known_driver']]
+
             known_file = save_dir / f"{prefix}known_drivers_scores.csv"                     # Scores of all known drivers; useful as performance reference
-            known_drivers_df.to_csv(known_file, index=False)
-            print(f"✓ Saved {len(known_drivers_df)} known drivers to: {known_file}")
-            
-            # Save summary statistics
+            df_scores[is_driver].to_csv(known_file, index=False)
+            print(f"✓ Saved {n_drivers} known drivers to: {known_file}")
+
             summary_file = save_dir / f"{prefix}scoring_summary.txt"                        # Human-readable text summary of counts and statistics
             with open(summary_file, 'w') as f:
                 f.write("="*80 + "\n")
                 f.write("GENE SCORING SUMMARY\n")
                 f.write("="*80 + "\n\n")
-                
                 f.write(f"Total genes analyzed: {len(df_scores)}\n")
-                f.write(f"Known driver genes: {len(known_driver_indices)}\n")
-                f.write(f"Unknown genes: {len(unknown_indices)}\n")
-                f.write(f"Significant unknown genes (FDR < 0.05): {len(significant_unknowns)}\n\n")
-                
-                f.write("Known Driver Score Statistics:\n")
+                f.write(f"Known driver genes: {n_drivers}\n")
+                if 'is_labeled' in df_scores:
+                    f.write(f"Labelled genes: {int(df_scores['is_labeled'].sum())}\n")
+                f.write("\nKnown Driver Score Statistics:\n")
                 f.write(f"  Mean: {driver_mean:.4f}\n")
                 f.write(f"  Std: {driver_std:.4f}\n")
                 f.write(f"  Median: {np.median(driver_scores):.4f}\n")
                 f.write(f"  Min: {driver_scores.min():.4f}\n")
                 f.write(f"  Max: {driver_scores.max():.4f}\n\n")
-                
-                if len(significant_unknowns) > 0:
-                    f.write("Significant Gene Score Statistics:\n")
-                    f.write(f"  Mean: {significant_unknowns['driver_score'].mean():.4f}\n")
-                    f.write(f"  Median: {significant_unknowns['driver_score'].median():.4f}\n")
-                    f.write(f"  Min rank: {significant_unknowns['rank'].min()}\n")
-                    f.write(f"  Max rank: {significant_unknowns['rank'].max()}\n\n")
-                    
-                    f.write("Top 10 Significant Genes:\n")
-                    f.write("-"*80 + "\n")
-                    top_10 = significant_unknowns.head(10)[
-                        ['rank', 'gene_name', 'driver_score', 'adjusted_pvalue']
-                    ]
-                    f.write(top_10.to_string(index=False))
-            
+                f.write("Top 20 unlabelled genes by score:\n")
+                f.write("-"*80 + "\n")
+                f.write(candidates[display_cols].head(20).to_string(index=False))
+
             print(f"✓ Saved summary to: {summary_file}")
             print(f"\n{'='*80}\n")
-        
-        return df_scores                                                                   # Full dataframe with scores, ranks, p-values, z-scores, and significance flags for every gene
+
+        return df_scores                                                                   # All genes sorted by score, with rank, percentile, driver-likeness and z-score
 
 
 def compute_ndcg(

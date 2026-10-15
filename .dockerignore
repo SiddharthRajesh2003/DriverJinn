@@ -1,36 +1,58 @@
+# Python build artifacts
 __pycache__/
 *.pyc
 *.pyo
-.git/
 *.egg-info/
-conda_envs/
-results/
-*.pkl
-*.pt
-.vscode/
-.claude/
-graph_builder/__pycache__
-logs/
-utils/__pycache__
-curvature_output/PPNet_*
-curvature_output/GGNet_*
-.env
-model/__pycache__
+.ipynb_checkpoints/
+*.ipynb
 model/model_tester.py
-all_model_results/
-misc/
-model_results_*/
-.claude/
-GNN Architecture.jpeg
-DriverJinn Data Preprocessing.jpeg
-CLAUDE.md
-*.tar.gz
-*.docx
-*.pdf
-WORKFLOW.md
-Downstream/cosmic/
-Downstream/plots
-Downstream/Data-preprocessing.jpeg
-*.svg
+
+# Environments (the image installs from requirements.txt)
+conda_envs/
+.pixi/
+environment.yaml
+.env
+
+# Version control, editor and tooling
+.git/
 .gitignore
 .gitattributes
+.vscode/
+.claude/
+graphify-out/
+Dockerfile
+.dockerignore
+
+# Data, checkpoints and results (mount these at run time)
+*.pkl
+*.pt
+data/
+curvature_output/
+results/
+logs/
+misc/
+all_model_results/
+model_results_*/
+trained_models_*/
+hyperparam_results_*/
+baseline_comparison/
+*.tar.gz
+
+# Cluster job scripts (SLURM, not used inside the container)
+run_model_array.sh
+run_hyperparam_search.sh
+preprocess_script.sh
+
+# Docs, papers, figures and analysis
+Downstream/
+reference_papers/
+*.md
+CLAUDE.md
+WORKFLOW.md
+*.docx
+*.pdf
+*.svg
+*.html
+*.png
+*.jpg
+*.jpeg
