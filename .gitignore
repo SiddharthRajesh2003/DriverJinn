@@ -56,3 +56,6 @@ Downstream/*
 !Downstream/README.md
 
 hyperparam_results/
+
+RESULTS.md
+MANUSCRIPT.md
