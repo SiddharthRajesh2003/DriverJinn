@@ -1,0 +1,81 @@
+[I 2026-11-10 12:47:40,247] Trial 0 finished with value: 0.6883351410102573 and parameters: {'hidden_channels': 144, 'projection_dim': 72, 'num_gnn_layers': 2, 'num_attention_heads': 4, 'attention_mode': 'edge_feature', 'pathway_aggregator': 'hierarchical', 'concat_heads': True, 'dropout': 0.1873687420594126, 'temperature': 0.7282970263056656, 'negative_slope': 0.12789877213040837, 'learning_rate': 0.0001919814649902086, 'weight_decay': 5.404103854647334e-06, 'contrastive_weight': 0.2368209952651108, 'ranking_loss_scale': 12.851759613930136, 'ranking_loss_type': 'pairwise', 'ranking_margin': 0.7146901982034297, 'use_focal': False, 'focal_gamma': 1.341048247374583, 'aggregation': 'max', 'gradient_accumulation_steps': 8, 'use_ema': True, 'ema_decay': 0.991098344113603, 'scheduler_patience': 84, 'scheduler_factor': 0.5103165563345655}. Best is trial 0 with value: 0.6883351410102573.
+[I 2026-11-10 14:08:29,654] Trial 1 pruned. 
+[I 2026-11-10 14:46:20,637] Trial 2 finished with value: 0.7643400932993288 and parameters: {'hidden_channels': 128, 'projection_dim': 72, 'num_gnn_layers': 2, 'num_attention_heads': 2, 'attention_mode': 'gated', 'pathway_aggregator': 'mean', 'concat_heads': False, 'dropout': 0.1747876687446625, 'temperature': 0.5872680461249408, 'negative_slope': 0.2511102277086097, 'learning_rate': 0.00014340567410515046, 'weight_decay': 1.4254757044027448e-06, 'contrastive_weight': 0.1869254358741304, 'ranking_loss_scale': 6.612212872540044, 'ranking_loss_type': 'bpr', 'ranking_margin': 0.7433826295572964, 'use_focal': True, 'focal_gamma': 1.3731401177720717, 'aggregation': 'add', 'gradient_accumulation_steps': 8, 'use_ema': False, 'ema_decay': 0.9973621328933024, 'scheduler_patience': 132, 'scheduler_factor': 0.5020856391593572}. Best is trial 2 with value: 0.7643400932993288.
+[I 2026-11-10 14:54:08,508] Trial 3 pruned. 
+[I 2026-11-10 15:14:41,900] Trial 4 finished with value: 0.5933754068210895 and parameters: {'hidden_channels': 128, 'projection_dim': 72, 'num_gnn_layers': 4, 'num_attention_heads': 2, 'attention_mode': 'standard', 'pathway_aggregator': 'concat', 'concat_heads': True, 'dropout': 0.36916472738599804, 'temperature': 0.9302926400143312, 'negative_slope': 0.2266202914546536, 'learning_rate': 0.00023824817710692614, 'weight_decay': 4.993662066506422e-06, 'contrastive_weight': 0.31778670366107187, 'ranking_loss_scale': 13.971102599525771, 'ranking_loss_type': 'bpr', 'ranking_margin': 0.7494221523080014, 'use_focal': False, 'focal_gamma': 2.7971083770541583, 'aggregation': 'add', 'gradient_accumulation_steps': 8, 'use_ema': False, 'ema_decay': 0.9958676513355234, 'scheduler_patience': 49, 'scheduler_factor': 0.7136537664042608}. Best is trial 2 with value: 0.7643400932993288.
+[I 2026-11-10 15:35:07,484] Trial 5 pruned. 
+[I 2026-11-10 15:43:10,973] Trial 6 pruned. 
+[I 2026-11-10 15:57:27,332] Trial 7 pruned. 
+[I 2026-11-10 19:23:12,615] Trial 8 pruned. 
+[I 2026-11-10 19:33:27,305] Trial 9 pruned. 
+[I 2026-11-10 19:56:41,077] Trial 10 finished with value: 0.7972206277453953 and parameters: {'hidden_channels': 128, 'projection_dim': 96, 'num_gnn_layers': 2, 'num_attention_heads': 2, 'attention_mode': 'gated', 'pathway_aggregator': 'mean', 'concat_heads': False, 'dropout': 0.10451926671280883, 'temperature': 0.4156538397580782, 'negative_slope': 0.2103430201622637, 'learning_rate': 0.0007584367761512689, 'weight_decay': 1.0410129400191783e-06, 'contrastive_weight': 0.11086726965589695, 'ranking_loss_scale': 8.41886516378035, 'ranking_loss_type': 'pairwise', 'ranking_margin': 0.9548933132569972, 'use_focal': True, 'focal_gamma': 1.0283844605829926, 'aggregation': 'add', 'gradient_accumulation_steps': 8, 'use_ema': False, 'ema_decay': 0.9989873850737268, 'scheduler_patience': 150, 'scheduler_factor': 0.7615462369688979}. Best is trial 10 with value: 0.7972206277453953.
+[I 2026-11-10 20:08:15,634] Trial 11 pruned. 
+[I 2026-11-10 20:19:49,150] Trial 12 pruned. 
+[I 2026-11-10 20:23:55,388] Trial 13 pruned. 
+[I 2026-11-10 20:28:34,411] Trial 14 pruned. 
+[I 2026-11-10 21:10:13,504] Trial 15 finished with value: 0.7845882319091197 and parameters: {'hidden_channels': 128, 'projection_dim': 96, 'num_gnn_layers': 3, 'num_attention_heads': 2, 'attention_mode': 'gated', 'pathway_aggregator': 'mean', 'concat_heads': False, 'dropout': 0.19141492460251153, 'temperature': 0.32070392597530556, 'negative_slope': 0.19861938938739343, 'learning_rate': 0.0018928685332441984, 'weight_decay': 2.696249699684546e-06, 'contrastive_weight': 0.13850112482621918, 'ranking_loss_scale': 7.270550889205069, 'ranking_loss_type': 'pairwise', 'ranking_margin': 0.7192763881421468, 'use_focal': True, 'focal_gamma': 1.4808179427574681, 'aggregation': 'max', 'gradient_accumulation_steps': 8, 'use_ema': False, 'ema_decay': 0.9972317540189537, 'scheduler_patience': 134, 'scheduler_factor': 0.6451236236859106}. Best is trial 10 with value: 0.7972206277453953.
+[I 2026-11-10 21:27:47,224] Trial 16 pruned. 
+[I 2026-11-10 22:23:14,894] Trial 17 finished with value: 0.7812292009772617 and parameters: {'hidden_channels': 128, 'projection_dim': 96, 'num_gnn_layers': 4, 'num_attention_heads': 2, 'attention_mode': 'gated', 'pathway_aggregator': 'mean', 'concat_heads': False, 'dropout': 0.13148780093156048, 'temperature': 0.37891919020635617, 'negative_slope': 0.11193837625480253, 'learning_rate': 0.0016178497572439177, 'weight_decay': 1.2576900095154717e-05, 'contrastive_weight': 0.12587210093191825, 'ranking_loss_scale': 7.215388008250704, 'ranking_loss_type': 'pairwise', 'ranking_margin': 0.7713896494317524, 'use_focal': True, 'focal_gamma': 1.967160959445179, 'aggregation': 'max', 'gradient_accumulation_steps': 8, 'use_ema': False, 'ema_decay': 0.9968778461287822, 'scheduler_patience': 147, 'scheduler_factor': 0.673931001162908}. Best is trial 10 with value: 0.7972206277453953.
+[I 2026-11-10 22:27:34,021] Trial 18 pruned. 
+[I 2026-11-10 22:33:43,795] Trial 19 pruned. 
+[I 2026-11-10 22:51:38,711] Trial 20 pruned. 
+[I 2026-11-10 23:20:04,331] Trial 21 pruned. 
+[I 2026-11-10 23:48:13,668] Trial 22 pruned. 
+[I 2026-11-11 01:11:29,956] Trial 23 pruned. 
+[I 2026-11-11 02:06:59,412] Trial 24 finished with value: 0.7795607212946118 and parameters: {'hidden_channels': 128, 'projection_dim': 96, 'num_gnn_layers': 4, 'num_attention_heads': 2, 'attention_mode': 'gated', 'pathway_aggregator': 'mean', 'concat_heads': False, 'dropout': 0.1256491925686026, 'temperature': 0.3665616484760436, 'negative_slope': 0.10932293834509568, 'learning_rate': 0.0020007622519099683, 'weight_decay': 2.3742619873685357e-06, 'contrastive_weight': 0.18454502244574333, 'ranking_loss_scale': 7.54587777217586, 'ranking_loss_type': 'pairwise', 'ranking_margin': 0.9480558363235198, 'use_focal': True, 'focal_gamma': 1.7514858708880046, 'aggregation': 'max', 'gradient_accumulation_steps': 8, 'use_ema': False, 'ema_decay': 0.9988046714909785, 'scheduler_patience': 126, 'scheduler_factor': 0.6845455237468184}. Best is trial 10 with value: 0.7972206277453953.
+[I 2026-11-11 02:11:46,408] Trial 25 pruned. 
+[I 2026-11-11 03:03:50,352] Trial 26 finished with value: 0.7309502581423215 and parameters: {'hidden_channels': 144, 'projection_dim': 96, 'num_gnn_layers': 4, 'num_attention_heads': 2, 'attention_mode': 'gated', 'pathway_aggregator': 'concat', 'concat_heads': False, 'dropout': 0.1993132383057718, 'temperature': 0.3439692175163748, 'negative_slope': 0.17026417856886283, 'learning_rate': 0.003091860233790979, 'weight_decay': 1.8127780058760073e-05, 'contrastive_weight': 0.16886311064342166, 'ranking_loss_scale': 6.549055454174597, 'ranking_loss_type': 'pairwise', 'ranking_margin': 0.6536408709985971, 'use_focal': True, 'focal_gamma': 1.9758408349097372, 'aggregation': 'max', 'gradient_accumulation_steps': 8, 'use_ema': False, 'ema_decay': 0.9980850013057739, 'scheduler_patience': 122, 'scheduler_factor': 0.7255797298413962}. Best is trial 10 with value: 0.7972206277453953.
+[I 2026-11-11 03:49:38,684] Trial 27 finished with value: 0.8153917377338301 and parameters: {'hidden_channels': 128, 'projection_dim': 96, 'num_gnn_layers': 2, 'num_attention_heads': 2, 'attention_mode': 'gated', 'pathway_aggregator': 'attention', 'concat_heads': False, 'dropout': 0.3988554210194679, 'temperature': 0.4260329915556045, 'negative_slope': 0.1428534043710063, 'learning_rate': 0.0015968170098755053, 'weight_decay': 1.4588990746572537e-06, 'contrastive_weight': 0.12020064086158752, 'ranking_loss_scale': 5.264221283740598, 'ranking_loss_type': 'pairwise', 'ranking_margin': 0.5542179224206886, 'use_focal': True, 'focal_gamma': 1.2257591939407306, 'aggregation': 'max', 'gradient_accumulation_steps': 8, 'use_ema': False, 'ema_decay': 0.9961828641064382, 'scheduler_patience': 139, 'scheduler_factor': 0.6358027502977092}. Best is trial 27 with value: 0.8153917377338301.
+[I 2026-11-11 06:01:32,557] Trial 28 finished with value: 0.7760256039080929 and parameters: {'hidden_channels': 128, 'projection_dim': 96, 'num_gnn_layers': 2, 'num_attention_heads': 4, 'attention_mode': 'gated', 'pathway_aggregator': 'attention', 'concat_heads': False, 'dropout': 0.3721279305199257, 'temperature': 0.42807727738266244, 'negative_slope': 0.1386930494249311, 'learning_rate': 0.00030773035359886637, 'weight_decay': 1.3968143789970742e-06, 'contrastive_weight': 0.1455134664789728, 'ranking_loss_scale': 5.035958744325494, 'ranking_loss_type': 'pairwise', 'ranking_margin': 0.30593657279719766, 'use_focal': True, 'focal_gamma': 1.1421380438253557, 'aggregation': 'mean', 'gradient_accumulation_steps': 16, 'use_ema': False, 'ema_decay': 0.9961378761631646, 'scheduler_patience': 113, 'scheduler_factor': 0.557059400551793}. Best is trial 27 with value: 0.8153917377338301.
+[I 2026-11-11 06:05:11,006] Trial 29 pruned. 
+[I 2026-11-11 07:39:30,212] Trial 30 pruned. 
+[I 2026-11-11 07:44:32,285] Trial 31 pruned. 
+[I 2026-11-11 08:12:23,556] Trial 32 finished with value: 0.7722671277540546 and parameters: {'hidden_channels': 128, 'projection_dim': 96, 'num_gnn_layers': 2, 'num_attention_heads': 2, 'attention_mode': 'gated', 'pathway_aggregator': 'hierarchical', 'concat_heads': False, 'dropout': 0.11895558842760204, 'temperature': 0.5119200922876136, 'negative_slope': 0.1329722417262363, 'learning_rate': 0.001056343880744131, 'weight_decay': 1.2539144953453842e-05, 'contrastive_weight': 0.13442547936141439, 'ranking_loss_scale': 7.1010464421741, 'ranking_loss_type': 'pairwise', 'ranking_margin': 0.5870357780023101, 'use_focal': True, 'focal_gamma': 1.3802854698651728, 'aggregation': 'max', 'gradient_accumulation_steps': 8, 'use_ema': False, 'ema_decay': 0.9961889934715749, 'scheduler_patience': 128, 'scheduler_factor': 0.6159906211893992}. Best is trial 27 with value: 0.8153917377338301.
+[I 2026-11-11 08:19:51,633] Trial 33 pruned. 
+[I 2026-11-11 08:27:16,124] Trial 34 pruned. 
+[I 2026-11-11 08:38:05,512] Trial 35 finished with value: 0.7971186240880852 and parameters: {'hidden_channels': 128, 'projection_dim': 72, 'num_gnn_layers': 2, 'num_attention_heads': 2, 'attention_mode': 'standard', 'pathway_aggregator': 'attention', 'concat_heads': False, 'dropout': 0.14451186254232873, 'temperature': 0.4700761202866069, 'negative_slope': 0.1476323271285293, 'learning_rate': 0.0016683481038248962, 'weight_decay': 2.4152478453101894e-06, 'contrastive_weight': 0.10024585452343815, 'ranking_loss_scale': 6.545482644400806, 'ranking_loss_type': 'pairwise', 'ranking_margin': 0.41336062400081164, 'use_focal': True, 'focal_gamma': 1.6782238415825455, 'aggregation': 'mean', 'gradient_accumulation_steps': 8, 'use_ema': False, 'ema_decay': 0.9906507455722259, 'scheduler_patience': 150, 'scheduler_factor': 0.7734079548592485}. Best is trial 27 with value: 0.8153917377338301.
+[I 2026-11-11 08:50:52,383] Trial 36 pruned. 
+[I 2026-11-11 08:52:09,464] Trial 37 pruned. 
+[I 2026-11-11 09:06:24,185] Trial 38 pruned. 
+[I 2026-11-11 09:10:56,196] Trial 39 pruned. 
+[I 2026-11-11 09:24:09,272] Trial 40 pruned. 
+[I 2026-11-11 09:33:47,355] Trial 41 pruned. 
+[I 2026-11-11 09:43:29,898] Trial 42 pruned. 
+[I 2026-11-11 09:57:34,427] Trial 43 pruned. 
+[I 2026-11-11 10:05:47,771] Trial 44 pruned. 
+[I 2026-11-11 10:25:47,252] Trial 45 finished with value: 0.8087557593238889 and parameters: {'hidden_channels': 144, 'projection_dim': 72, 'num_gnn_layers': 2, 'num_attention_heads': 2, 'attention_mode': 'bias', 'pathway_aggregator': 'mean', 'concat_heads': False, 'dropout': 0.1308292299664888, 'temperature': 0.420030158359155, 'negative_slope': 0.20216624738895908, 'learning_rate': 0.0011481735283422083, 'weight_decay': 1.9841275325982667e-06, 'contrastive_weight': 0.13754878869987508, 'ranking_loss_scale': 6.827068536644362, 'ranking_loss_type': 'pairwise', 'ranking_margin': 0.9985843266346499, 'use_focal': False, 'focal_gamma': 1.3816907418784028, 'aggregation': 'mean', 'gradient_accumulation_steps': 8, 'use_ema': False, 'ema_decay': 0.9948540822608596, 'scheduler_patience': 150, 'scheduler_factor': 0.6681370719809628}. Best is trial 27 with value: 0.8153917377338301.
+[I 2026-11-11 11:25:20,941] Trial 46 pruned. 
+[I 2026-11-11 11:48:46,950] Trial 47 finished with value: 0.7871227467704798 and parameters: {'hidden_channels': 144, 'projection_dim': 72, 'num_gnn_layers': 2, 'num_attention_heads': 2, 'attention_mode': 'bias', 'pathway_aggregator': 'mean', 'concat_heads': True, 'dropout': 0.1661659836167976, 'temperature': 0.4709266441053189, 'negative_slope': 0.22326945363355183, 'learning_rate': 0.0011094145459187095, 'weight_decay': 1.947038646757564e-06, 'contrastive_weight': 0.1570791236930817, 'ranking_loss_scale': 7.825195643551348, 'ranking_loss_type': 'pairwise', 'ranking_margin': 0.9458903180375907, 'use_focal': False, 'focal_gamma': 1.227203989259737, 'aggregation': 'mean', 'gradient_accumulation_steps': 8, 'use_ema': False, 'ema_decay': 0.9948814664146846, 'scheduler_patience': 49, 'scheduler_factor': 0.6605595884352156}. Best is trial 27 with value: 0.8153917377338301.
+[I 2026-11-11 11:55:42,850] Trial 48 pruned. 
+[I 2026-11-11 11:57:36,207] Trial 49 pruned. 
+
+============================================================
+SEARCH COMPLETE
+============================================================
+Best val AP: 0.8154
+
+Best hyperparameters:
+  hidden_channels: 128
+  projection_dim: 96
+  num_gnn_layers: 2
+  num_attention_heads: 2
+  attention_mode: gated
+  pathway_aggregator: attention
+  concat_heads: False
+  dropout: 0.3988554210194679
+  temperature: 0.4260329915556045
+  negative_slope: 0.1428534043710063
+  learning_rate: 0.0015968170098755053
+  weight_decay: 1.4588990746572537e-06
+  contrastive_weight: 0.12020064086158752
+  ranking_loss_scale: 5.264221283740598
+  ranking_loss_type: pairwise
+  ranking_margin: 0.5542179224206886
+  use_focal: True
+  focal_gamma: 1.2257591939407306
+  aggregation: max
+  gradient_accumulation_steps: 8
+  use_ema: False
+  ema_decay: 0.9961828641064382
+  scheduler_patience: 139
+  scheduler_factor: 0.6358027502977092

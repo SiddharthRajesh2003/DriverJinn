@@ -9,7 +9,7 @@ import networkx as nx
 import pandas as pd
 import time
 from torch.utils.checkpoint import checkpoint as gradient_checkpoint
-from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve
+from sklearn.metrics import roc_auc_score, average_precision_score, precision_recall_curve, auc
 
 
 from utils.logging_manager import get_logger
@@ -753,6 +753,7 @@ class ContrastiveDriverGenePredictor(nn.Module):
         
         # F1 Score (using optimal threshold from precision-recall curve)
         precision, recall, thresholds = precision_recall_curve(labels_np, scores_np)
+        metrics['auprc_trapz'] = auc(recall, precision)                 # Trapezoidal PR area, as HGDC/SCIS-CDG compute AUPR; for like-for-like comparison only
         # Calculate F1 for each threshold
         f1_scores = 2 * (precision * recall) / (precision + recall + 1e-10)                 # F1 at each threshold; 1e-10 prevents division by 0
         best_f1_idx = np.argmax(f1_scores)                                                  # Index of the threshold that maximizes F1

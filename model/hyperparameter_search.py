@@ -15,8 +15,10 @@ import pandas as pd
 import optuna
 from optuna.pruners import HyperbandPruner
 from optuna.samplers import TPESampler
+from sklearn.metrics import average_precision_score
 
-from model.DriverGenePredictor import ContrastiveDriverGenePredictor, compute_ndcg
+from model.DriverGenePredictor import ContrastiveDriverGenePredictor
+from model.train_model import load_hgdc_splits, normalize_features_per_fold
 from utils.logging_manager import get_logger
 from model.support_models import RankingLoss, EMA
 
@@ -99,7 +101,8 @@ class HyperparameterSearch:
     """
     Hyperparameter search for ContrastiveDriverGenePredictor using Optuna.
 
-    Uses NDCG@50 as the primary optimization metric for ranking performance.
+    Maximizes average precision (AP) on the inner validation set. With --split_file the folds are HGDC's
+    released splits (same as train_model.py); the HGDC test fold is never scored during the search.
     Memory-constrained to max 128 hidden channels for H100 compatibility.
 
     Recommended workflow:
@@ -118,7 +121,10 @@ class HyperparameterSearch:
         patience: int = 20,
         device: torch.device = None,
         study_name: str = None,
-        seed: int = 42
+        seed: int = 42,
+        split_file: str = None,
+        split_repeat: int = 0,
+        inner_val_size: float = 0.15
     ):
         self.seed = seed
         self.data_path = data_path
@@ -140,7 +146,12 @@ class HyperparameterSearch:
         self.original = data['original']
         self.augmented_views = data['augmented_views'][:2]  # Limit to 2 views for memory
         self.labels = self.original['label']
-        self.kfold_splits = self.original['kfold_splits'][:n_folds]
+        if split_file:
+            self.kfold_splits = load_hgdc_splits(split_file, split_repeat, self.original['node_name'], self.labels,
+                                                 inner_val_size=inner_val_size, seed=seed)[:n_folds]
+            logger.info(f"Using HGDC splits from {split_file} (repeat {split_repeat})")
+        else:
+            self.kfold_splits = self.original['kfold_splits'][:n_folds]
 
         # Preprocess data
         self._preprocess_data()
@@ -296,16 +307,22 @@ class HyperparameterSearch:
         fold_idx: int,
         trial: optuna.Trial
     ) -> Tuple[float, Dict]:
-        """Train model on one fold and return validation NDCG@50"""
+        """Train model on one fold and return best validation AP"""
 
         fold_data = self.kfold_splits[fold_idx]
         train_mask = torch.tensor(fold_data['train_mask'], dtype=torch.bool)
         val_mask = torch.tensor(fold_data['val_mask'], dtype=torch.bool)
 
-        # Prepare data on device
+        # Per-fold normalization, same rule as train_model.py: fit on every gene outside the test fold
+        test_mask = fold_data.get('test_mask')
+        scaler_mask = ~np.asarray(test_mask, dtype=bool) if test_mask is not None else fold_data['train_mask']
         feature_key = 'feature' if 'feature' in self.original else 'x'
+        raw_features = self.original.get('x_raw', self.original[feature_key])
+        features, views = normalize_features_per_fold(raw_features, self.augmented_views, scaler_mask, fold_idx)
+
+        # Prepare data on device
         original_device = {
-            'x': self.original[feature_key].to(self.device),
+            'x': features.to(self.device),
             'edge_index': self.original['edge_index'].to(self.device),
             'ollivier_curvature': self.original['ollivier_curvature'].to(self.device),
         }
@@ -343,10 +360,10 @@ class HyperparameterSearch:
         # Mixed precision
         scaler = torch.amp.GradScaler('cuda') if self.device.type == 'cuda' else None
 
-        best_val_ndcg = 0.0
+        best_val_ap = 0.0
         best_metrics = {}
         epochs_without_improvement = 0
-        smoothed_ndcg = 0.0  # EMA of validation NDCG for scheduler/early stopping
+        smoothed_ap = 0.0  # EMA of validation AP for scheduler/early stopping
         metric_ema_alpha = 0.3  # Weight for new observation (lower = smoother)
 
         gradient_accumulation_steps = params['gradient_accumulation_steps']
@@ -368,11 +385,11 @@ class HyperparameterSearch:
                     view1_idx = (epoch * gradient_accumulation_steps + accum_step) % num_views
                     view2_idx = (epoch * gradient_accumulation_steps + accum_step + 1) % num_views
 
-                    view1 = self.augmented_views[view1_idx]
-                    view2 = self.augmented_views[view2_idx]
+                    view1 = views[view1_idx]
+                    view2 = views[view2_idx]
 
-                    # Get view data
-                    feature_key_view = 'feature' if 'feature' in view1 else 'x'
+                    # Get view data ('x' holds this fold's normalized features)
+                    feature_key_view = 'x'
                     view1_x = view1[feature_key_view].to(self.device)
                     view1_edge_index = view1['edge_index'].to(self.device)
                     view1_curvature = view1['ollivier_curvature'].to(self.device)
@@ -506,29 +523,28 @@ class HyperparameterSearch:
                         original_device['ollivier_curvature']
                     )
 
-                    val_ndcg = compute_ndcg(
-                        val_scores[val_mask],
-                        labels[val_mask],
-                        k=50
+                    val_ap = average_precision_score(   # inner-validation AP
+                        labels[val_mask].cpu().numpy(),
+                        val_scores[val_mask].float().cpu().numpy()
                     )
 
                 if ema:
                     ema.restore(model)
 
-                # Update smoothed NDCG (EMA of validation metric)
-                if smoothed_ndcg == 0.0:
-                    smoothed_ndcg = val_ndcg
+                # Update smoothed AP (EMA of validation metric)
+                if smoothed_ap == 0.0:
+                    smoothed_ap = val_ap
                 else:
-                    smoothed_ndcg = metric_ema_alpha * val_ndcg + (1 - metric_ema_alpha) * smoothed_ndcg
+                    smoothed_ap = metric_ema_alpha * val_ap + (1 - metric_ema_alpha) * smoothed_ap
 
-                # Use smoothed NDCG for scheduler
-                scheduler.step(smoothed_ndcg)
+                # Use smoothed AP for scheduler
+                scheduler.step(smoothed_ap)
 
-                # Track best (using raw NDCG for best model selection)
-                if val_ndcg > best_val_ndcg:
-                    best_val_ndcg = val_ndcg
+                # Track best (using raw AP for best model selection)
+                if val_ap > best_val_ap:
+                    best_val_ap = val_ap
                     best_metrics = {
-                        'ndcg@50': val_ndcg,
+                        'val_ap': val_ap,
                         'epoch': epoch,
                         'loss': accumulated_loss / successful_steps
                     }
@@ -536,13 +552,13 @@ class HyperparameterSearch:
                 else:
                     epochs_without_improvement += 10
 
-                # Report raw NDCG to Optuna for pruning
-                trial.report(val_ndcg, epoch)
+                # Report raw AP to Optuna for pruning
+                trial.report(val_ap, epoch)
 
                 if trial.should_prune():
                     raise optuna.TrialPruned()
 
-                # Early stopping (using smoothed NDCG)
+                # Early stopping (using smoothed AP)
                 if epochs_without_improvement >= self.patience:
                     logger.info(f"Early stopping at epoch {epoch}")
                     break
@@ -554,10 +570,10 @@ class HyperparameterSearch:
         torch.cuda.empty_cache()
         gc.collect()
 
-        return best_val_ndcg, best_metrics
+        return best_val_ap, best_metrics
 
     def objective(self, trial: optuna.Trial) -> float:
-        """Optuna objective function - returns mean NDCG@50 across folds"""
+        """Optuna objective function - returns mean val AP across folds"""
 
         # Seed each trial deterministically based on trial number
         trial_seed = self.seed + trial.number
@@ -578,12 +594,12 @@ class HyperparameterSearch:
 
             try:
                 model = self.create_model(params)
-                fold_ndcg, _ = self.train_single_fold(
+                fold_ap, _ = self.train_single_fold(
                     model, params, fold_idx, trial
                 )
-                fold_scores.append(fold_ndcg)
+                fold_scores.append(fold_ap)
 
-                logger.info(f"Fold {fold_idx + 1} NDCG@50: {fold_ndcg:.4f}")
+                logger.info(f"Fold {fold_idx + 1} val AP: {fold_ap:.4f}")
 
                 del model
                 torch.cuda.empty_cache()
@@ -595,30 +611,30 @@ class HyperparameterSearch:
                 logger.error(f"Error in fold {fold_idx}: {e}")
                 fold_scores.append(0.0)
 
-        mean_ndcg = np.mean(fold_scores)
-        std_ndcg = np.std(fold_scores)
+        mean_ap = np.mean(fold_scores)
+        std_ap = np.std(fold_scores)
 
         logger.info(f"\nTrial {trial.number} Results:")
-        logger.info(f"  Mean NDCG@50: {mean_ndcg:.4f} ± {std_ndcg:.4f}")
+        logger.info(f"  Mean val AP: {mean_ap:.4f} ± {std_ap:.4f}")
         logger.info(f"  Fold scores: {fold_scores}")
 
         # Store results
         result = {
             'trial': trial.number,
             'params': params,
-            'mean_ndcg': mean_ndcg,
-            'std_ndcg': std_ndcg,
+            'mean_ap': mean_ap,
+            'std_ap': std_ap,
             'fold_scores': fold_scores
         }
         self.trial_results.append(result)
 
         # Update best
-        if mean_ndcg > self.best_score:
-            self.best_score = mean_ndcg
+        if mean_ap > self.best_score:
+            self.best_score = mean_ap
             self.best_params = params.copy()
             logger.info(f"  *** New best score! ***")
 
-        return mean_ndcg
+        return mean_ap
 
     def run(self) -> Dict:
         """Run hyperparameter search"""
@@ -660,7 +676,7 @@ class HyperparameterSearch:
         logger.info(f"{'='*80}")
 
         logger.info(f"\nBest trial: {study.best_trial.number}")
-        logger.info(f"Best NDCG@50: {study.best_value:.4f}")
+        logger.info(f"Best val AP: {study.best_value:.4f}")
         logger.info(f"\nBest hyperparameters:")
         for key, value in study.best_params.items():
             logger.info(f"  {key}: {value}")
@@ -694,8 +710,8 @@ class HyperparameterSearch:
         df_results = pd.DataFrame([
             {
                 'trial': r['trial'],
-                'mean_ndcg': r['mean_ndcg'],
-                'std_ndcg': r['std_ndcg'],
+                'mean_ap': r['mean_ap'],
+                'std_ap': r['std_ap'],
                 **r['params']
             }
             for r in self.trial_results
@@ -721,7 +737,7 @@ class HyperparameterSearch:
             ax1.plot(trials, values, 'b-', alpha=0.5, label='Trial value')
             ax1.plot(trials, np.maximum.accumulate(values), 'r-', linewidth=2, label='Best so far')
             ax1.set_xlabel('Trial')
-            ax1.set_ylabel('NDCG@50')
+            ax1.set_ylabel('val AP')
             ax1.set_title('Optimization History')
             ax1.legend()
             ax1.grid(True, alpha=0.3)
@@ -745,30 +761,30 @@ class HyperparameterSearch:
             # Plot 3: Hidden channels vs NDCG
             ax3 = axes[1, 0]
             hidden_channels = []
-            ndcg_values = []
+            ap_values = []
             for t in study.trials:
                 if t.value is not None and 'hidden_channels' in t.params:
                     hidden_channels.append(t.params['hidden_channels'])
-                    ndcg_values.append(t.value)
+                    ap_values.append(t.value)
             if hidden_channels:
-                ax3.scatter(hidden_channels, ndcg_values, alpha=0.6)
+                ax3.scatter(hidden_channels, ap_values, alpha=0.6)
                 ax3.set_xlabel('Hidden Channels')
-                ax3.set_ylabel('NDCG@50')
+                ax3.set_ylabel('val AP')
                 ax3.set_title('Hidden Channels vs Performance')
                 ax3.grid(True, alpha=0.3)
 
             # Plot 4: Contrastive weight vs NDCG
             ax4 = axes[1, 1]
             cont_weights = []
-            ndcg_values = []
+            ap_values = []
             for t in study.trials:
                 if t.value is not None and 'contrastive_weight' in t.params:
                     cont_weights.append(t.params['contrastive_weight'])
-                    ndcg_values.append(t.value)
+                    ap_values.append(t.value)
             if cont_weights:
-                ax4.scatter(cont_weights, ndcg_values, alpha=0.6)
+                ax4.scatter(cont_weights, ap_values, alpha=0.6)
                 ax4.set_xlabel('Contrastive Weight')
-                ax4.set_ylabel('NDCG@50')
+                ax4.set_ylabel('val AP')
                 ax4.set_title('Contrastive Weight vs Performance')
                 ax4.grid(True, alpha=0.3)
 
@@ -801,6 +817,13 @@ def main():
                         help='Name for Optuna study')
     parser.add_argument('--seed', type=int, default=42,
                         help='Random seed for reproducibility')
+    parser.add_argument('--split_file', type=str, default=None,
+                        help="HGDC dataset with released 10x5CV splits (e.g. baseline_comparison/HGDC/data/GGNet/"
+                             "dataset_GGNet_ten_5CV.pkl). Without it, the dataset's own kfold_splits are used")
+    parser.add_argument('--split_repeat', type=int, default=0,
+                        help='Which of the 10 HGDC 5-fold repeats to use (default: 0)')
+    parser.add_argument('--inner_val_size', type=float, default=0.15,
+                        help='Fraction of each HGDC training fold held out as inner validation')
 
     args = parser.parse_args()
 
@@ -816,7 +839,10 @@ def main():
         epochs_per_trial=args.epochs_per_trial,
         patience=args.patience,
         study_name=args.study_name,
-        seed=args.seed
+        seed=args.seed,
+        split_file=args.split_file,
+        split_repeat=args.split_repeat,
+        inner_val_size=args.inner_val_size
     )
 
     results = searcher.run()
@@ -824,7 +850,7 @@ def main():
     print(f"\n{'='*60}")
     print("SEARCH COMPLETE")
     print(f"{'='*60}")
-    print(f"Best NDCG@50: {results['best_value']:.4f}")
+    print(f"Best val AP: {results['best_value']:.4f}")
     print(f"\nBest hyperparameters:")
     for key, value in results['best_params'].items():
         print(f"  {key}: {value}")

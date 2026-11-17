@@ -2,13 +2,15 @@
 
 This project is still in development with fixes being continuously generated.
 
-This model is currently being trained on NVIDIA H100 GPU.
+The reported results were trained on NVIDIA H100 GPUs.
 
 A Graph Neural Network framework for cancer driver gene prediction using curvature-enhanced graph representations and contrastive learning.
 
 ## Table of Contents
 
-- [Preliminary Biological Findings](#preliminary-biological-findings)
+- [Results (HGDC protocol, October 2026)](#results-hgdc-protocol-october-2026)
+  - [Baseline comparison](#baseline-comparison-same-hgdc-splits)
+- [End-to-End Pipeline](#end-to-end-pipeline)
 - [Installation](#installation)
 - [Project Structure](#project-structure)
 - [Pipeline Overview](#pipeline-overview)
@@ -16,284 +18,194 @@ A Graph Neural Network framework for cancer driver gene prediction using curvatu
   - [Step 2: Hyperparameter Search](#step-2-hyperparameter-search)
   - [Step 3: Model Training](#step-3-model-training)
   - [Step 4: Result Aggregation](#step-4-result-aggregation)
+  - [Step 5: Candidate Adjustment and Figures](#step-5-candidate-adjustment-and-figures)
 - [Docker Usage](#docker-usage)
+- [Apptainer Usage](#apptainer-usage)
 - [HPC Usage with SLURM](#hpc-usage-with-slurm)
 - [Output Files](#output-files)
 
 
-## Preliminary Biological Findings
+## Results (HGDC protocol, October 2026)
 
-> **Note:** All findings below are computational predictions from the DriverJinn model. They represent statistically significant, cross-validated candidate cancer driver genes and have not yet been experimentally validated. Downstream analysis scripts and plots are in `Downstream/poster_plots.qmd`.
+> **Note:** These are computational predictions and have not been validated experimentally. Results come from `model_results_2026-10-16/` (18 configurations × 5 folds). Figures and tables are produced by `Downstream/publication_figures.qmd`. The full write-up is in [RESULTS.md](RESULTS.md), and the methods are in [MODEL_MATH.md](MODEL_MATH.md).
+>
+> **Earlier results are withdrawn.** The March–May 2026 findings that were listed here (NDCG@50 = 0.478, the 21 enriched hallmarks, the significance-based consensus genes and the seven-gene chromatin cluster) came from code with three bugs. Gene scores used live weights while metrics used EMA weights. The significance test indexed genes incorrectly. Fold aggregation stacked folds by row position, so every "aggregate" ranking was really fold 1's ranking. Those claims should not be cited.
 
 ---
 
-### Cross-Validation Performance Summary
+### Evaluation protocol
 
-Results from the March 2026 systematic evaluation across three gene interaction networks (GGNet, PPNet, PathNet) and three Schur complement augmentation strategies (random, coarsening, priority) at two elimination ratios (ρ=0.1, ρ=0.2):
+- **Splits:** HGDC's released 5-fold splits (repeat 0) from `baseline_comparison/HGDC/data/<net>/dataset_<net>_ten_5CV.pkl`. Train and test genes are drawn only from HGDC's labelled genes (796 drivers, 2,187 non-drivers; 1,809 / 1,301 labelled genes are present in GGNet / PathNet). This makes the numbers directly comparable with HGDC, EMOGI and MTGCN.
+- **Model selection:** 15% of each fold's training genes (stratified) form an inner validation set used for early stopping. Each test fold is evaluated once, at the end.
+- **Unlabelled genes** are never used as labels. They are only scored.
+- **Candidate ranking:** genes are ranked by mean within-fold rank, because raw scores are not calibrated across folds. A *consensus candidate* is an unlabelled gene that is among the top 100 unlabelled genes in ≥ 3 of 5 folds. No significance test is applied.
+- **Length and degree adjustment:** before candidates are named, each unlabelled gene is ranked only against unlabelled genes in the same coding-length decile and network-degree quintile, and FLAGS genes (Shyr et al. 2014) are removed. A *robust candidate* is an adjusted consensus candidate in ≥ 8 of the 18 configurations.
 
-| Network | Strategy | ρ | NDCG@50 | AUROC | AUPRC | P@50 |
-|---------|----------|---|---------|-------|-------|------|
-| GGNet | random | 0.2 | **0.478 ± 0.062** | 0.763 ± 0.030 | 0.230 | 0.432 |
-| GGNet | random | 0.1 | 0.472 ± 0.062 | 0.760 ± 0.020 | 0.230 | 0.420 |
-| GGNet | coarsening | 0.1 | 0.468 ± 0.049 | 0.761 ± 0.017 | 0.231 | 0.412 |
-| GGNet | priority | 0.2 | 0.462 ± 0.054 | 0.760 ± 0.023 | 0.228 | 0.404 |
-| GGNet | coarsening | 0.2 | 0.457 ± 0.058 | 0.758 ± 0.027 | 0.225 | 0.388 |
-| GGNet | priority | 0.1 | 0.456 ± 0.054 | 0.755 ± 0.015 | 0.220 | 0.400 |
-| PathNet | coarsening | 0.2 | 0.446 ± 0.061 | 0.769 ± 0.014 | 0.252 | 0.396 |
-| PathNet | coarsening | 0.1 | 0.442 ± 0.046 | 0.769 ± 0.010 | 0.260 | 0.372 |
-| PathNet | priority | 0.1 | 0.427 ± 0.057 | 0.770 ± 0.008 | 0.259 | 0.356 |
-| PPNet | coarsening | 0.2 | 0.426 ± 0.036 | **0.784 ± 0.008** | 0.230 | 0.372 |
-| PPNet | priority | 0.2 | 0.424 ± 0.047 | 0.784 ± 0.008 | 0.232 | 0.368 |
-| PPNet | coarsening | 0.1 | 0.412 ± 0.035 | 0.787 ± 0.010 | 0.232 | 0.356 |
+---
 
-Per-fold peak metrics for the best overall configuration (GGNet random ρ=0.2):
+### Test-set performance
 
-| Fold | Peak NDCG@50 | Peak AUROC |
-|------|-------------|------------|
-| 1 | 0.3992 | 0.7534 |
-| 2 | 0.5022 | 0.7519 |
-| 3 | 0.4262 | 0.7542 |
-| 4 | 0.5244 | 0.8144 |
-| 5 | 0.5375 | 0.7665 |
-| **Mean** | **0.4779** | **0.7681** |
+Mean ± SD over the 5 HGDC test folds (about 39% of test genes are drivers). AUPRC is average precision:
+
+| Network | Strategy | ρ | AUROC | AUPRC | NDCG@50 | P@50 |
+|---------|----------|---|-------|-------|---------|------|
+| PathNet | priority | 0.2 | **0.835 ± 0.021** | **0.804 ± 0.029** | 0.880 ± 0.045 | 0.852 ± 0.054 |
+| PathNet | priority | 0.1 | 0.829 ± 0.019 | 0.795 ± 0.028 | 0.874 ± 0.030 | 0.852 ± 0.023 |
+| PathNet | coarsening | 0.1 | 0.829 ± 0.018 | 0.795 ± 0.023 | 0.878 ± 0.035 | 0.852 ± 0.036 |
+| PathNet | coarsening | 0.2 | 0.828 ± 0.017 | 0.794 ± 0.027 | 0.873 ± 0.034 | 0.844 ± 0.038 |
+| PathNet | random | 0.2 | 0.822 ± 0.018 | 0.781 ± 0.037 | 0.857 ± 0.057 | 0.840 ± 0.060 |
+| PathNet | random | 0.1 | 0.822 ± 0.021 | 0.779 ± 0.040 | 0.851 ± 0.064 | 0.824 ± 0.065 |
+| PPNet | coarsening | 0.2 | 0.831 ± 0.026 | 0.773 ± 0.044 | 0.878 ± 0.072 | 0.872 ± 0.046 |
+| PPNet | priority | 0.2 | 0.830 ± 0.024 | 0.773 ± 0.043 | 0.884 ± 0.069 | 0.880 ± 0.040 |
+| PPNet | coarsening | 0.1 | 0.828 ± 0.030 | 0.766 ± 0.052 | 0.860 ± 0.078 | 0.848 ± 0.050 |
+| PPNet | random | 0.1 | 0.829 ± 0.026 | 0.762 ± 0.043 | 0.856 ± 0.063 | 0.844 ± 0.046 |
+| PPNet | random | 0.2 | 0.828 ± 0.031 | 0.762 ± 0.048 | 0.859 ± 0.065 | 0.836 ± 0.065 |
+| PPNet | priority | 0.1 | 0.825 ± 0.032 | 0.757 ± 0.055 | 0.849 ± 0.083 | 0.844 ± 0.052 |
+| GGNet | random | 0.1 | 0.813 ± 0.020 | 0.752 ± 0.022 | 0.886 ± 0.031 | 0.856 ± 0.033 |
+| GGNet | random | 0.2 | 0.813 ± 0.020 | 0.751 ± 0.017 | 0.890 ± 0.037 | 0.864 ± 0.043 |
+| GGNet | priority | 0.1 | 0.812 ± 0.022 | 0.749 ± 0.019 | 0.896 ± 0.031 | 0.872 ± 0.039 |
+| GGNet | priority | 0.2 | 0.813 ± 0.021 | 0.749 ± 0.020 | 0.881 ± 0.031 | 0.852 ± 0.030 |
+| GGNet | coarsening | 0.2 | 0.814 ± 0.021 | 0.748 ± 0.022 | 0.886 ± 0.029 | 0.860 ± 0.028 |
+| GGNet | coarsening | 0.1 | 0.806 ± 0.033 | 0.734 ± 0.043 | 0.855 ± 0.044 | 0.820 ± 0.051 |
 
 **Key observations:**
-- GGNet consistently achieves the highest NDCG@50, indicating the best relative ranking of known driver genes
-- PPNet achieves the highest AUROC (~0.787) but lower ranked-list quality, suggesting it separates drivers from non-drivers in aggregate but is less precise at the top
-- PathNet achieves the highest AUPRC in some configurations, reflecting strong pathway-level biological coherence
-- Random augmentation (ρ=0.2) is optimal for GGNet; coarsening is optimal for PPNet and PathNet
-- Priority elimination consistently underperforms all other augmentation strategies across all networks
+- **Network choice dominates.** Mean AUPRC is about 0.79 for PathNet, 0.77 for PPNet and 0.75 for GGNet.
+- **The Schur elimination strategy and ratio have at most a modest effect.** Within a network, AUPRC spans 0.016–0.025 across the six settings, comparable to the fold-to-fold SD (0.017–0.055). The one consistent pattern is on PathNet, where random elimination scores about 0.02 lower than priority and coarsening at both ratios; no paired fold-level test has been run on this. No ablation without contrastive augmentation has been run yet, so the contribution of the augmentation itself is untested.
+- NDCG@50 and P@50 are much higher than in earlier runs because the test set now contains only labelled genes. They are not comparable with the withdrawn numbers.
+- **Tuned hyperparameters did not help.** All 18 configurations were retrained with Optuna-tuned hyperparameters (`model_results_2026-11-13/`). Mean AUROC moved 0.823 → 0.828, AUPRC 0.768 → 0.772 and NDCG@50 0.872 → 0.870, all within the fold SD (~0.03). The table above therefore keeps the October 2026 run. Consensus candidate lists overlap only ~30–60% between the two runs, so individual novel-gene calls should be treated as unstable.
 
 ---
 
-### Model Score Validation Against COSMIC Cancer Gene Census
+### Baseline comparison (same HGDC splits)
 
-#### Score Tier Separation
+All baselines were retrained by `baseline_comparison/run_comparison.py` on HGDC's repeat-0 5-fold splits, so every method sees exactly the same train/test genes. The DriverJinn rows are the reference configuration (random, ρ = 0.2). AUPRC (AP) is average precision; AUPRC (trapz) is the trapezoidal area that HGDC, EMOGI and MTGCN publish. *Folds won* is the number of the 5 test folds on which DriverJinn has the higher AP than that method. Rows are sorted by AP within each network.
 
-The model assigns dramatically different score distributions to genes by their CGC (v103) status, confirming that high scores reflect genuine driver-gene biology:
+| Network | Method | AUROC | AUPRC (AP) | AUPRC (trapz) | P@50 | DriverJinn folds won |
+|---------|--------|-------|------------|---------------|------|----------------------|
+| GGNet | SCIS-CDG | **0.851 ± 0.017** | **0.807 ± 0.025** | **0.807 ± 0.025** | **0.912 ± 0.046** | 0/5 |
+| GGNet | SVM | 0.841 ± 0.022 | 0.779 ± 0.040 | 0.777 ± 0.042 | 0.880 ± 0.042 | 1/5 |
+| GGNet | HGDC | 0.827 ± 0.021 | 0.779 ± 0.023 | 0.778 ± 0.023 | 0.892 ± 0.052 | 0/5 |
+| GGNet | *DriverJinn* | 0.813 ± 0.020 | 0.751 ± 0.017 | 0.750 ± 0.017 | 0.864 ± 0.043 | — |
+| GGNet | MTGCN | 0.818 ± 0.028 | 0.750 ± 0.046 | 0.749 ± 0.047 | 0.824 ± 0.085 | 2/5 |
+| GGNet | ChebNet | 0.788 ± 0.025 | 0.734 ± 0.033 | 0.734 ± 0.033 | 0.852 ± 0.063 | 3/5 |
+| GGNet | EMOGI | 0.787 ± 0.018 | 0.731 ± 0.027 | 0.730 ± 0.027 | 0.836 ± 0.057 | 4/5 |
+| GGNet | GCN | 0.619 ± 0.031 | 0.515 ± 0.033 | 0.510 ± 0.033 | 0.596 ± 0.070 | 5/5 |
+| GGNet | GAT | 0.588 ± 0.031 | 0.462 ± 0.028 | 0.467 ± 0.033 | 0.480 ± 0.032 | 5/5 |
+| PPNet | SCIS-CDG | **0.861 ± 0.016** | **0.833 ± 0.021** | **0.833 ± 0.022** | **0.948 ± 0.023** | 0/5 |
+| PPNet | HGDC | 0.836 ± 0.014 | 0.795 ± 0.014 | 0.794 ± 0.014 | 0.900 ± 0.024 | 1/5 |
+| PPNet | SVM | 0.839 ± 0.014 | 0.788 ± 0.031 | 0.786 ± 0.033 | 0.896 ± 0.017 | 1/5 |
+| PPNet | *DriverJinn* | 0.828 ± 0.031 | 0.762 ± 0.048 | 0.760 ± 0.048 | 0.836 ± 0.065 | — |
+| PPNet | EMOGI | 0.826 ± 0.010 | 0.757 ± 0.036 | 0.762 ± 0.033 | 0.836 ± 0.078 | 2/5 |
+| PPNet | ChebNet | 0.826 ± 0.020 | 0.754 ± 0.026 | 0.760 ± 0.023 | 0.848 ± 0.039 | 3/5 |
+| PPNet | MTGCN | 0.821 ± 0.015 | 0.739 ± 0.029 | 0.738 ± 0.029 | 0.800 ± 0.051 | 3/5 |
+| PPNet | GCN | 0.803 ± 0.019 | 0.734 ± 0.018 | 0.733 ± 0.018 | 0.832 ± 0.030 | 3/5 |
+| PPNet | GAT | 0.769 ± 0.049 | 0.677 ± 0.076 | 0.677 ± 0.070 | 0.776 ± 0.103 | 5/5 |
+| PathNet | SCIS-CDG | **0.870 ± 0.018** | **0.864 ± 0.014** | **0.863 ± 0.014** | **0.932 ± 0.018** | 0/5 |
+| PathNet | MTGCN | 0.850 ± 0.023 | 0.837 ± 0.018 | 0.836 ± 0.018 | 0.912 ± 0.011 | 1/5 |
+| PathNet | HGDC | 0.840 ± 0.025 | 0.829 ± 0.030 | 0.828 ± 0.030 | 0.900 ± 0.037 | 1/5 |
+| PathNet | SVM | 0.843 ± 0.019 | 0.823 ± 0.017 | 0.822 ± 0.018 | 0.892 ± 0.018 | 1/5 |
+| PathNet | EMOGI | 0.828 ± 0.022 | 0.807 ± 0.015 | 0.814 ± 0.017 | 0.884 ± 0.026 | 1/5 |
+| PathNet | ChebNet | 0.825 ± 0.011 | 0.804 ± 0.012 | 0.812 ± 0.009 | 0.884 ± 0.036 | 1/5 |
+| PathNet | *DriverJinn* | 0.822 ± 0.018 | 0.781 ± 0.037 | 0.780 ± 0.038 | 0.840 ± 0.060 | — |
+| PathNet | GCN | 0.801 ± 0.045 | 0.775 ± 0.050 | 0.773 ± 0.051 | 0.860 ± 0.035 | 3/5 |
+| PathNet | GAT | 0.788 ± 0.015 | 0.745 ± 0.018 | 0.745 ± 0.020 | 0.816 ± 0.030 | 4/5 |
 
-| CGC Tier | Median Score |
-|----------|-------------|
-| Tier 1 (518 high-confidence drivers) | **0.987** |
-| Tier 2 | **0.899** |
-| Non-CGC (remainder of genome) | **0.285** |
-
-#### CGC Enrichment Curve
-
-At the top-K cutoff, the fraction of COSMIC (v103) Tier 1 genes in the ranked list far exceeds random expectation:
-- Random baseline: ~4.6% Tier 1 at any K (518 of ~11,000 gene universe)
-- **At K=50**: ~40% Tier 1 precision (~8.7× enrichment over random)
-- **At K=500**: enrichment remains ~6× above baseline
-
-#### Precision@K
-
-| K | Precision (Tier 1) | Precision (Any CGC) | Tier 1 Baseline | Any-CGC Baseline |
-|---|-------------------|--------------------|-----------------|--------------------|
-| 10 | ~34% | ~46% | 4.6% | 5.8% |
-| 50 | ~31% | ~37% | 4.6% | 5.8% |
-| 200 | ~30% | ~35% | 4.6% | 5.8% |
-
-#### Rank Stability (Top-30 across Folds)
-
-The top-ranked genes are dominated by known Tier 1 drivers with highly stable ranks across all 5 folds — providing internal validation of the model's consistency. Consistent top-ranking known drivers include: **POLR2A** (rank 1 in 4/5 folds), UBC, HDAC1, RPS27A, ITGB1, HSP90AA1, UBB, JAK1, POLR2B, ATM. Novel genes appearing stably in the top-30: **SOS1, SMAD3, ERCC2, HDAC2, CREBBP**.
-
----
-
-### Pathway Enrichment Analysis
-
-#### Hallmark Enrichment (Top-100 Predictions, Fisher's Exact Test, FDR-BH)
-
-21 COSMIC cancer hallmarks are significantly enriched (p.adj < 0.05) in the top-100 predicted genes:
-
-| Hallmark | p.adj |
-|----------|-------|
-| Role in cancer | 1.4e-24 |
-| Function summary | 1.4e-24 |
-| Escaping programmed cell death | 4.1e-19 |
-| Types of alteration in cancer | 1.2e-18 |
-| Genome instability and mutations | 4.8e-17 |
-| Invasion and metastasis | 4.8e-17 |
-| Impact of mutation on function | 6.8e-16 |
-| Differentiation and development | 9.3e-16 |
-| Proliferative signalling | 9.8e-16 |
-| Cell division control | 2.5e-15 |
-| Tumour promoting inflammation | 3.2e-13 |
-| Cell replicative immortality | 3.6e-11 |
-| Escaping immune response to cancer | 3.7e-11 |
-| Angiogenesis | 3.7e-11 |
-| Senescence | 2.6e-10 |
-| Fusion partner | 9.8e-9 |
-| Clinical impact | 1.0e-8 |
-| Global regulation of gene expression | 1.7e-8 |
-| Change of cellular energetics | 6.9e-8 |
-| Suppression of growth | 2.9e-6 |
-| Mouse model | 1.3e-4 |
-
-#### KEGG Pathway Enrichment (Top-50 Predictions, via Enrichr API)
-
-Top enriched KEGG pathways in the model's highest-confidence predictions:
-
-| KEGG Pathway | Biological Relevance |
-|-------------|---------------------|
-| RNA polymerase | Core transcription machinery; POLR2A/POLR2B consistently top-ranked |
-| Cell cycle | Checkpoint regulation; consistent with CDK/cyclin predictions |
-| Nucleotide excision repair | DNA damage; GTF2H complex genes predicted as novel drivers |
-| Basal transcription factors | TFIIH/TFIID components; transcriptional dysregulation mechanism |
-| Chronic myeloid leukemia | Known CML gene set overlap in top predictions |
-| Pathways in cancer | Multi-pathway driver gene convergence |
-| TGF-beta signaling | Growth suppression; consistent with TGFBR predictions |
-| Ubiquitin mediated proteolysis | E3 ligase complex dysregulation (BTRC, TRAF6, ANAPC) |
-| Huntington disease | Broad transcriptional co-repressor complex overlap |
-| Thyroid hormone signaling | Nuclear receptor coactivator predictions |
+**Takeaways:**
+- **DriverJinn does not beat the state of the art.** SCIS-CDG is best on every network and every metric, and beats DriverJinn on all 15 test folds (mean AP gap 0.056 / 0.071 / 0.082 on GGNet / PPNet / PathNet). HGDC and the SVM baseline also beat DriverJinn on 13 and 12 of 15 folds respectively.
+- **DriverJinn is mid-pack.** It clearly beats plain GCN and GAT, and is roughly tied with EMOGI, ChebNet and MTGCN on GGNet and PPNet (within one fold SD). On PathNet it ranks below every method except GCN and GAT.
+- **Even the best DriverJinn configuration falls short.** PathNet priority ρ = 0.2 (AP 0.804 ± 0.029, Table above) still trails SCIS-CDG (0.864), MTGCN (0.837), HGDC (0.829) and SVM (0.823) on PathNet.
+- AP and trapezoidal AUPRC differ by ≤ 0.008 for every method, so the choice of AUPRC flavour does not change any ranking.
+- Per-fold scores are in `baseline_comparison/results/folds_<method>.csv`, means in `summary.csv`, and paired fold-level differences in `pairwise.csv`. SCIS-CDG runs in a separate Linux environment (DGL + CUDA 11.8).
 
 ---
 
-### Network Topology Analysis
+### Recovery of known drivers (GGNet, random, ρ = 0.2)
 
-#### PPI Degree Correlation
+| Measure | Value | Random |
+|---------|-------|--------|
+| Precision@10 (test fold) | 0.96 | 0.39 |
+| Precision@50 | 0.86 | 0.39 |
+| Precision@200 | 0.59 | 0.39 |
+| Median out-of-fold percentile, CGC Tier 1 (n = 484) | 0.77 | — |
+| Median out-of-fold percentile, non-CGC labelled genes (n = 1,223) | 0.37 | — |
 
-High-scoring genes are significantly more connected in the human protein-protein interaction network:
-
-- **Spearman ρ = 0.476** between PPI degree and model score (p ≈ 0)
-- Median PPI degree: all genes = **61**, CGC Tier 1 = **126**, top-100 predicted = **177**
-
-The model preferentially scores hub genes — which is consistent with cancer driver biology, since essential cellular regulators tend to be both highly connected and oncogenically dysregulated. This is not a bias artifact: hub proteins in the top-100 are specifically those with well-established roles in transcription, DNA repair, and chromatin remodeling.
-
-#### PPI Subnetwork (Top-50 Predictions)
-
-The top-50 predicted genes form a dense subgraph: **density = 0.0555**, 8 connected components, largest component = 43 nodes. The largest component is anchored by POLR2A, UBC, HDAC1, and their interaction partners — reflecting the model's coherent prediction of a transcriptional regulatory hub as a central driver mechanism.
+Known drivers rank consistently at the top of every fold. ATM, EP300, ARID1A, CREBBP, KMT2C and KMT2D are in the top 10 in most folds. Adjusted consensus lists overlap strongly across the six augmentation settings (Jaccard 0.55–0.85 on GGNet).
 
 ---
 
-### Cross-Network Consensus Predictions
+### Length and hub bias in raw rankings
 
-The definitive high-confidence novel driver candidates are genes ranked highly across all three independent networks (GGNet × PathNet × PPNet, each using random augmentation ρ=0.2). The combined rank is computed as the sum of per-network ranks; lower is better.
+Raw rankings favour long genes and network hubs, so the candidates below use the adjusted rankings. Earlier versions of this section listed raw candidates such as OBSCN and SYNE1. These are FLAGS genes, so they are no longer candidates.
 
-| Combined Rank | Gene | GGNet | PathNet | PPNet | CGC Status |
-|---------------|------|-------|---------|-------|------------|
-| 1 | **SIN3A** | 31 | 20 | 118 | **Novel** |
-| 2 | **HDAC2** | 23 | 82 | 69 | **Novel** |
-| 3 | NCOR2 | 121 | 46 | 91 | Tier 1 |
-| 4 | **SMARCC1** | 58 | 149 | 85 | **Novel** |
-| 5 | **KMT2E** | 255 | 22 | 23 | **Novel** |
-| 6 | SOS1 | 18 | 91 | 193 | Tier 1 |
-| 7 | CBFB | 21 | 84 | 209 | Tier 1 |
-| 8 | KDR | 100 | 113 | 103 | Tier 1 |
-| 9 | **SMARCC2** | 92 | 29 | 196 | **Novel** |
-| 10 | **SMARCA2** | 190 | 68 | 61 | **Novel** |
-| 11 | **RBBP4** | 13 | 47 | 294 | **Novel** |
-| 12 | EED | 218 | 34 | 115 | Tier 2 |
-| 13 | **FRS2** | 88 | 132 | 147 | **Novel** |
-| 14 | **DOCK7** | 290 | 37 | 64 | **Novel** |
-| 15 | **NCOA3** | 319 | 4 | 80 | **Novel** |
-| 16 | **MED1** | 129 | 108 | 170 | **Novel** |
-| 17 | CHD4 | 82 | 19 | 315 | Tier 1 |
-| 18 | **SHC1** | 102 | 281 | 36 | **Novel** |
-| 19 | **MARK3** | 216 | 107 | 100 | **Novel** |
-| 20 | **HDAC1** | 3 | 122 | 301 | **Novel** |
+| Across the 18 configurations | Raw | Adjusted, FLAGS removed |
+|------------------------------|-----|-------------------------|
+| Consensus candidates per configuration | 58–96 | 51–84 |
+| Share in the longest CDS decile (10% expected) | 41–73% | ≤ 5.2% |
+| Median CDS length | 2.8–7.9 kb | 1.1–1.5 kb |
 
-14 of the top-20 cross-network consensus genes are **novel** (non-CGC) candidates, providing a high-confidence shortlist for experimental follow-up.
+The adjustment changes the lists substantially: only 16–38 genes per configuration are shared between the raw and adjusted lists.
+
+Hub bias also affects performance on labelled genes. Out-of-fold percentile correlates with degree (Spearman r = 0.32 on GGNet), and test AUROC is lowest in the lowest-degree quintile (0.73 vs 0.76–0.83 in the other quintiles).
 
 ---
 
-### Highlighted Finding: Chromatin Remodeling Cluster
+### Unlabelled CGC genes as external validation
 
-The model's most striking biological finding is the consistent, high-confidence prediction of a tightly connected chromatin remodeling cluster as novel cancer driver genes. Seven genes from three interacting chromatin regulatory complexes are predicted with near-perfect model scores across all folds and all network configurations:
+HGDC leaves some COSMIC CGC (v103) genes unlabelled, and the model never sees them as positives. Adjusted consensus candidates are enriched for these genes in 15 of 18 configurations (one-sided Fisher, P < 0.05): 5 of 6 on GGNet, 6 of 6 on PathNet and 4 of 6 on PPNet. Raw lists were significant in all 12 GGNet and PathNet configurations but in none on PPNet. Example configurations:
 
-| Gene | Complex | Score (all folds) | CV | Percentile vs Tier 1 | Mean Rank (9 conditions) |
-|------|---------|------------------|----|----------------------|--------------------------|
-| **HDAC1** | SIN3/HDAC | >0.9999 | ≈0 | **100th** | 1095.2 |
-| **HDAC2** | SIN3/HDAC | >0.9999 | ≈0 | 98th | 674.9 |
-| **SIN3A** | SIN3/HDAC | >0.9999 | ≈0 | 98th | 119.9 |
-| **SMARCC1** | SWI/SNF | >0.9999 | ≈0 | 97th | 221.3 |
-| **SMARCC2** | SWI/SNF | >0.9999 | ≈0 | 94th | 166.2 |
-| **RBBP4** | NuRD/PRC2 | >0.9999 | ≈0 | 99th | 732.3 |
-| **KMT2E** | KMT complex | >0.9999 | ≈0 | 85th | 86.2 |
+| Configuration | Raw: candidates / CGC / OR / P | Adjusted: candidates / CGC / OR / P |
+|---------------|--------------------------------|-------------------------------------|
+| GGNet random ρ=0.2 | 96 / 6 / 10.5 / 4.8e-5 | 84 / 3 / 5.5 / 0.020 |
+| PathNet priority ρ=0.2 | 67 / 5 / 10.4 / 2.2e-4 | 69 / 3 / 5.6 / 0.020 |
+| PathNet random ρ=0.2 | 83 / 4 / 6.4 / 5.0e-3 | 51 / 3 / 7.8 / 8.8e-3 |
+| PPNet random ρ=0.2 | 61 / 2 / 5.1 / 0.064 | 63 / 1 / 2.4 / 0.35 |
 
-All seven genes score above 85–100% of all confirmed COSMIC Tier 1 cancer drivers, with coefficient of variation ≈ 0 across all 5 cross-validation folds (i.e., no fold uncertainty). The cluster forms a highly connected subgraph (38 nodes, 497 edges), indicating functional co-regulation. None are currently listed in COSMIC CGC.
+Recovered CGC genes include ITGB1, CBFB, CTNNA1, POLR2A, RELA, RRAS2 and SOS1. The absolute counts are small (1–4 per configuration after adjustment), because HGDC already labels most CGC genes.
 
-**Why this matters:** SIN3A/HDAC1/HDAC2 are core components of the SIN3–HDAC co-repressor, which silences tumor suppressor loci through histone deacetylation. SMARCC1/SMARCC2 are catalytic subunits of the SWI/SNF chromatin remodeling complex, the most frequently mutated chromatin remodeling complex in cancer (~20% of all human cancers). RBBP4 bridges the NuRD and PRC2 repressive complexes. KMT2E is a H3K4 methyltransferase whose loss disrupts epigenetic memory. The convergent prediction of all members of these interacting complexes — across three independent gene-interaction networks — strongly implicates **SIN3–HDAC–SWI/SNF co-regulatory axis dysregulation** as an underappreciated cancer driver mechanism.
+No COSMIC hallmark is enriched among consensus candidates (smallest unadjusted P = 0.30). This test has limited power, because hallmarks are annotated only for CGC genes.
 
 ---
 
-### Per-Network Novel Candidate Gene Tables
+### Robust candidates
 
-The following tables list the highest-ranked novel candidates (consensus-significant: significant in all 5 folds, `is_known_driver = False`) from the best configuration of each network type.
+Twenty-four unlabelled genes are adjusted consensus candidates in ≥ 8 of the 18 configurations. Numbers in brackets give the configurations recovering each gene:
 
-#### GGNet — random, ρ=0.2 (best overall NDCG@50 = 0.478)
+| Group | Genes |
+|-------|-------|
+| RTK signalling | EPHA2 (18), SH3GL2 (12), SHC1 (10), CRKL (10), BTC (10), FYN (9) |
+| Chromatin & transcription factors | HDAC1 (17), HDAC2 (13), CBFB (12), BRD2 (11), PRMT6 (11), MEIS1 (11) |
+| Integrin adhesion | ITGB1 (17), ITGB3 (13), ITGA2B (9), FLRT2 (8) |
+| RNA polymerase II | POLR2K (12), POLR2C (10), POLR2G (8), MNAT1 (8) |
+| Cell cycle & survival | CDKN2B (12), PPP1R13L (11), RFC2 (8), BNIP3L (8) |
 
-| Rank | Gene | Known Role in Cancer Biology |
-|------|------|------------------------------|
-| 18 | **SOS1** | RAS guanine nucleotide exchange factor; activates MAPK/PI3K cascades |
-| 42 | **MNAT1** | CDK-activating kinase (CAK) assembly subunit; cell cycle entry |
-| 59 | **TRAF6** | E3 ubiquitin ligase; NF-κB and JNK signaling; anti-apoptotic |
-| 69 | **MRE11** | MRN complex; DSB sensing and homologous recombination |
-| 81 | **RAD50** | MRN complex; DNA double-strand break repair |
-| 84 | **GTF2H1** | TFIIH complex; nucleotide excision repair and basal transcription |
-| 96 | **PDS5B** | Cohesin complex; chromosome cohesion and segregation |
-| 106 | **DYNC1H1** | Cytoplasmic dynein heavy chain; mitotic spindle assembly |
-| 124 | **AGO3** | Argonaute; miRNA-mediated gene silencing |
-| 133 | **GTF2H4** | TFIIH subunit; NER and CDK7-mediated transcription |
-| 147 | **RPTOR** | Raptor; mTORC1 scaffold and nutrient-sensing growth regulator |
-| 215 | **PAK1** | p21-activated kinase; RAS/MAPK oncogenic signaling; frequently amplified in breast cancer |
-| 221 | **BTRC** | β-TrCP; E3 ubiquitin ligase targeting β-catenin (Wnt) and IκB |
-| 239 | **REV3L** | DNA polymerase ζ catalytic subunit; translesion synthesis |
-| 254 | **FANCM** | Fanconi anemia complementation group M; replication fork restart |
-| 283 | **PLCG2** | Phospholipase Cγ2; B-cell receptor / RAS signaling |
+ITGB1 (Tier 2) and CBFB (Tier 1) are CGC genes that HGDC does not label. Per-network counts and KEGG enrichment are in [RESULTS.md](RESULTS.md) §3.7.
 
-#### PathNet — coarsening, ρ=0.2 (highest AUPRC per-fold peak)
-
-| Rank | Gene | Known Role in Cancer Biology |
-|------|------|------------------------------|
-| 14 | **DYRK1A** | Dual-specificity kinase; cyclin D1 degradation; DYRK1A loss disrupts G1/S |
-| 37 | **PTPRJ** | Receptor tyrosine phosphatase; suppresses EGFR/PDGFR signaling; confirmed tumor suppressor |
-| 75 | **NCOA6** | Nuclear receptor coactivator 6; transcriptional co-activator of multiple oncogenic NRs |
-| 76 | **PTPRF** | Receptor tyrosine phosphatase; negative regulator of EGFR/insulin signaling |
-| 94 | **RBL1** | p107 retinoblastoma-like; E2F repressor; cell cycle tumor suppressor |
-| 97 | **PAXIP1** | PTIP; BRCA1-associated complex; histone H3K4 methylation at DSBs |
-| 120 | **GLI3** | Hedgehog pathway transcription factor; activator/repressor switch |
-| 151 | **HIPK2** | Homeodomain-interacting protein kinase 2; phospho-activates p53 Ser46 |
-| 163 | **MDC1** | Mediator of DNA damage checkpoint 1; H2AX reader; DSB signal amplifier |
-| 174 | **SMC3** | Cohesin structural subunit; mutated in acute myeloid leukemia |
-| 181 | **MNAT1** | CAK assembly factor *(also top-ranked in GGNet — cross-network consistent)* |
-| 190 | **MED13** | Mediator complex kinase module; transcriptional CDK8 substrate |
-| 194 | **HDAC2** | Histone deacetylase; epigenetic silencing of tumor suppressors |
-| 195 | **TNKS** | Tankyrase 1; PARP/Wnt — degrades AXIN to activate β-catenin |
-| 223 | **MECP2** | Methyl-CpG binding protein; epigenetic reader; Xq28 amplification in cancer |
-| 272 | **FANCI** | Fanconi anemia complementation group I; inter-strand crosslink repair |
-
-#### PPNet — coarsening, ρ=0.2 (highest AUROC = 0.784)
-
-| Rank | Gene | Known Role in Cancer Biology |
-|------|------|------------------------------|
-| 18 | **SIN3B** | SIN3–HDAC co-repressor complex; silences pro-proliferative genes |
-| 60 | **SETD1A** | H3K4me3 methyltransferase; frequently mutated in clonal hematopoiesis |
-| 80 | **NEK1** | NIMA-related kinase; G2/M checkpoint and centrosome duplication |
-| 84 | **SIN3A** | Core SIN3–HDAC scaffold; p53- and MYC-mediated transcriptional repression |
-| 86 | **CHD3** | Chromodomain–helicase–DNA binding; NuRD chromatin remodeling complex |
-| 112 | **MAML3** | Mastermind-like coactivator; Notch transcriptional complex |
-| 126 | **MED13L** | Mediator complex; MED13L mutations cause intellectual disability and cancer predisposition |
-| 127 | **TAF1** | TATA-binding protein–associated factor; largest TFIID subunit; kinase activity |
-| 219 | **RIF1** | Replication timing regulator; NHEJ/DSB repair pathway choice |
-| 289 | **PIK3CD** | PI3Kδ catalytic subunit; activated in hematologic malignancies |
-| 297 | **REST** | RE1-silencing transcription factor; represses neuronal differentiation; oncogenic in non-neuronal cancers |
+Candidate lists depend heavily on the network. Under random elimination at ρ = 0.2, 72 adjusted candidates are unique to GGNet, 37 to PathNet and 49 to PPNet, and only EPHA2 and HDAC1 are shared by all three. Only EPHA2, ITGB1 and HDAC1 are recovered in at least five of the six configurations on every network.
 
 ---
 
-### Functional Pathway Themes
+### HDAC1 and HDAC2
 
-Grouping top novel predictions by biological function reveals recurring pathway themes across all network configurations:
+HDAC1 (17 of 18) and HDAC2 (13 of 18) are the most consistently recovered chromatin regulators. The earlier seven-gene "SIN3–HDAC–SWI/SNF axis" is not supported:
 
-| Pathway / Process | Representative Genes | Significance |
-|-------------------|---------------------|--------------|
-| **DNA Damage Response** | MRE11, RAD50, GTF2H1/4, REV3L, FANCM, FANCI, MDC1, PAXIP1, RIF1 | Genomic instability is a hallmark of cancer; these predictions collectively implicate DSB repair and replication stress as central driver mechanisms |
-| **Transcription & Mediator Complex** | MED13, MED13L, MNAT1, TAF1, GTF2H1, POLR2B | Transcriptional dysregulation through the Mediator/TFIIH axis; consistent with CDK8 oncogenic amplification in colorectal cancer |
-| **Chromatin Remodeling & Epigenetics** | HDAC1/2, SIN3A/B, SMARCC1/2, RBBP4, KMT2E, CHD3, SETD1A | SIN3–HDAC–SWI/SNF co-regulatory axis; epigenetic reprogramming is central to tumor cell plasticity |
-| **RAS / MAPK / PI3K Signaling** | SOS1, PAK1, PLCG2, PIK3CD, RPTOR | SOS1 gain-of-function is an established RAS activator in RASopathy-associated cancers; PAK1 amplification is frequent in luminal breast cancer |
-| **Cell Cycle & Checkpoint** | MNAT1, RPTOR, RBL1, DYRK1A, NEK1, BTRC, SMC3, PDS5B | Dysregulation of multiple independent G1/S and G2/M checkpoints |
-| **Wnt / Notch Signaling** | BTRC, TNKS, GLI3, MAML3 | Convergent developmental pathway activation through β-catenin and Notch coactivation |
-| **Cohesin Complex** | PDS5B, SMC3, SMARCC1/2 | Cohesin mutations drive chromosomal instability; SMC3 is recurrently mutated in AML |
-| **Fanconi Anemia / ICL Repair** | FANCM, FANCI | Fanconi pathway defects sensitize cells to replication stress and promote carcinogenesis |
+| Gene | Consensus configs (of 18): raw → adjusted | Notes |
+|------|-------------------------------------------|-------|
+| HDAC1 | 12 → 17 | At least 5 of 6 configurations on every network |
+| HDAC2 | 8 → 13 | All 12 GGNet and PathNet configurations; 1 on PPNet |
+| KMT2E | 8 → 4 | Not a robust candidate |
+| SIN3A | 9 → 2 | PathNet only (priority and coarsening, ρ = 0.2) |
+| SMARCC1 | 0 → 1 | Not supported |
+| SMARCC2 | 4 → 0 | Not supported |
+
+RBBP4 is excluded because it is an HGDC labelled non-driver, so it cannot be a candidate under this protocol.
+
+---
+
+### Known limitations
+
+- **Checkpoints do not reproduce the saved scores.** Reloading an October 2026 checkpoint gives per-gene scores with Spearman 0.84 against the saved `*_all_genes_scored.csv`; the cause is unresolved. All results above come from the saved scores, and per-gene pathway-attention analysis is blocked until this is resolved.
+- **Not competitive with current baselines.** On the same splits DriverJinn trails SCIS-CDG, HGDC and an SVM on every network (see [Baseline comparison](#baseline-comparison-same-hgdc-splits)).
+- **Analyses not yet run:** the no-augmentation, curvature-feature and attention-mode ablations.
 
 ## End-to-End Pipeline
 
@@ -339,6 +251,8 @@ Grouping top novel predictions by biological function reveals recurring pathway 
 │                                                                             │
 │  FOR each fold k = 1 … 5:                                                   │
 │    ├── Load preprocessed data + augmented views                             │
+│    ├── Load HGDC's fold (--split_file); labelled genes only                 │
+│    ├── Hold out 15% of training genes (stratified) for early stopping       │
 │    ├── Fit StandardScaler on fold k's training nodes only (no leakage)      │
 │    ├── Instantiate ContrastiveDriverGenePredictor  (DriverGenePredictor.py) │
 │    │     • CurvatureAwareGNN encoder (dual-pathway: pos/neg curvature)      │
@@ -373,31 +287,40 @@ Grouping top novel predictions by biological function reveals recurring pathway 
 │            • Metrics: NDCG@50, AUROC, AUPRC, MRR, P@50                      │
 │            • Early stopping on smoothed NDCG@50 (EMA α=0.3)                 │
 │            • Best checkpoint saved at peak val NDCG@50                      │
+│          Test fold evaluated once, after training                           │
 │                                                                             │
 │  Output per fold:                                                           │
 │    • trained_models/.../fold_k_best_model.pt                                │
-│    • model_results/.../fold_k_metrics.csv                                   │
-│    • model_results/.../fold_k_all_genes_scored.csv                          │
-│    • model_results/.../fold_k_training_history.csv                          │
+│    • model_results/.../*_kfold_metrics.csv                                  │
+│    • model_results/.../*_all_genes_scored.csv                               │
+│    • model_results/.../*_training_history.pkl                               │
 └─────────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │  STEP 4 — Aggregation  (aggregate_fold_results.py)                          │
 │                                                                             │
-│  • Aggregate per-fold gene scores:                                          │
-│      - Mean score, std, median score                                        │
-│      - Median rank (Borda count)                                            │
-│      - Significance count (# folds where gene is significant)               │
-│      - consensus_significant: significant in ≥50% of folds                  │
-│  • Aggregate metrics: mean ± std NDCG@50, AUROC, AUPRC across folds         │
-│  • Novel predictions only: filters to true_labels == 0                      │
-│    (excludes known drivers from ranked output)                              │
+│  • Aggregate per-fold gene scores (aligned by gene_id):                     │
+│      - Mean / median / std of within-fold rank; mean score                  │
+│      - folds_top100: # folds where gene is in top 100 unlabelled genes      │
+│      - consensus_top100: unlabelled and folds_top100 ≥ 3                    │
+│  • Aggregate test metrics: mean ± std AUROC, AUPRC, NDCG@50, P@50, MRR      │
 │                                                                             │
 │  Output:                                                                    │
 │    • model_results/.../aggregated_all_genes.csv                             │
 │    • model_results/.../aggregated_metrics_summary.csv                       │
-│    • model_results/.../aggregated_training_curves.png                       │
+│    • model_results/.../combined_training_curves.png                         │
+└─────────────────────────────────────────────────────────────────────────────┘
+                                    │
+                                    ▼
+┌─────────────────────────────────────────────────────────────────────────────┐
+│  STEP 5 — Candidate adjustment  (Downstream/length_adjusted_candidates.py)  │
+│                                                                             │
+│  • Re-rank unlabelled genes within coding-length decile × degree quintile   │
+│  • Remove FLAGS genes, recompute consensus (top 100 in ≥ 3 of 5 folds)      │
+│                                                                             │
+│  Output: Downstream/length_adjusted/                                        │
+│  Figures: Downstream/publication_figures.qmd                                │
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
@@ -442,7 +365,7 @@ docker pull cydarthvader/driverjinn:latest
 
 ```
 GNNDriver/
-├── data/                       # Input gene interaction network datasets
+├── data/                       # Input networks and HGDC's 10×5CV splits (dataset_<net>_ten_5CV.pkl)
 ├── graph_builder/              # Graph curvature enhancement pipeline
 │   ├── curvature_pipeline.py   #   Main preprocessing entry point
 │   ├── build_network.py        #   Network construction
@@ -457,27 +380,37 @@ GNNDriver/
 │   ├── multi_layer_attention.py#   Multi-head attention layers
 │   ├── support_models.py       #   EMA, RankingLoss, EarlyStopping, WarmupScheduler
 │   ├── hyperparameter_search.py#   Optuna-based hyperparameter optimization
-│   └── aggregate_fold_results.py#  Cross-fold result aggregation
+│   ├── aggregate_fold_results.py#  Cross-fold result aggregation
+│   └── test_ranking_pipeline.py#   Tests for the ranking pipeline
 ├── Downstream/                 # Downstream analysis and visualizations
+│   ├── length_adjusted_candidates.py # Length/degree-adjusted consensus candidates
+│   ├── flags_shyr2014.txt      #   FLAGS gene list
+│   ├── length_adjusted/        #   Adjusted candidate tables (generated)
+│   ├── publication_figures.qmd #   Current figures and tables
+│   ├── poster_plots.qmd        #   Poster figures (carries withdrawn numbers)
 │   ├── plots/                  #   Generated figures
 │   └── cosmic/                 #   COSMIC cancer gene census reference data
 ├── utils/
 │   └── logging_manager.py      # Logging configuration
 ├── curvature_output/           # Preprocessed graph datasets (generated)
-├── model_results/              # Training results and plots (generated)
-├── trained_models/             # Model checkpoints (generated)
+├── model_results_<tag>/        # Training results and plots (generated)
+├── trained_models_<tag>/       # Model checkpoints (generated)
 ├── hyperparam_results/         # Hyperparameter search outputs (generated)
-├── run_model_array.sh          # SLURM script: parallel fold training (array job)
+├── RESULTS.md                  # Results write-up
+├── MANUSCRIPT.md               # Manuscript draft
+├── MODEL_MATH.md               # Methods and model mathematics
+├── run_model_array.sh          # SLURM script: 90-task array (18 configurations × 5 folds)
 ├── run_hyperparam_search.sh    # SLURM script: hyperparameter search
 ├── preprocess_script.sh        # SLURM script: graph preprocessing
 ├── environment.yaml            # Conda environment specification
 ├── requirements.txt            # Pip requirements
+├── entrypoint.sh               # Docker entrypoint
 └── Dockerfile                  # Docker configuration
 ```
 
 ## Pipeline Overview
 
-The full pipeline consists of four sequential steps:
+The full pipeline consists of five sequential steps:
 
 ### Step 0: Dataset Format
 
@@ -626,7 +559,7 @@ NT-Xent / InfoNCE     Scalar gene score
 Total Loss = α · L_contrastive + (1 - α) · L_ranking
 
 L_contrastive = NT-Xent (InfoNCE) between augmented view pairs
-                temperature τ = 0.3–0.4
+                temperature τ = 0.3
 
 L_ranking = BPR (Bayesian Personalized Ranking)
             - Curriculum hard negatives: hard_frac ramps 25%→75% over training
@@ -643,7 +576,10 @@ Trains the contrastive driver gene predictor with ranking-based loss. Supports t
 ```bash
 python -m model.train_model \
     --dataset_file curvature_output/GGNet_contrastive_v2_random_r0.2_stratified5CV.pkl \
-    --num_epochs 1200 \
+    --split_file data/dataset_GGNet_ten_5CV.pkl \
+    --split_repeat 0 \
+    --inner_val_size 0.15 \
+    --num_epochs 1000 \
     --hidden_channels 128 \
     --projection_dim 96 \
     --num_layers 2 \
@@ -651,7 +587,7 @@ python -m model.train_model \
     --num_folds 5 \
     --train_metrics_dir model_results_$(date +%F) \
     --model_out_dir trained_models_$(date +%F) \
-    --model_out_prefix PathNet_priority_r0.2 \
+    --model_out_prefix GGNet_random_r0.2 \
     --temperature 0.3 \
     --dropout 0.3 \
     --attention_mode hybrid \
@@ -681,6 +617,9 @@ python -m model.train_model \
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--dataset_file` | str | **Required** | Input curvature-enhanced dataset pickle file |
+| `--split_file` | str | None | HGDC dataset with released 10×5CV splits. Replaces the dataset's own folds: train/test over HGDC's labelled genes, with a 15% inner validation split for early stopping. Used for all reported results |
+| `--split_repeat` | int | 0 | Which of HGDC's 10 five-fold repeats to use |
+| `--inner_val_size` | float | 0.15 | Fraction of each training fold held out for early stopping |
 | `--train_metrics_dir` | str | `model_results` | Output directory for metrics and plots |
 | `--model_out_dir` | str | `trained_models` | Directory for model checkpoints |
 | `--model_out_prefix` | str | `""` | Prefix for output filenames |
@@ -691,31 +630,31 @@ python -m model.train_model \
 |----------|------|---------|-------------|
 | `--num_folds` | int | 5 | Number of cross-validation folds |
 | `--specific_folds` | int list | None | Train only specific folds (space-separated, 1-indexed) |
-| `--num_epochs` | int | 200 | Training epochs per fold |
+| `--num_epochs` | int | 1200 | Training epochs per fold (reported results used 1000) |
 | `--seed` | int | 42 | Random seed for reproducibility |
 
 **Model Architecture:**
 
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
-| `--hidden_channels` | int | 256 | Hidden layer dimensions |
-| `--projection_dim` | int | 128 | Contrastive projection dimensions |
-| `--num_layers` | int | 3 | Number of GNN layers |
+| `--hidden_channels` | int | 128 | Hidden layer dimensions |
+| `--projection_dim` | int | 96 | Contrastive projection dimensions |
+| `--num_layers` | int | 2 | Number of GNN layers |
 | `--num_heads` | int | 4 | Number of attention heads |
 | `--concat_heads` | flag | False | Concatenate attention heads (vs average) |
 | `--negative_slope` | float | 0.2 | LeakyReLU negative slope in GNN layers |
 | `--attention_mode` | choice | `hybrid` | `standard`, `edge_feature`, `bias`, `gated`, `hybrid` |
 | `--pathway_aggregator` | choice | `attention` | `attention`, `concat`, `hierarchical`, `mean` |
-| `--aggregation` | str | `add` | Message passing aggregation method |
+| `--aggregation` | str | `max` | Message passing aggregation method |
 
 **Optimization:**
 
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
-| `--learning_rate` | float | 1e-3 | AdamW learning rate |
-| `--weight_decay` | float | 1e-5 | AdamW weight decay (L2 regularization) |
-| `--dropout` | float | 0.2 | Dropout rate |
-| `--temperature` | float | 0.4 | NT-Xent contrastive loss temperature |
+| `--learning_rate` | float | 5e-4 | AdamW learning rate |
+| `--weight_decay` | float | 5e-4 | AdamW weight decay (L2 regularization) |
+| `--dropout` | float | 0.3 | Dropout rate |
+| `--temperature` | float | 0.3 | NT-Xent contrastive loss temperature |
 | `--gradient_accumulation_steps` | int | 8 | Gradient accumulation steps |
 | `--mixed_precision` | flag | - | Enable FP16 mixed precision training |
 | `--decay` | float | 0.999 | EMA decay rate for model weights |
@@ -724,9 +663,10 @@ python -m model.train_model \
 
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
-| `--contrastive_weight` | float | 0.1 | Contrastive loss weight; ranking weight = 1 - this |
+| `--contrastive_weight` | float | 0.2 | Contrastive loss weight; ranking weight = 1 - this |
 | `--ranking_loss_type` | choice | `bpr` | `pairwise`, `sampled_pairwise`, `bpr`, `listwise`, `approxndcg` |
-| `--ranking_loss_scale` | float | 10.0 | Ranking loss scaling factor |
+| `--ranking_loss_scale` | float | 5.0 | Ranking loss scaling factor |
+| `--ranking_loss_samples` | int | 512 | Number of pairs sampled for the ranking loss |
 | `--ranking_margin` | float | 0.5 | Pairwise ranking margin |
 | `--focal_gamma` | float | 2.0 | Focal loss gamma (higher = focus on hard examples) |
 | `--use_focal` | flag | - | Enable focal weighting in ranking loss |
@@ -735,9 +675,9 @@ python -m model.train_model \
 
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
-| `--scheduler_patience` | int | 50 | Epochs to wait before reducing LR |
-| `--scheduler_factor` | float | 0.7 | Factor to reduce LR by on plateau |
-| `--early_stopping_patience` | int | 50 | Epochs without improvement before stopping |
+| `--scheduler_patience` | int | 5 | Validation checks to wait before reducing LR |
+| `--scheduler_factor` | float | 0.7 | Factor to reduce LR by on plateau (reported results used 0.5) |
+| `--early_stopping_patience` | int | 15 | Validation checks without improvement before stopping |
 | `--validation_frequency` | int | 10 | Validate every N epochs |
 
 **Memory Optimization:**
@@ -745,13 +685,13 @@ python -m model.train_model \
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--attention_chunk_size` | int | 1000 | Chunk size for attention computation |
-| `--max_augmented_views` | int | 3 | Max augmented views in memory |
+| `--max_augmented_views` | int | 2 | Max augmented views in memory |
 | `--max_views_per_step` | int | 2 | Max views per training step |
 | `--emergency_mode` | flag | - | Aggressive memory reduction (auto-sets params) |
 | `--reduce_model_size` | flag | - | Reduce to hidden=64, proj=32, layers=2, heads=1 |
 | `--return_all_layers` | flag | - | Return all GNN layer outputs |
 
-**Output per fold:** Model checkpoint, training metrics CSV, training history pickle, training curves plot, metrics comparison plot, and scored genes CSV.
+**Output per fold:** Model checkpoint, test metrics CSV (including `AUPRC_trapz`, trapezoidal AUPRC for comparison with published baselines), training history pickle, training curves plot, metrics comparison plot, and scored genes CSV.
 
 ---
 
@@ -763,8 +703,10 @@ Combines results from parallel fold training runs into cross-validation summary 
 python -m model.aggregate_fold_results \
     --prefix GGNet_random_r0.2 \
     --num_folds 5 \
-    --results_dir model_results
+    --results_dir model_results_<tag>
 ```
+
+The script expects one directory per fold, `<results_dir>/<prefix>_fold<N>/`, which is the layout `run_model_array.sh` writes. Files named `aggregated` inside a single fold's directory cover that fold only.
 
 #### Arguments
 
@@ -777,9 +719,26 @@ python -m model.aggregate_fold_results \
 
 **Output:**
 - Cross-validation summary statistics (mean/std AUROC, NDCG@50, Precision@50, etc.)
-- Aggregated gene scores with consensus significance analysis
+- Aggregated gene ranking (mean within-fold rank) and consensus candidates (unlabelled genes in the top 100 unlabelled genes in ≥ 3 folds)
 - Combined training curves across all folds
 - Metrics comparison bar and box plots
+
+`AUPRC_trapz` is not carried into `<prefix>_combined_metrics.csv`; read it from each fold's `*_kfold_metrics.csv`.
+
+---
+
+### Step 5: Candidate Adjustment and Figures
+
+Re-ranks unlabelled genes within coding-length decile × degree quintile bins, removes FLAGS genes, and recomputes consensus candidates and CGC enrichment. Run from the repo root:
+
+```bash
+python Downstream/length_adjusted_candidates.py
+quarto render Downstream/publication_figures.qmd
+```
+
+The results directory (`model_results_2026-10-16`) and the HGDC and GENCODE input paths are set at the top of the script. Coding lengths come from `baseline_comparison/HGDC/preprocess_data/gene_mutation/gencode.v28.basic.annotation.gff3.gz`, so this step needs a local copy of the [HGDC repository](https://github.com/NWPU-903PR/HGDC) in `baseline_comparison/HGDC/`.
+
+**Output:** in `Downstream/length_adjusted/`, one `<config>_length_adjusted.csv` per configuration, plus `summary.csv`, `consensus_counts.csv` and `module_genes.csv`.
 
 ---
 
@@ -794,13 +753,13 @@ docker pull cydarthvader/driverjinn
 1. Run the preprocessing script with the following command
 
 ```bash
-docker run -v "your/working/directory:/app" cydarthvader/driverjinn preprocess --dataset_file data/dataset_PathNet.pkl --method both --augment --num_views 2 --elimination_ratio --strategy random --use_kfold
+docker run -v "your/working/directory:/app" cydarthvader/driverjinn preprocess --dataset_file data/dataset_PathNet.pkl --method both --augment --num_views 2 --elimination_ratio 0.2 --strategy random --use_kfold
 ```
 
 1. Run the training script with this command
 
 ```bash
-docker run --gpus all -v "your/working/director:/app" cydarthvader/driverjinn \
+docker run --gpus all -v "your/working/directory:/app" cydarthvader/driverjinn \
     train_model \
      --dataset_file curvature_output/GGNet_contrastive_v2_random_r0.2_stratified5CV.pkl  \
      --num_epochs 100 \
@@ -809,7 +768,7 @@ docker run --gpus all -v "your/working/director:/app" cydarthvader/driverjinn \
      --num_layers 1 \
      --num_heads 4 \
      --concat_heads \
-     --num_folds 5
+     --num_folds 5 \
      --model_out_prefix GGNet_random_r0.1 \
      --temperature 0.3 \
      --model_out_dir trained_model_$(date +%F) \
@@ -845,7 +804,7 @@ apptainer run --nv docker://cydarthvader/driverjinn \
      --num_layers 1 \
      --num_heads 4 \
      --concat_heads \
-     --num_folds 5
+     --num_folds 5 \
      --model_out_prefix GGNet_random_r0.2 \
      --temperature 0.3 \
      --model_out_dir trained_model_$(date +%F) \
@@ -875,13 +834,22 @@ apptainer run --nv docker://cydarthvader/driverjinn \
 
 ### Parallel Training (one fold per GPU)
 
-Use `run_model_array.sh` to train each fold independently via SLURM job arrays:
+Use `run_model_array.sh` to train all 18 configurations on HGDC's splits. `RUN_TAG` is required, so that every task writes to the same `model_results_<RUN_TAG>/` and `trained_models_<RUN_TAG>/` folders however long the queue takes:
 
 ```bash
-sbatch run_model_array.sh
+mkdir -p slurm_logs
+sbatch --export=ALL,RUN_TAG=$(date +%F) run_model_array.sh
 ```
 
-This submits 5 jobs (`--array=1-5`), each training a single fold on its own GPU. After all jobs complete, run the aggregation script to combine results.
+This submits 90 tasks (`--array=1-90`: 3 networks × 3 strategies × 2 ratios × 5 folds), each training a single fold on its own GPU. SLURM does not create the `slurm_logs/` directory itself. The partition (`h100-single`), account, email address, and `base` path in the script are specific to our cluster, so change them before submitting. The script also reads splits from `baseline_comparison/HGDC/data/<net>/`, which is not tracked in git; the tracked copies in `data/` are byte-identical, so point `--split_file` there if you don't have a local copy of HGDC.
+
+After all tasks complete, aggregate each configuration:
+
+```bash
+for net in GGNet PathNet PPNet; do for s in random priority coarsening; do for r in 0.1 0.2; do
+    python -m model.aggregate_fold_results --prefix ${net}_${s}_r${r} --results_dir model_results_${RUN_TAG}
+done; done; done
+```
 
 ### Hyperparameter Search
 
@@ -901,26 +869,28 @@ sbatch preprocess_script.sh
 
 ### Per-Fold Training Output
 
-Located in `model_results/<prefix>/`:
+Located in `model_results_<tag>/<run>/`, where `<run>` is the `--model_out_prefix` value (`<prefix>_fold<N>` for array jobs):
 
 | File | Description |
 |------|-------------|
-| `<prefix>_fold_<N>_metrics.csv` | Validation metrics for the fold |
-| `<prefix>_fold_<N>_history.pkl` | Full training history (loss, LR, all metrics per epoch) |
-| `<prefix>_fold_<N>_all_genes_scored.csv` | All genes ranked by predicted driver score |
-| `<prefix>_training_curves.png` | Training/validation curves plot |
-| `<prefix>_metrics_comparison.png` | Metrics comparison plot |
+| `<run>_kfold_metrics.csv` | Test metrics for the fold, including `AUPRC_trapz` in runs newer than `model_results_2026-10-16` |
+| `<run>_training_history.pkl` | Full training history (loss, LR, all metrics per epoch) |
+| `<run>_fold_<N>_all_genes_scored.csv` | All genes ranked by predicted driver score |
+| `<run>_fold_<N>_known_drivers_scores.csv` | Scores for known drivers |
+| `<run>_fold_<N>_scoring_summary.txt` | Summary of the fold's gene scoring |
+| `<run>_training_curves.png` | Training/validation curves plot |
+| `<run>_metrics_comparison.png` | Metrics comparison plot |
 
 ### Aggregated Output
 
-Located in `model_results/<prefix>_aggregated/`:
+Located in `model_results_<tag>/<prefix>_aggregated/`:
 
 | File | Description |
 |------|-------------|
-| `<prefix>_cv_summary.txt` | Cross-validation mean/std for all metrics |
-| `<prefix>_all_genes_aggregate_scores.csv` | All genes with mean score, std, median rank, consensus significance |
-| `<prefix>_consensus_significant_genes.csv` | Genes significant in >=50% of folds |
-| `<prefix>_aggregate_summary.txt` | Summary statistics for aggregated predictions |
+| `<prefix>_combined_metrics.csv` | Per-fold test metrics plus mean/std rows |
+| `<prefix>_aggregated_all_genes.csv` | All genes ranked by mean within-fold rank, with `folds_top100` and `consensus_top100` |
+| `<prefix>_aggregated_consensus_top100.csv` | Consensus candidates: unlabelled genes in the top 100 unlabelled genes in ≥ 3 folds |
+| `<prefix>_aggregated_summary.txt` | Summary of the aggregated ranking |
 | `<prefix>_combined_training_curves.png` | Training curves overlaid across folds |
 | `<prefix>_metrics_comparison.png` | Cross-fold metrics comparison |
 

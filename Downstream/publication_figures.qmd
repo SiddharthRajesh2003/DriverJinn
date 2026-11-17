@@ -1,0 +1,863 @@
+---
+title: "DriverJinn — Publication Figures"
+format:
+  html:
+    code-fold: true
+    self-contained: true
+    theme: cosmo
+    fig-width: 7
+jupyter: python3
+---
+
+Figures are sized for *Bioinformatics* (OUP): 86 mm single column, 178 mm double column, 7 pt Arial.
+Each figure is written to `plots/publication/` as vector PDF (editable text), 600 dpi TIFF and 600 dpi PNG.
+
+**Evaluation protocol.** Folds are HGDC's released 5-fold splits (repeat 0), which cover only HGDC's
+**labelled** genes (796 drivers, 2,187 non-drivers; 1,809 of them in GGNet). Each fold's training part is split again
+(15%, stratified) into an inner validation set that drives early stopping, so each **test fold** is evaluated once.
+Every performance number below uses only test-fold genes. Each labelled gene is tested in exactly one fold and gets
+an **out-of-fold (OOF) percentile**: its percentile within the test-fold ranking of the model that never trained on it.
+Unlabelled genes are never used as labels; they are only scored, and they are compared by mean within-fold rank,
+because raw scores are not calibrated across folds.
+
+**Candidate adjustment.** Raw rankings of unlabelled genes favour long genes and network hubs. Within each fold,
+every unlabelled gene is therefore re-ranked by its score percentile among unlabelled genes of the same coding-length
+decile × network-degree quintile, and FLAGS genes (Shyr *et al.* 2014; frequently mutated in normal exomes) are
+removed (`length_adjusted_candidates.py`). **Consensus candidates** are unlabelled genes in the top 100 of this
+adjusted ranking in ≥ 3 of 5 folds; **robust candidates** are consensus candidates in ≥ 8 of the 18
+network × augmentation configurations.
+
+## Setup
+
+```{python}
+#| label: setup
+#| include: false
+
+import pickle
+from collections import Counter
+from itertools import product
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+from matplotlib import patheffects
+from matplotlib.colors import ListedColormap, LogNorm
+from matplotlib.lines import Line2D
+from matplotlib.patches import Patch, Rectangle
+import seaborn as sns
+import networkx as nx
+from scipy.stats import fisher_exact, gaussian_kde, mannwhitneyu, rankdata, spearmanr
+from sklearn.metrics import average_precision_score, precision_recall_curve, roc_auc_score, roc_curve
+from statsmodels.stats.multitest import multipletests
+
+# ── Paths ──────────────────────────────────────────────────────────────────────
+ROOT       = Path("..")
+PREFIX     = "GGNet_random_r0.2"
+RUN_DIR    = ROOT / "model_results_2026-10-16"   # HGDC-protocol rerun: all 18 configs
+SPLITS_PKL = ROOT / "baseline_comparison/HGDC/data/GGNet/dataset_GGNet_ten_5CV.pkl"
+SPLIT_REPEAT = 0
+GRAPH_PKL  = ROOT / "curvature_output/GGNet_graph_with_curvatures.pkl"
+NUM_FOLDS  = 5
+ADJ_DIR    = Path("length_adjusted")                # written by length_adjusted_candidates.py
+OUT        = Path("plots/publication")
+(OUT / "tables").mkdir(parents=True, exist_ok=True)
+
+NETS   = ["GGNet", "PathNet", "PPNet"]
+STRATS = ["random_r0.1", "random_r0.2", "priority_r0.1", "priority_r0.2", "coarsening_r0.1", "coarsening_r0.2"]
+
+def agg_file(net, strat, suffix):
+    tag = f"{net}_{strat}"
+    return RUN_DIR / f"{tag}_aggregated" / f"{tag}_{suffix}.csv"
+
+def strat_label(s):
+    name, r = s.split("_r")
+    return f"{name.capitalize()} r={r}"
+
+# ── Style: Bioinformatics (OUP) ────────────────────────────────────────────────
+MM = 1 / 25.4
+SINGLE, DOUBLE = 86 * MM, 178 * MM
+
+mpl.rcParams.update({
+    "font.family": "sans-serif", "font.sans-serif": ["Arial", "DejaVu Sans"], "mathtext.default": "regular",
+    "font.size": 7, "axes.labelsize": 7, "axes.titlesize": 7,
+    "xtick.labelsize": 6, "ytick.labelsize": 6, "legend.fontsize": 6, "legend.title_fontsize": 6,
+    "axes.linewidth": 0.6, "xtick.major.width": 0.6, "ytick.major.width": 0.6,
+    "xtick.major.size": 2.5, "ytick.major.size": 2.5, "lines.linewidth": 1.0,
+    "axes.spines.top": False, "axes.spines.right": False, "legend.frameon": False,
+    "figure.constrained_layout.use": True, "figure.constrained_layout.h_pad": 0.1, "figure.dpi": 150,
+    "savefig.dpi": 600,  # no tight crop: figures keep the exact journal width
+    "pdf.fonttype": 42, "ps.fonttype": 42,  # embed TrueType so text stays editable
+})
+
+# Okabe–Ito palette (colour-blind safe; checked: worst adjacent CVD ΔE = 13.1)
+TIER_COLORS = {"Tier 1": "#D55E00", "Tier 2": "#E69F00", "Non-CGC": "#999999"}
+MODEL  = "#0072B2"   # DriverJinn
+NOVEL  = "#0072B2"   # highlighted non-CGC candidates in network panels
+NET_STYLE = {"GGNet": ("#0072B2", "o"), "PathNet": ("#009E73", "s"), "PPNet": ("#CC79A7", "^")}
+INK, GREY, LIGHT = "#222222", "#777777", "#C8C8C8"
+SEQ = "mako"         # sequential map (dark = better rank)
+
+def save_fig(fig, name):
+    for ext in ("pdf", "png"):
+        fig.savefig(OUT / f"{name}.{ext}")
+    fig.savefig(OUT / f"{name}.tiff", pil_kwargs={"compression": "tiff_lzw"})
+    plt.show()
+
+def label_panels(fig, axes, letters="abcdefgh"):
+    """Bold panel letter at the top-left corner of each axes' full extent (tick labels included)."""
+    pt = 1 / 72 / fig.get_figheight()                           # one point in figure-height units
+    fig.get_layout_engine().set(rect=(0, 0, 1, 1 - 12 * pt))   # reserve a strip for top-row letters
+    fig.canvas.draw()
+    renderer, inv = fig.canvas.get_renderer(), fig.transFigure.inverted()
+    for ax, letter in zip(axes, letters):
+        bb = ax.get_tightbbox(renderer).transformed(inv)
+        fig.text(max(bb.x0, 0), bb.y1 + 2 * pt, letter, fontsize=9, fontweight="bold", va="bottom", ha="left")
+
+def italic(labels):
+    for t in labels:
+        t.set_fontstyle("italic")
+
+def fmt_p(p):
+    if p == 0:
+        return r"$P < 10^{-300}$"
+    m, e = f"{p:.1e}".split("e")
+    return rf"$P = {m}\times10^{{{int(e)}}}$"
+
+# ── Reference sets ─────────────────────────────────────────────────────────────
+cgc = pd.read_csv("cosmic/Cosmic_CancerGeneCensus_v103_GRCh38.tsv", sep="\t")
+T1 = set(cgc.loc[cgc["TIER"] == 1, "GENE_SYMBOL"])
+T2 = set(cgc.loc[cgc["TIER"] == 2, "GENE_SYMBOL"]) - T1
+
+def tier(g):
+    return "Tier 1" if g in T1 else "Tier 2" if g in T2 else "Non-CGC"
+
+# ── Consensus ranking (all folds) ──────────────────────────────────────────────
+genes = pd.read_csv(agg_file("GGNet", "random_r0.2", "aggregated_all_genes"))
+genes = genes.sort_values("aggregate_rank").reset_index(drop=True)
+genes["tier"] = genes["gene_name"].map(tier)
+
+# ── HGDC test folds ────────────────────────────────────────────────────────────
+with open(SPLITS_PKL, "rb") as f:
+    _hgdc = pickle.load(f)
+node_names = np.asarray(_hgdc["node_name"])
+test_masks = [np.asarray(test, dtype=bool) for _, test in _hgdc["split_set"][SPLIT_REPEAT]]
+del _hgdc
+
+fold_all, val = {}, []
+for k in range(1, NUM_FOLDS + 1):
+    df = pd.read_csv(RUN_DIR / f"{PREFIX}_fold{k}" / f"{PREFIX}_fold{k}_fold_1_all_genes_scored.csv")
+    df = df.sort_values("original_index").reset_index(drop=True)
+    assert (df["gene_name"].values == node_names).all(), f"fold {k}: gene order differs from split pickle"
+    df["fold_pct"] = 1 - (df["rank"] - 1) / len(df)            # percentile in this fold's full ranking
+    fold_all[k] = df
+    v = df[test_masks[k - 1]].copy()                             # test fold: labelled genes only
+    v["fold"] = k
+    v["pct"] = rankdata(v["driver_score"]) / len(v)             # 1.0 = top of test-fold ranking
+    val.append(v)
+
+oof = pd.concat(val, ignore_index=True)
+n_labelled = int(fold_all[1]["is_labeled"].sum())
+assert oof["gene_name"].is_unique and len(oof) == n_labelled, "each labelled gene must be tested exactly once"
+oof["tier"] = oof["gene_name"].map(tier)
+PREV = np.mean([v["true_label"].mean() for v in val])
+
+# ── Length/degree-adjusted candidates (unlabelled genes only) ──────────────────
+assert (ADJ_DIR / "summary.csv").exists(), "run `python Downstream/length_adjusted_candidates.py` from the repo root"
+adj = {(n, s): pd.read_csv(ADJ_DIR / f"{n}_{s}_length_adjusted.csv", index_col="gene_name")
+       for n in NETS for s in STRATS}
+adj_summary = pd.read_csv(ADJ_DIR / "summary.csv").set_index("config")
+
+def n_configs(col, nets=NETS):
+    """Number of configs (over `nets` × STRATS) in which each gene has `col` set."""
+    return pd.concat([adj[(n, s)][col] for n in nets for s in STRATS], axis=1).fillna(False).sum(axis=1).astype(int)
+
+support = pd.DataFrame({n: n_configs("consensus_flags", [n]) for n in NETS})   # of 6 configs per network
+support["Total"] = support[NETS].sum(axis=1)
+support["Raw"] = n_configs("consensus_raw").reindex(support.index).fillna(0).astype(int)
+support["tier"] = support.index.map(tier)
+support = support.sort_values(["Total", "Raw"], ascending=False)
+
+# ── Training histories ─────────────────────────────────────────────────────────
+histories = {}
+for k in range(1, NUM_FOLDS + 1):
+    with open(RUN_DIR / f"{PREFIX}_fold{k}" / f"{PREFIX}_fold{k}_training_history.pkl", "rb") as f:
+        h = pickle.load(f)
+    histories[k] = h[0] if isinstance(h, list) else h
+
+# ── PPI graph ──────────────────────────────────────────────────────────────────
+with open(GRAPH_PKL, "rb") as f:
+    G_full = pickle.load(f)
+name_to_id = {d["name"]: n for n, d in G_full.nodes(data=True) if "name" in d}
+id_to_name = {n: g for g, n in name_to_id.items()}
+oof["degree"] = oof["gene_name"].map(lambda g: G_full.degree(name_to_id[g]) if g in name_to_id else np.nan)
+
+print(f"Genes: {len(genes):,} (labelled {n_labelled:,}) | test per fold: {[len(v) for v in val]} | positives/fold: "
+      f"{[int(v['true_label'].sum()) for v in val]} | prevalence {PREV:.3f}")
+```
+
+## Test-fold metrics vs reported metrics
+
+```{python}
+#| label: metrics-check
+
+def ndcg_at_k(y_sorted, k=50):
+    disc = 1 / np.log2(np.arange(2, k + 2))
+    return (y_sorted[:k] * disc).sum() / disc[: int(min(k, y_sorted.sum()))].sum()
+
+def ranked_labels(v):
+    return v.sort_values("driver_score", ascending=False, kind="stable")["true_label"].values
+
+fold_metrics = pd.DataFrame([{
+    "Fold": int(v["fold"].iat[0]),
+    "AUROC": roc_auc_score(v["true_label"], v["driver_score"]),
+    "AUPRC": average_precision_score(v["true_label"], v["driver_score"]),
+    "NDCG@50": ndcg_at_k(ranked_labels(v)),
+    "Precision@50": ranked_labels(v)[:50].mean(),
+} for v in val]).set_index("Fold")
+
+reported = pd.read_csv(agg_file("GGNet", "random_r0.2", "combined_metrics"))
+reported = reported[reported["Fold"].astype(str).str.fullmatch(r"\d+")].astype({"Fold": int}).set_index("Fold")
+cmp = pd.concat({"Recomputed (test fold, scored CSV)": fold_metrics,
+                 "Reported (kfold_metrics, test)": reported[fold_metrics.columns]}, axis=1)
+cmp.loc["Mean"] = cmp.mean()
+cmp.round(3)
+```
+
+If the two blocks above disagree, the per-gene `*_all_genes_scored.csv` files were written from a different
+checkpoint than the one the training log reports. The figures use the scored files, because they are the only
+per-gene predictions.
+
+------------------------------------------------------------------------
+
+## Figure 1 — Predictive performance on test folds
+
+```{python}
+#| label: fig1-performance
+#| fig-cap: "**Figure 1. DriverJinn predictive performance on HGDC test folds (GGNet, random Schur elimination, r = 0.2; 5-fold CV over HGDC's labelled genes).** (a) ROC and (b) precision–recall curves; grey lines are individual folds, the blue line is the fold mean and the band ±1 SD. Dashed lines show a random ranking (in b, the driver prevalence among test genes). (c) Per-fold metrics (dots) with mean ± SD (bar); dotted segments mark the expected value of a random ranking. (d) Inner-validation NDCG@50 during training, used for early stopping (25-epoch moving average)."
+
+def mean_band(ax, x, Y, label=None):
+    m, s = np.nanmean(Y, 0), np.nanstd(Y, 0, ddof=1)
+    ax.fill_between(x, m - s, m + s, color=MODEL, alpha=0.2, lw=0)
+    ax.plot(x, m, color=MODEL, lw=1.4, label=label)
+    return m
+
+def plot_history(ax, key, window=25):
+    H = [np.asarray(histories[k][key], float) for k in sorted(histories)]
+    M = np.full((len(H), max(map(len, H))), np.nan)
+    for i, h in enumerate(H):
+        M[i, : len(h)] = pd.Series(h).rolling(window, min_periods=1, center=True).mean()
+    x = np.arange(1, M.shape[1] + 1)
+    for row in M:
+        ax.plot(x, row, color=LIGHT, lw=0.5)
+    M[:, (~np.isnan(M)).sum(0) < 3] = np.nan          # mean only where ≥3 folds are still training
+    mean_band(ax, x, M)
+    ax.set_xlabel("Epoch")
+
+fig, axs = plt.subplots(1, 4, figsize=(DOUBLE, 2.0))
+
+# (a) ROC
+grid = np.linspace(0, 1, 201)
+tprs = []
+for v in val:
+    fpr, tpr, _ = roc_curve(v["true_label"], v["driver_score"])
+    axs[0].plot(fpr, tpr, color=LIGHT, lw=0.5)
+    tprs.append(np.interp(grid, fpr, tpr))
+mean_band(axs[0], grid, np.array(tprs))
+axs[0].plot([0, 1], [0, 1], ls=(0, (3, 2)), color=GREY, lw=0.6)
+axs[0].text(0.97, 0.04, f"AUROC\n{fold_metrics.AUROC.mean():.3f} ± {fold_metrics.AUROC.std():.3f}",
+            ha="right", va="bottom", transform=axs[0].transAxes)
+axs[0].set(xlabel="False positive rate", ylabel="True positive rate", xlim=(0, 1), ylim=(0, 1), aspect="equal")
+
+# (b) Precision–recall (interpolated precision)
+precs = []
+for v in val:
+    p, r, _ = precision_recall_curve(v["true_label"], v["driver_score"])
+    r, p = r[::-1], np.maximum.accumulate(p)[::-1]          # recall ascending, precision = max at ≥ recall
+    axs[1].plot(r, p, color=LIGHT, lw=0.5)
+    precs.append(np.interp(grid, r, p))
+mean_band(axs[1], grid, np.array(precs))
+axs[1].axhline(PREV, ls=(0, (3, 2)), color=GREY, lw=0.6)
+axs[1].text(0.97, 0.96, f"AUPRC\n{fold_metrics.AUPRC.mean():.3f} ± {fold_metrics.AUPRC.std():.3f}",
+            ha="right", va="top", transform=axs[1].transAxes)
+axs[1].text(0.03, PREV + 0.02, f"Random {PREV:.3f}", ha="left", va="bottom", color=GREY, fontsize=6)
+axs[1].set(xlabel="Recall", ylabel="Precision", xlim=(0, 1), ylim=(0, 1), aspect="equal")
+
+# (c) Per-fold metrics
+cols  = ["AUROC", "AUPRC", "NDCG@50", "Precision@50"]
+rand  = {"AUROC": 0.5, "AUPRC": PREV, "NDCG@50": PREV, "Precision@50": PREV}
+rng   = np.random.default_rng(0)
+for i, c in enumerate(cols):
+    vals = fold_metrics[c].values
+    axs[2].scatter(i + rng.uniform(-0.13, 0.13, len(vals)), vals, s=9, color=GREY, ec="white", lw=0.4, zorder=3)
+    axs[2].errorbar(i, vals.mean(), yerr=vals.std(ddof=1), color=MODEL, lw=1, capsize=0, zorder=4)
+    axs[2].hlines(vals.mean(), i - 0.25, i + 0.25, color=MODEL, lw=1.6, zorder=4)
+    axs[2].hlines(rand[c], i - 0.3, i + 0.3, color=INK, lw=0.7, ls=(0, (1, 1.5)))
+axs[2].set_xticks(range(len(cols)), ["AUROC", "AUPRC", "NDCG@50", "P@50"], rotation=35, ha="right")
+axs[2].set(ylabel="Score", ylim=(0, 1), xlim=(-0.5, len(cols) - 0.5))
+
+# (d) Training curve
+plot_history(axs[3], "val_ndcg@50")
+axs[3].set(ylabel="Inner-validation NDCG@50")
+
+label_panels(fig, axs)
+save_fig(fig, "Fig1_performance")
+```
+
+------------------------------------------------------------------------
+
+## Figure 2 — How well the ranking recovers drivers
+
+```{python}
+#| label: fig2-ranking
+#| fig-cap: "**Figure 2. Recovery of known drivers by the test-fold ranking.** (a) Precision among the top-K test genes (mean ± SD over folds, log-scaled K); labels give fold enrichment over random at K = 10, 50 and 200. (b) Cumulative recall: share of test drivers found when screening the top x% of the test ranking; the diagonal is a random ranking. (c) Out-of-fold percentile of every labelled gene by COSMIC CGC v103 status (1 = top of the test-fold ranking); non-CGC genes here are mostly HGDC non-drivers. Box: median and IQR. P values: one-sided Mann–Whitney U test against non-CGC genes."
+
+fig, axs = plt.subplots(1, 3, figsize=(DOUBLE, 2.15), gridspec_kw={"width_ratios": [1, 1, 1.25]})
+
+# (a) Precision@K
+K = np.arange(1, min(len(v) for v in val) + 1)                # test folds hold ~360 genes
+P = np.array([np.cumsum(ranked_labels(v)[: K[-1]]) / K for v in val])
+m = mean_band(axs[0], K, P)
+axs[0].axhline(PREV, ls=(0, (3, 2)), color=GREY, lw=0.6)
+axs[0].text(K[-1], PREV + 0.015, "Random", ha="right", va="bottom", color=GREY, fontsize=6)
+for k in (10, 50, 200):
+    axs[0].plot(k, m[k - 1], "o", ms=3, color=MODEL)
+    axs[0].annotate(f"{m[k - 1] / PREV:.1f}×", (k, m[k - 1]), xytext=(0, 5), textcoords="offset points",
+                    ha="center", fontsize=6)
+axs[0].set(xscale="log", xlabel="Top K test genes", ylabel="Precision@K", ylim=(0, 1), xlim=(5, K[-1]))
+axs[0].set_xticks([5, 10, 50, 100, 300], ["5", "10", "50", "100", "300"])
+axs[0].minorticks_off()
+
+# (b) Cumulative recall
+frac = np.linspace(0, 1, 501)
+R = []
+for v in val:
+    y = ranked_labels(v)
+    R.append(np.interp(frac, np.arange(len(y) + 1) / len(y), np.r_[0, np.cumsum(y) / y.sum()]))
+m = mean_band(axs[1], frac * 100, np.array(R))
+axs[1].plot([0, 100], [0, 1], ls=(0, (3, 2)), color=GREY, lw=0.6)
+i10 = np.searchsorted(frac, 0.10)
+axs[1].plot(10, m[i10], "o", ms=3, color=MODEL)
+axs[1].annotate(f"Top 10% of genes\n→ {m[i10]:.0%} of drivers", (10, m[i10]), xytext=(8, -2),
+                textcoords="offset points", va="top", fontsize=6)
+axs[1].set(xlabel="Top x% of test ranking", ylabel="Fraction of drivers recovered", xlim=(0, 100), ylim=(0, 1))
+
+# (c) Raincloud of OOF percentile by CGC tier
+ax = axs[2]
+order = ["Tier 1", "Tier 2", "Non-CGC"]
+xs = np.linspace(0, 1, 300)
+ref = oof.loc[oof["tier"] == "Non-CGC", "pct"]
+for i, t in enumerate(order):
+    d = oof.loc[oof["tier"] == t, "pct"].values
+    y0 = len(order) - 1 - i
+    dens = gaussian_kde(d, bw_method=0.15)(xs)
+    ax.fill_between(xs, y0 + 0.08, y0 + 0.08 + 0.45 * dens / dens.max(), color=TIER_COLORS[t], alpha=0.75, lw=0)
+    ax.boxplot(d, positions=[y0], vert=False, widths=0.1, showfliers=False, patch_artist=True,
+               boxprops={"facecolor": "white", "lw": 0.6}, medianprops={"color": INK, "lw": 1},
+               whiskerprops={"lw": 0.6}, capprops={"lw": 0})
+    jit = y0 - 0.14 - rng.uniform(0, 0.18, len(d))
+    ax.scatter(d, jit, s=0.8, color=TIER_COLORS[t], alpha=0.35, lw=0, rasterized=True)
+    if t != "Non-CGC":
+        p = mannwhitneyu(d, ref, alternative="greater").pvalue
+        ax.text(0.0, y0 + 0.42, fmt_p(p), fontsize=6, va="center")
+ax.set_yticks(range(len(order))[::-1],
+              [f"{t}\n(n = {(oof['tier'] == t).sum():,})" for t in order])
+ax.set(xlabel="Out-of-fold percentile", xlim=(0, 1), ylim=(-0.45, len(order) - 0.4))
+ax.spines["left"].set_visible(False)
+ax.tick_params(axis="y", length=0)
+
+label_panels(fig, axs)
+save_fig(fig, "Fig2_ranking")
+```
+
+------------------------------------------------------------------------
+
+## Figure 3 — Robustness across folds, augmentation strategies and networks
+
+```{python}
+#| label: fig3-robustness
+#| fig-cap: "**Figure 3. Robustness of DriverJinn rankings.** (a) Rank of the 30 labelled genes with the best mean within-fold rank in each fold's full ranking (of 11,183 genes; log colour scale). The outlined cell is the fold in which the gene was held out and tested. Left strip: COSMIC CGC tier. (b) Jaccard overlap of the length/degree-adjusted consensus candidates across the six Schur augmentation settings on GGNet. (c) Overlap of the adjusted consensus candidates across the three networks (random elimination, r = 0.2); bars are coloured by CGC tier. (d) Test AUPRC (mean ± SD over 5 HGDC test folds) for every network and augmentation setting."
+
+fig = plt.figure(figsize=(DOUBLE, 5.0))
+gs = fig.add_gridspec(3, 2, width_ratios=[0.95, 1.3], height_ratios=[1.1, 1, 0.95])
+
+# (a) rank stability heatmap
+gsa = gs[:, 0].subgridspec(1, 2, width_ratios=[0.07, 1], wspace=0.02)
+ax_t, ax_a = fig.add_subplot(gsa[0]), fig.add_subplot(gsa[1])
+TOP = 30
+top = genes[genes["is_labeled"]].head(TOP)["gene_name"].tolist()   # labelled only: candidates are Fig 5's job
+rank_mat = pd.DataFrame({f"Fold {k}": df.set_index("gene_name").loc[top, "rank"] for k, df in fold_all.items()})
+sns.heatmap(rank_mat, ax=ax_a, cmap=SEQ, norm=LogNorm(1, len(node_names)), annot=True, fmt=".0f",
+            annot_kws={"size": 5}, linewidths=0.4, linecolor="white", yticklabels=False,
+            cbar_kws={"label": "Rank within fold", "orientation": "horizontal", "shrink": 0.7, "pad": 0.02,
+                      "aspect": 30})
+held_fold = oof.set_index("gene_name")["fold"]
+for r, g in enumerate(top):
+    if g in held_fold:                                           # labelled genes only
+        ax_a.add_patch(Rectangle((held_fold[g] - 1, r), 1, 1, fill=False, ec="#E69F00", lw=1.1))
+ax_a.xaxis.tick_top()
+ax_a.tick_params(axis="x", length=0)
+ax_a.set(xlabel="", ylabel="")
+codes = np.array([[order.index(tier(g))] for g in top])
+ax_t.imshow(codes, aspect="auto", cmap=ListedColormap([TIER_COLORS[t] for t in order]), vmin=0, vmax=2)
+ax_t.set_yticks(range(TOP), top)
+italic(ax_t.get_yticklabels())
+ax_t.set_xticks([])
+for s in ax_t.spines.values():
+    s.set_visible(False)
+ax_t.tick_params(axis="y", length=0, labelsize=5.5)
+
+# (b) Jaccard overlap of adjusted consensus candidates across augmentation settings (GGNet)
+ax_b = fig.add_subplot(gs[0, 1])
+cons_set = lambda n, s: set(adj[(n, s)].index[adj[(n, s)]["consensus_flags"]])
+tops = {s: cons_set("GGNet", s) for s in STRATS}
+J = pd.DataFrame([[len(tops[a] & tops[b]) / len(tops[a] | tops[b]) for b in STRATS] for a in STRATS],
+                 index=[strat_label(s) for s in STRATS], columns=[strat_label(s) for s in STRATS])
+sns.heatmap(J, ax=ax_b, mask=np.triu(np.ones_like(J, bool), k=1), cmap="Blues", vmin=0, vmax=1, annot=True,
+            fmt=".2f", annot_kws={"size": 5.5}, linewidths=0.6, linecolor="white", square=True,
+            cbar_kws={"label": "Jaccard (consensus)", "shrink": 0.8})
+ax_b.tick_params(length=0)
+ax_b.set_xticklabels(ax_b.get_xticklabels(), rotation=40, ha="right")
+
+# (c) UpSet of adjusted consensus candidates across networks
+gsc = gs[1, 1].subgridspec(2, 1, height_ratios=[1.5, 1], hspace=0.05)
+ax_c, ax_m = fig.add_subplot(gsc[0]), fig.add_subplot(gsc[1])
+sets = {n: cons_set(n, "random_r0.2") for n in NETS}
+combos = []
+for c in product([1, 0], repeat=len(NETS)):
+    if not any(c):
+        continue
+    inside = set.intersection(*[sets[n] for n, b in zip(NETS, c) if b])
+    outside = set().union(*[sets[n] for n, b in zip(NETS, c) if not b])
+    combos.append((c, inside - outside))
+combos.sort(key=lambda x: -len(x[1]))
+x = np.arange(len(combos))
+bottom = np.zeros(len(combos))
+for t in order:
+    h = np.array([sum(tier(g) == t for g in gs_) for _, gs_ in combos])
+    ax_c.bar(x, h, bottom=bottom, width=0.6, color=TIER_COLORS[t], ec="white", lw=0.5, label=t)
+    bottom += h
+for xi, tot in zip(x, bottom):
+    ax_c.text(xi, tot + 1, f"{int(tot)}", ha="center", va="bottom", fontsize=6)
+ax_c.set(xticks=[], ylabel="Genes", xlim=(-0.6, len(combos) - 0.4), ylim=(0, bottom.max() * 1.18))
+ax_c.legend(ncol=3, loc="upper right", handlelength=1, columnspacing=0.8)
+for xi, (c, _) in enumerate(combos):
+    on = [len(NETS) - 1 - j for j, b in enumerate(c) if b]
+    ax_m.scatter([xi] * len(NETS), range(len(NETS)), s=14, color=LIGHT, lw=0)
+    ax_m.scatter([xi] * len(on), on, s=14, color=INK, lw=0)
+    if len(on) > 1:
+        ax_m.plot([xi, xi], [min(on), max(on)], color=INK, lw=0.9)
+ax_m.set(xlim=ax_c.get_xlim(), ylim=(-0.6, len(NETS) - 0.4), xticks=[])
+ax_m.set_yticks(range(len(NETS)), NETS[::-1])
+for s in ax_m.spines.values():
+    s.set_visible(False)
+ax_m.tick_params(length=0)
+
+# (d) Test AUPRC across networks × augmentation settings
+ax_d = fig.add_subplot(gs[2, 1])
+for j, n in enumerate(NETS):
+    color, marker = NET_STYLE[n]
+    for i, s in enumerate(STRATS):
+        mt = pd.read_csv(agg_file(n, s, "combined_metrics")).set_index("Fold")
+        y = i + (j - 1) * 0.22
+        ax_d.errorbar(mt.loc["Mean", "AUPRC"], y, xerr=mt.loc["Std", "AUPRC"], fmt=marker, ms=3.5,
+                      color=color, mec="white", mew=0.4, elinewidth=0.8, capsize=0, label=n if i == 0 else None)
+ax_d.set_yticks(range(len(STRATS)), [strat_label(s) for s in STRATS])
+ax_d.invert_yaxis()
+ax_d.set(xlabel="Test AUPRC (mean ± SD)")
+ax_d.legend(ncol=3, loc="lower center", bbox_to_anchor=(0.5, 1.0), handletextpad=0.2)
+ax_d.grid(axis="x", color="#EEEEEE", lw=0.5)
+ax_d.set_axisbelow(True)
+
+label_panels(fig, [ax_t, ax_b, ax_c, ax_d])
+save_fig(fig, "Fig3_robustness")
+```
+
+------------------------------------------------------------------------
+
+## Figure 4 — Network-degree and gene-length bias, and their correction
+
+```{python}
+#| label: fig4-bias
+#| fig-cap: "**Figure 4. Degree and length bias, and their correction.** (a) Out-of-fold percentile of labelled genes against PPI degree (GGNet); the line is the median per degree decile. (b) Test AUROC within degree quintiles (95% bootstrap CI); the dashed line is the overall AUROC. Labels give the degree range and number of drivers in each quintile. (c) Share of consensus candidates in the longest coding-length decile, before and after ranking each unlabelled gene only against genes of similar coding length and degree (and removing FLAGS genes); one line per network × augmentation configuration; dashed line, 10% expected by chance. (d) Enrichment of consensus candidates for COSMIC CGC genes among unlabelled genes (one-sided Fisher's exact test), raw (grey) and adjusted (colour) lists; filled markers have P < 0.05."
+
+fig, axd = plt.subplot_mosaic([["a", "b"], ["c", "d"]], figsize=(DOUBLE, 4.3),
+                              gridspec_kw={"width_ratios": [1.15, 1], "height_ratios": [1, 1.15]})
+
+# (a) Degree vs OOF percentile
+d = oof.dropna(subset=["degree"])
+ax = axd["a"]
+hb = ax.hexbin(np.log10(d["degree"]), d["pct"], gridsize=32, cmap="Blues", bins="log", mincnt=1, lw=0.1)
+dec = pd.qcut(d["degree"], 10, duplicates="drop")
+med = d.groupby(dec, observed=True).agg(x=("degree", "median"), y=("pct", "median"))
+ax.plot(np.log10(med["x"]), med["y"], "-o", color="#D55E00", ms=2.5, lw=1)
+rho, p = spearmanr(d["degree"], d["pct"])
+ax.text(0.03, 0.97, rf"Spearman $\rho$ = {rho:.2f}", transform=ax.transAxes, va="top",
+        path_effects=[patheffects.withStroke(linewidth=2, foreground="white")])
+ticks = [1, 10, 100, 1000]
+ax.set_xticks(np.log10(ticks), ticks)
+ax.set(xlabel="PPI degree", ylabel="Out-of-fold percentile", ylim=(0, 1))
+fig.colorbar(hb, ax=ax, shrink=0.8, aspect=15, pad=0.02, label="Genes").outline.set_linewidth(0.4)
+
+# (b) AUROC within degree quintiles
+ax = axd["b"]
+q = pd.qcut(d["degree"], 5)
+boot = np.random.default_rng(1)
+rows = []
+for b, grp in d.groupby(q, observed=True):
+    y, s = grp["true_label"].values, grp["pct"].values
+    bs = []
+    for _ in range(500):
+        idx = boot.integers(0, len(y), len(y))
+        if 0 < y[idx].sum() < len(idx):
+            bs.append(roc_auc_score(y[idx], s[idx]))
+    lo, hi = int(grp["degree"].min()), int(grp["degree"].max())
+    rng_lbl = f"≥{lo}" if hi == d["degree"].max() else f"{lo}–{hi}"
+    rows.append({"bin": f"{rng_lbl}\n({int(y.sum())})",
+                 "auc": roc_auc_score(y, s), "lo": np.percentile(bs, 2.5), "hi": np.percentile(bs, 97.5)})
+qa = pd.DataFrame(rows)
+ax.errorbar(range(len(qa)), qa["auc"], yerr=[qa["auc"] - qa["lo"], qa["hi"] - qa["auc"]], fmt="o", ms=4,
+            color=MODEL, mec="white", mew=0.4, elinewidth=0.9, capsize=0)
+ax.axhline(roc_auc_score(d["true_label"], d["pct"]), color=MODEL, ls=(0, (3, 2)), lw=0.7)
+ax.axhline(0.5, color=GREY, lw=0.6, ls=(0, (1, 1.5)))
+ax.set_xticks(range(len(qa)), qa["bin"])
+ax.set(xlabel="PPI degree quintile (drivers)", ylabel="Test AUROC", ylim=(0.4, 1), xlim=(-0.5, len(qa) - 0.5))
+
+# (c) Long genes among consensus candidates, raw vs adjusted
+S = adj_summary.assign(net=adj_summary.index.str.split("_").str[0])
+ax = axd["c"]
+jit = np.random.default_rng(2)
+for cfg, r in S.iterrows():
+    color, marker = NET_STYLE[r["net"]]
+    y = [100 * r["raw_longest_decile"] / r["raw_n"], 100 * r["flags_longest_decile"] / r["flags_n"]]
+    x = np.array([0, 1]) + jit.uniform(-0.07, 0.07, 2)
+    ax.plot(x, y, color=color, lw=0.5, alpha=0.5)
+    ax.scatter(x, y, marker=marker, s=11, color=color, ec="white", lw=0.3, zorder=3)
+ax.axhline(10, color=GREY, lw=0.6, ls=(0, (3, 2)))
+ax.text(1.45, 10, "Expected", color=GREY, fontsize=6, va="bottom", ha="right")
+kb = lambda c: f"{S[c].min() / 1e3:.1f}–{S[c].max() / 1e3:.1f} kb"
+ax.text(0.5, 0.97, f"Median CDS length\n{kb('raw_median_len')} → {kb('flags_median_len')}",
+        transform=ax.transAxes, ha="center", va="top", fontsize=6)
+ax.set_xticks([0, 1], ["Raw\nranking", "Length/degree-\nadjusted"])
+ax.set(xlim=(-0.45, 1.5), ylim=(0, 100), ylabel="Candidates in longest\nCDS decile (%)")
+ax.legend(handles=[Line2D([], [], marker=m, ls="", ms=3.5, color=c, label=n) for n, (c, m) in NET_STYLE.items()],
+          loc="center right", handletextpad=0.2, borderaxespad=0.2)
+
+# (d) CGC enrichment odds ratio, raw vs adjusted
+ax = axd["d"]
+for i, (cfg, r) in enumerate(S.iterrows()):
+    color, marker = NET_STYLE[r["net"]]
+    ax.plot([r["raw_cgc_OR"], r["flags_cgc_OR"]], [i, i], color=LIGHT, lw=0.9, zorder=1)
+    for v, c in (("raw", GREY), ("flags", color)):
+        sig = r[f"{v}_cgc_P"] < 0.05
+        ax.scatter(r[f"{v}_cgc_OR"], i, marker=marker, s=14, facecolor=c if sig else "white", ec=c, lw=0.7, zorder=3)
+ax.axvline(1, color=GREY, lw=0.6, ls=(0, (3, 2)))
+ax.set_xscale("log")
+ax.set_xlim(0.8, 45)                                # room on the right for the network labels
+ax.set_xticks([1, 2, 5, 10, 20], ["1", "2", "5", "10", "20"])
+ax.minorticks_off()
+ax.set_yticks(range(len(S)), [strat_label(c.split("_", 1)[1]) for c in S.index])
+ax.tick_params(axis="y", labelsize=5, length=0)
+ax.set_ylim(len(S) - 0.5, -0.5)
+for j, n in enumerate(NETS):
+    if j:
+        ax.axhline(6 * j - 0.5, color="#DDDDDD", lw=0.5)
+    ax.text(0.99, 6 * j + 2.5, n, transform=ax.get_yaxis_transform(), ha="right", va="center", fontsize=6,
+            color=NET_STYLE[n][0], fontweight="bold")
+ax.set_xlabel("CGC enrichment (odds ratio)")
+ax.legend(handles=[Line2D([], [], marker="o", ls="", ms=3.5, color=GREY, label="Raw"),
+                   Line2D([], [], marker="o", ls="", ms=3.5, color=INK, label="Adjusted"),
+                   Line2D([], [], marker="o", ls="", ms=3.5, mfc="white", mec=INK, label="P ≥ 0.05")],
+          ncol=3, loc="lower center", bbox_to_anchor=(0.5, 1.0), handletextpad=0.1, columnspacing=0.8)
+
+label_panels(fig, [axd[k] for k in "abcd"])
+save_fig(fig, "Fig4_bias")
+print(f"Degree vs OOF percentile: Spearman rho = {rho:.3f}, P = {p:.1e}")
+print(qa.round(3).to_string(index=False))
+print(f"CGC-enriched (P < 0.05): raw {(S['raw_cgc_P'] < 0.05).sum()}/18, adjusted {(S['flags_cgc_P'] < 0.05).sum()}/18")
+```
+
+------------------------------------------------------------------------
+
+## Figure 5 — Robust candidates and the pathways they share
+
+```{python}
+#| label: fig5-candidates
+#| fig-cap: "**Figure 5. Robust candidates fall into a small number of cancer-relevant pathways.** (a) The 24 unlabelled genes that are length/degree-adjusted consensus candidates in ≥ 8 of 18 network × augmentation configurations, grouped by function (left strip; manual grouping from UniProt function). Heatmap: configurations (of 6 per network) in which the gene is a consensus candidate. Bars: total of 18; open diamonds: the same count for the unadjusted ranking. * COSMIC CGC gene not labelled by HGDC. (b) GGNet interactions among the robust candidates (dark edges) and to the CGC Tier 1 genes that neighbour ≥ 3 of them (orange squares, light edges); node size scales with the number of configurations. (c) KEGG pathway enrichment of non-CGC genes that are adjusted consensus candidates in ≥ 3 configurations, against all unlabelled genes (one-sided Fisher's exact test, Benjamini–Hochberg FDR); dot size = overlapping genes, colour = −log10 FDR; open circles have FDR ≥ 0.05."
+
+# Hallmark panel omitted: hallmarks annotate only CGC genes and HGDC labels ~94% of them, so a hallmark test on
+# unlabelled candidates has no power.
+
+# Functional groups (manual, from UniProt function) of every gene that is a consensus candidate in >= 8 configs
+MODULES = {
+    "Integrin adhesion":   ["ITGB1", "ITGB3", "ITGA2B", "FLRT2"],
+    "RTK signalling":      ["EPHA2", "SHC1", "CRKL", "FYN", "BTC", "SH3GL2"],
+    "Chromatin & TFs":     ["HDAC1", "HDAC2", "BRD2", "PRMT6", "MEIS1", "CBFB"],
+    "RNA Pol II":          ["POLR2K", "POLR2C", "POLR2G", "MNAT1"],
+    "Cell cycle/survival": ["CDKN2B", "PPP1R13L", "RFC2", "BNIP3L"],
+}
+MOD_COLORS = dict(zip(MODULES, ["#56B4E9", "#0072B2", "#CC79A7", "#009E73", "#E69F00"]))
+mod_of = {g: m for m, gs_ in MODULES.items() for g in gs_}
+robust = support[support["Total"] >= 8]
+assert set(robust.index) == set(mod_of), f"robust set changed; regroup: {sorted(set(robust.index) ^ set(mod_of))}"
+rows = [g for gs_ in MODULES.values() for g in sorted(gs_, key=lambda g: -robust.at[g, "Total"])]
+breaks = np.cumsum([len(g) for g in MODULES.values()])[:-1] - 0.5
+y = np.arange(len(rows))
+
+fig = plt.figure(figsize=(DOUBLE, 5.7))
+gs = fig.add_gridspec(2, 2, width_ratios=[1, 1.3], height_ratios=[1.5, 1])
+
+# (a) Recurrence across networks and configurations
+gsa = gs[0, 0].subgridspec(1, 3, width_ratios=[0.07, 0.45, 1], wspace=0.04)
+ax_s, ax_h, ax_r = (fig.add_subplot(gsa[i]) for i in range(3))
+ax_s.imshow([[list(MODULES).index(mod_of[g])] for g in rows], aspect="auto", vmin=0, vmax=len(MODULES) - 1,
+            cmap=ListedColormap(list(MOD_COLORS.values())))
+ax_s.set_yticks(y, [g + ("*" if robust.at[g, "tier"] != "Non-CGC" else "") for g in rows])
+italic(ax_s.get_yticklabels())
+ax_s.set_xticks([])
+ax_s.tick_params(axis="y", length=0, labelsize=5.5)
+Hm = robust.loc[rows, NETS].values
+ax_h.imshow(Hm, aspect="auto", cmap="Blues", vmin=0, vmax=6)
+for (i, j), v in np.ndenumerate(Hm):                # NaN: gene not in that network
+    ax_h.text(j, i, "–" if np.isnan(v) else int(v), ha="center", va="center", fontsize=5,
+              color="white" if v > 3 else INK)
+ax_h.set_xticks(range(len(NETS)), NETS, rotation=40, ha="right")
+ax_h.set_yticks([])
+ax_r.barh(y, robust.loc[rows, "Total"], height=0.65, color=[MOD_COLORS[mod_of[g]] for g in rows])
+ax_r.scatter(robust.loc[rows, "Raw"], y, marker="D", s=7, facecolor="white", ec=INK, lw=0.5, zorder=3)
+ax_r.set(xlim=(0, 18.5), ylim=(len(rows) - 0.5, -0.5), yticks=[], xticks=[0, 6, 12, 18],
+         xlabel="Configs as consensus (of 18)")
+ax_r.spines["left"].set_visible(False)
+for a in (ax_s, ax_h):
+    for s in a.spines.values():
+        s.set_visible(False)
+    a.tick_params(axis="x", length=0)
+for b in breaks:
+    for a in (ax_s, ax_h):
+        a.axhline(b, color="white", lw=2)
+    ax_r.axhline(b, color="#DDDDDD", lw=0.5)
+ax_r.legend(handles=[Line2D([], [], marker="D", ls="", ms=3, mfc="white", mec=INK, label="Raw ranking")],
+            loc="lower right", handletextpad=0.2, borderaxespad=0.1)
+
+# (b) Network context: candidates and the known drivers they share
+ax = fig.add_subplot(gs[0, 1])
+cand = [g for g in rows if g in name_to_id]
+cid = {name_to_id[g] for g in cand}
+hub_cnt = Counter(nb for n in cid for nb in G_full.neighbors(n) if nb not in cid and id_to_name.get(nb) in T1)
+hubs = [id_to_name[n] for n, c in hub_cnt.most_common(10) if c >= 3]
+H = nx.relabel_nodes(G_full.subgraph(cid | {name_to_id[h] for h in hubs}), id_to_name)
+H.remove_edges_from([(u, v) for u, v in list(H.edges()) if u in hubs and v in hubs])
+H.remove_nodes_from([g for g in list(H) if H.degree(g) == 0])
+pos = nx.kamada_kawai_layout(H)
+cset = set(cand)
+nx.draw_networkx_edges(H, pos, ax=ax, edgelist=[e for e in H.edges() if (e[0] in cset) != (e[1] in cset)],
+                       edge_color=LIGHT, width=0.4)
+nx.draw_networkx_edges(H, pos, ax=ax, edgelist=[e for e in H.edges() if e[0] in cset and e[1] in cset],
+                       edge_color=INK, width=0.9, alpha=0.8)
+shown_hubs = [h for h in hubs if h in H]
+nx.draw_networkx_nodes(H, pos, ax=ax, nodelist=shown_hubs, node_shape="s", node_size=22, node_color="white",
+                       edgecolors=TIER_COLORS["Tier 1"], linewidths=0.9)
+shown = [g for g in cand if g in H]
+nx.draw_networkx_nodes(H, pos, ax=ax, nodelist=shown, node_size=[20 + 5 * robust.at[g, "Total"] for g in shown],
+                       node_color=[MOD_COLORS[mod_of[g]] for g in shown], edgecolors="white", linewidths=0.6)
+center = np.mean([pos[g] for g in H], axis=0)
+NUDGE = {"RPL5": np.array([1.0, -1.0]), "HDAC2": np.array([-1.0, -1.0])}   # manual fixes for label collisions
+for g in H:                                         # labels pushed radially outward to limit overlap
+    u = NUDGE.get(g, pos[g] - center)
+    u = u / (np.linalg.norm(u) + 1e-9)
+    ax.annotate(g, pos[g], xytext=tuple(6 * u), textcoords="offset points", fontstyle="italic",
+                fontsize=5.5 if g in cset else 5, color=INK if g in cset else TIER_COLORS["Tier 1"],
+                ha="left" if u[0] > 0.3 else "right" if u[0] < -0.3 else "center", va="bottom" if u[1] > 0 else "top",
+                path_effects=[patheffects.withStroke(linewidth=1.6, foreground="white")])
+ax.legend(handles=[Line2D([], [], marker="o", ls="", ms=4.5, mfc=c, mec="white", label=m) for m, c in MOD_COLORS.items()]
+                  + [Line2D([], [], marker="s", ls="", ms=3.5, mfc="white", mec=TIER_COLORS["Tier 1"],
+                            label="CGC Tier 1 neighbour")],
+          loc="upper center", bbox_to_anchor=(0.5, 0.0), ncol=3, handletextpad=0.2, columnspacing=0.8)
+ax.margins(0.1)
+ax.axis("off")
+
+# (c) KEGG enrichment of non-CGC adjusted consensus candidates
+def ora(query, universe, gene_sets):
+    query = set(query) & universe
+    rows_ = []
+    for term, gs_ in gene_sets.items():
+        gs_ = gs_ & universe
+        a = len(query & gs_)
+        b, c = len(query) - a, len(gs_) - a
+        _, p = fisher_exact([[a, b], [c, len(universe) - a - b - c]], alternative="greater")
+        rows_.append({"Term": term, "Overlap": a, "FE": (a / len(query)) / (len(gs_) / len(universe)), "P": p})
+    df = pd.DataFrame(rows_)
+    df["FDR"] = multipletests(df["P"], method="fdr_bh")[1]
+    return df
+
+def enrichment_dots(ax, df):
+    df = df.sort_values("FE")
+    logq = -np.log10(df["FDR"].clip(lower=1e-300))
+    sig = df["FDR"] < 0.05
+    sc = ax.scatter(df.loc[sig, "FE"], np.where(sig)[0], s=6 + 4 * df.loc[sig, "Overlap"],
+                    c=logq[sig], cmap="Blues", vmin=0, vmax=max(logq.max(), 2), ec=INK, lw=0.4, zorder=3)
+    ax.scatter(df.loc[~sig, "FE"], np.where(~sig)[0], s=6 + 4 * df.loc[~sig, "Overlap"],
+               facecolor="white", ec=GREY, lw=0.6, zorder=3)
+    ax.axvline(1, color=GREY, lw=0.6, ls=(0, (3, 2)))
+    ax.set_yticks(range(len(df)), df["Term"])
+    ax.set_xlabel("Fold enrichment")
+    ax.grid(axis="y", color="#EEEEEE", lw=0.5)
+    ax.set_axisbelow(True)
+    ax.tick_params(axis="y", length=0)
+    cb = fig.colorbar(sc, ax=ax, shrink=0.55, aspect=12, pad=0.02)
+    cb.set_label("−log10 FDR")
+    cb.outline.set_linewidth(0.4)
+    for n in (2, 5, 10):
+        ax.scatter([], [], s=6 + 4 * n, facecolor="white", ec=INK, lw=0.4, label=str(n))
+    ax.legend(title="Genes", loc="lower right", labelspacing=0.6, borderpad=0.3, handletextpad=0.3)
+
+ax_k = fig.add_subplot(gs[1, :])
+unlabelled = set().union(*[set(df.index) for df in adj.values()])
+novel = support.index[(support["Total"] >= 3) & (support["tier"] == "Non-CGC")].tolist()
+try:
+    import gseapy as gp
+    kegg_sets = {t: set(g) for t, g in gp.get_library("KEGG_2021_Human", organism="human").items()}
+    kegg = ora(novel, unlabelled, {t: g for t, g in kegg_sets.items() if len(g & unlabelled) >= 10})
+    kegg.sort_values("P").to_csv(OUT / "tables/kegg_ora_adjusted_candidates.csv", index=False)
+    enrichment_dots(ax_k, kegg.nsmallest(12, "P"))
+except Exception as e:  # Enrichr needs internet
+    ax_k.text(0.5, 0.5, f"KEGG unavailable:\n{type(e).__name__}", ha="center", transform=ax_k.transAxes)
+    ax_k.axis("off")
+
+label_panels(fig, [ax_s, ax, ax_k])
+save_fig(fig, "Fig5_candidates")
+print(f"KEGG query: {len(novel)} non-CGC genes consensus in >= 3 configs; universe {len(unlabelled):,} unlabelled genes")
+print("Not in GGNet graph:", [g for g in rows if g not in name_to_id])
+```
+
+------------------------------------------------------------------------
+
+## Figure 6 — Multi-omic profile of the robust candidates
+
+Each input omic feature (HGDC/EMOGI: mutation frequency, differential methylation and differential expression in 16
+TCGA cancer types) is converted to a percentile among all genes, so the profile shows which alteration types and
+cancers distinguish each candidate.
+
+```{python}
+#| label: fig6-omics
+#| fig-cap: "**Figure 6. Robust candidates resemble drivers in mutation frequency, but not in methylation or expression.** (a) Percentile among all 11,183 GGNet genes of each input feature (mutation frequency, differential methylation and differential expression in 16 TCGA cancer types) for the 24 robust candidates of Fig 5a, grouped by module, below the medians of labelled drivers and non-drivers. (b) Per-gene mean percentile over the 16 cancer types for each omic type; dots, robust candidates; P values, robust candidates vs other unlabelled genes (two-sided Mann–Whitney U test)."
+
+with open(SPLITS_PKL, "rb") as f:
+    _d = pickle.load(f)
+X = pd.DataFrame(np.asarray(_d["feature"]), index=np.asarray(_d["node_name"]), columns=list(_d["feature_name"]))
+del _d
+OMICS = {"MF": "Mutation", "METH": "Methylation", "GE": "Expression"}
+CANCERS = sorted({c.split(": ")[1] for c in X if c.startswith("MF: ")})
+O_COLS = {o: [f"{o}: {c}" for c in CANCERS] for o in OMICS}
+P = X[sum(O_COLS.values(), [])].rank(pct=True) * 100                   # percentile among all genes, per feature
+
+lab = fold_all[1].set_index("gene_name").reindex(P.index)
+is_lab = lab["is_labeled"].fillna(False).astype(bool)
+grp = pd.Series("Other unlabelled", index=P.index)
+grp[is_lab & (lab["true_label"] == 1)] = "Driver"
+grp[is_lab & (lab["true_label"] == 0)] = "Non-driver"
+grp[grp.index.isin(robust.index)] = "Robust candidate"
+GROUPS = {"Driver": TIER_COLORS["Tier 1"], "Non-driver": GREY, "Robust candidate": MODEL, "Other unlabelled": LIGHT}
+
+fig = plt.figure(figsize=(DOUBLE, 4.0))
+gs = fig.add_gridspec(1, 2, width_ratios=[2.4, 1])
+
+# (a) heatmap: group medians on top, then the robust candidates grouped by module (Fig 5a)
+REF = ["Drivers (median)", "Non-drivers (median)"]
+M = np.vstack([P[grp == "Driver"].median(), P[grp == "Non-driver"].median(), P.reindex(rows).values])
+gsa = gs[0].subgridspec(1, 2, width_ratios=[0.025, 1], wspace=0.01)
+ax_s, ax_h = fig.add_subplot(gsa[0]), fig.add_subplot(gsa[1])
+ax_s.imshow([[0]] * len(REF) + [[list(MODULES).index(mod_of[g]) + 1] for g in rows], aspect="auto",
+            vmin=0, vmax=len(MODULES), cmap=ListedColormap(["white"] + list(MOD_COLORS.values())))
+ax_s.set_yticks(range(len(M)), REF + rows)
+italic(ax_s.get_yticklabels()[len(REF):])
+ax_s.set_xticks([])
+ax_s.tick_params(axis="y", length=0, labelsize=5)
+im = ax_h.imshow(M, aspect="auto", cmap=sns.color_palette("mako_r", as_cmap=True), vmin=0, vmax=100)
+ax_h.set_xticks(range(M.shape[1]), CANCERS * len(OMICS), rotation=90, fontsize=4.5)
+ax_h.set_yticks([])
+for j, o in enumerate(OMICS.values()):
+    ax_h.text((j + 0.5) * len(CANCERS) - 0.5, -0.9, o, ha="center", va="bottom", fontsize=6)
+for a in (ax_s, ax_h):
+    for s in a.spines.values():
+        s.set_visible(False)
+    a.tick_params(axis="x", length=0)
+    for b in [len(REF) - 0.5, *(breaks + len(REF))]:
+        a.axhline(b, color="white", lw=2 if b == len(REF) - 0.5 else 1.2)
+for j in range(1, len(OMICS)):
+    ax_h.axvline(j * len(CANCERS) - 0.5, color="white", lw=2)
+fig.colorbar(im, ax=ax_h, shrink=0.5, aspect=15, pad=0.01, label="Percentile (all genes)").outline.set_linewidth(0.4)
+
+# (b) pan-cancer mean percentile per omic type, by gene group
+ax_b = fig.add_subplot(gs[1])
+S = pd.DataFrame({o: P[c].mean(axis=1) for o, c in O_COLS.items()})
+order = list(GROUPS)
+for i, o in enumerate(OMICS):
+    for j, gname in enumerate(order):
+        v, x = S.loc[grp == gname, o].values, i + (j - 1.5) * 0.2
+        ax_b.boxplot(v, positions=[x], widths=0.16, showfliers=False, patch_artist=True,
+                     boxprops={"facecolor": GROUPS[gname], "lw": 0.5}, medianprops={"color": INK, "lw": 0.9},
+                     whiskerprops={"lw": 0.5}, capprops={"lw": 0})
+        if gname == "Robust candidate":
+            ax_b.scatter(x + rng.uniform(-0.05, 0.05, len(v)), v, s=3, color=INK, lw=0, zorder=3)
+    p = mannwhitneyu(S.loc[grp == "Robust candidate", o], S.loc[grp == "Other unlabelled", o]).pvalue
+    ax_b.text(i + 0.2, 101, fmt_p(p), ha="center", va="bottom", fontsize=5)
+ax_b.set_xticks(range(len(OMICS)), list(OMICS.values()))
+ax_b.set(ylabel="Mean percentile over 16 cancers", ylim=(0, 108), xlim=(-0.5, len(OMICS) - 0.5))
+ax_b.legend(handles=[Patch(color=GROUPS[g], label=f"{g} (n = {(grp == g).sum():,})") for g in order],
+            loc="lower center", bbox_to_anchor=(0.5, 1.06), ncol=2, handlelength=1, columnspacing=0.8)
+
+label_panels(fig, [ax_s, ax_b])
+save_fig(fig, "Fig6_omic_profile")
+
+print("Median of per-gene mean percentile:\n", S.groupby(grp).median().round(1).loc[order].to_string())
+top = P.reindex(rows).T.groupby(lambda c: c.split(": ")[0]).mean().T.round(0)
+print("\nPer-candidate mean percentile by omic type:\n", top.assign(module=[mod_of[g] for g in top.index]).to_string())
+```
+
+------------------------------------------------------------------------
+
+## Supplementary Figure S1 — Training dynamics
+
+```{python}
+#| label: figS1-training
+#| fig-cap: "**Supplementary Figure S1. Inner-validation metrics during training** (15% of each fold's training genes, used for early stopping; 5 folds, grey; mean ± SD, blue; 25-epoch moving average)."
+
+keys = [("val_auroc", "AUROC"), ("val_auprc", "AUPRC"), ("val_ndcg@50", "NDCG@50"), ("val_precision@50", "Precision@50")]
+fig, axs = plt.subplots(1, 4, figsize=(DOUBLE, 1.7))
+for ax, (k, lbl) in zip(axs, keys):
+    plot_history(ax, k)
+    ax.set_ylabel(f"Inner-val. {lbl}")
+label_panels(fig, axs)
+save_fig(fig, "FigS1_training")
+```
+
+------------------------------------------------------------------------
+
+## Tables (CSV, for typesetting)
+
+Tables go to `plots/publication/tables/` as CSV, because journals typeset tables from text rather than images.
+
+```{python}
+#| label: tables
+
+# Main configuration (GGNet random r=0.2): top 25 non-CGC genes by adjusted rank (FLAGS genes have no adjusted rank)
+main = adj[("GGNet", "random_r0.2")]
+novel_tbl = (main[main.index.map(tier) == "Non-CGC"].dropna(subset=["mean_flags_rank"])
+             .sort_values("mean_flags_rank").head(25)
+             .assign(configs_consensus=lambda d: support["Total"].reindex(d.index).fillna(0).astype(int))
+             [["length", "mean_raw_rank", "mean_flags_rank", "folds_top_flags", "consensus_flags", "configs_consensus"]]
+             .reset_index())
+novel_tbl.to_csv(OUT / "tables/novel_candidates_top25.csv", index=False)
+
+# Robust candidates: adjusted consensus in >= 8 of 18 configs (Fig 5a)
+robust_tbl = (robust.loc[rows, NETS + ["Total", "Raw", "tier"]]
+              .assign(module=lambda d: d.index.map(mod_of)).rename(columns={"Raw": "Total_raw"}).reset_index())
+robust_tbl.to_csv(OUT / "tables/robust_candidates.csv", index=False)
+
+display(novel_tbl.style.hide(axis="index").format({"mean_raw_rank": "{:.1f}", "mean_flags_rank": "{:.1f}"})
+        .set_caption("Top 25 adjusted novel candidates, GGNet random r=0.2 (unlabelled, not CGC); configs_consensus = of 18"))
+display(robust_tbl.style.hide(axis="index")
+        .set_caption("Robust candidates: configs (of 6 per network, 18 total) as adjusted consensus candidates"))
+```

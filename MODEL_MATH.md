@@ -112,16 +112,19 @@ splits over `np.arange(num_nodes)` — all 11,395 genes. `train_model.py` never
 reads `mask`. The `_ten_5CV.pkl` variants carry HGDC's own `split_set` (their
 10×5CV protocol); that key is never read either.
 
-Consequence: label 0 pools curated non-drivers with unannotated genes, and that
-pooled class is the negative class in the BPR loss *and* in AUROC/AUPRC/NDCG.
-Sections 2.5 and 2.6 now state this and flag the resulting non-comparability
-with published baselines, which evaluate on the annotated subset.
+Consequence (runs up to May 2026): label 0 pooled curated non-drivers with
+unannotated genes, and that pooled class was the negative class in the BPR loss
+*and* in AUROC/AUPRC/NDCG, so the reported metrics were not comparable with
+published baselines, which evaluate on the annotated subset.
 
-**Decision still open:** whether to keep evaluating over all genes (current
-behaviour, matches the intended use case) or to add a second evaluation
-restricted to `mask` for like-for-like comparison with HGDC. The latter is a
-code change — read `mask`, evaluate twice, report both — not a prose change.
-Reporting both is the strongest option if compute allows.
+**RESOLVED (Oct 2026): HGDC's protocol adopted.** `train_model.py --split_file`
+now reads HGDC's released `split_set` (repeat 0 of 10) through
+`load_hgdc_splits` ([train_model.py:440](model/train_model.py#L440)): train and
+test folds cover HGDC's annotated genes only, unannotated genes are never used as
+labels, and an inner validation split handles model selection so each test fold is
+evaluated once. Sections 2.0, 2.5, 2.6, S2, S6.3 and S7.2–S7.3 are rewritten to
+match. All results produced before this change must be regenerated before any number
+from them enters the manuscript.
 
 **B. GGNet is not a protein interaction network.** The three networks are different
 in kind: PathNet is built from KEGG and Reactome pathways, GGNet is a gene–gene
@@ -163,15 +166,16 @@ networks match published baselines: **GGNet**, a gene–gene interaction network
 derived from RNA-level interactomes; **PathNet**, built from KEGG and Reactome
 pathways; and **PPNet**, the STRING protein interaction network. The three
 networks are built over different gene sets, not a shared one — $n$, and the
-driver/unlabelled split within it, is per-network:
+label split within it, is per-network:
 
-| Network | Genes ($n$) | Drivers | Unlabelled |
-|---|---|---|---|
-| GGNet   | 11,183 | 708 | 10,475 |
-| PathNet | 7,695  | 598 | 7,097  |
-| PPNet   | 11,395 | 716 | 10,679 |
+| Network | Genes ($n$) | Drivers | Curated non-drivers | Unlabelled |
+|---|---|---|---|---|
+| GGNet   | 11,183 | 708 | 1,101 | 9,374 |
+| PathNet | 7,695  | 598 | 701   | 6,396 |
+| PPNet   | 11,395 | 716 | 1,026 | 9,653 |
 
-(`misc/explore_networks.ipynb`). Every network shares the same
+(counted from HGDC's `dataset_*_ten_5CV.pkl`; drivers and curated non-drivers
+together form HGDC's annotated set). Every network shares the same
 58-dimensional multi-omics feature schema $X \in \mathbb{R}^{n \times 58}$,
 later extended to 73 dimensions with the fifteen curvature descriptors of 2.2;
 only $n$ and the specific genes present differ. Elsewhere in this document,
@@ -179,31 +183,25 @@ only $n$ and the specific genes present differ. Elsewhere in this document,
 read as a figure shared across all three networks — state the per-network
 count wherever a specific run is being described.
 
-Labels are a single binary vector inherited from HGDC's `dataset_*.pkl`
-(`edge_index`, `feature`, `x`, `label`, `kfold_splits`, `ollivier_curvature`):
-known drivers as positives, and every other gene unlabelled rather than
-negative, consistent with the positive-unlabelled framing of 2.5. The
+Labels follow HGDC [4]: known drivers are positives, EMOGI-compiled likely
+non-drivers [26] are negatives, and every remaining gene is unlabelled. Training
+and evaluation use only the annotated genes, through HGDC's released fold
+assignment (2.5); unlabelled genes are scored but never used as labels. The
 COSMIC/CGC version and tier filter underlying HGDC's own driver list is not
 independently verified here.
 
 This is distinct from the downstream validation and enrichment analysis
-(`Downstream/poster_plots.qmd`), which never participates in training and
+(2.7; `Downstream/publication_figures.qmd`,
+`Downstream/length_adjusted_candidates.py`), which never participates in training and
 instead labels predictions against a separately sourced reference: COSMIC
 Cancer Gene Census v103, GRCh38 [28,29] (`Downstream/cosmic/`), split into
 Tier 1 and Tier 2. The two uses of "CGC" in this paper are not guaranteed to
 be version-matched, and this difference should be stated plainly rather than
 implied to be one dataset.
 
-**Limitation.** HGDC additionally ships a `mask` key flagging which genes
-carry *any* curated annotation, positive or EMOGI-curated negative
-([train_model.py:400](model/train_model.py#L400); see "Two corrections HGDC
-forces," item A, above). DriverJinn does not read it: the unlabelled class
-used for both the ranking loss (2.5) and every reported metric (2.6) pools
-curated non-drivers together with genes that are simply unannotated. This
-is a deliberate consequence of evaluating over the full gene set rather than
-the annotated subset alone (2.5), but it means AUROC/AUPRC reported here are
-not computed over the same negative population as published baselines that
-restrict evaluation to annotated genes.
+Because training and evaluation use HGDC's own annotated genes and fold
+assignment, the metrics in 2.6 are computed over the same genes, negative
+population and test folds as the published baselines on these networks [4].
 
 ---
 
@@ -426,32 +424,46 @@ standing expectation for network-based driver methods [26,27].
 
 ## 2.5 Training objective
 
-Known driver genes are positives. Every remaining gene is treated as
-**unlabelled rather than negative**: a gene absent from the COSMIC Cancer Gene
-Census [28,29] may simply be undiscovered, and driver catalogues have grown
+Labels are taken from the HGDC release [4]. Known drivers $\mathcal{P}$ are
+positives, and the likely non-drivers compiled by the procedure of EMOGI [26] are
+negatives $\mathcal{N}$; together they form the annotated set
+$\mathcal{A} = \mathcal{P} \cup \mathcal{N}$. Every remaining gene $\mathcal{U}$
+is treated as **unlabelled, never negative**: a gene absent from the COSMIC Cancer
+Gene Census [28,29] may simply be undiscovered, and driver catalogues have grown
 substantially with each pan-cancer release [30,31]. This is the
 positive-unlabelled (PU) setting [32,33], well established in bioinformatics
-[34,35].
+[34,35]. Rather than assign these genes a label, DriverJinn leaves them out of
+every supervised term and scores them only at inference, so each fold's model
+ranks them as genes it has never seen labelled.
 
-Driver annotations are taken from the HGDC release [4], which also distributes a
-curated set of likely non-drivers compiled by the procedure of EMOGI [26] and a
-mask identifying which genes carry either annotation. DriverJinn uses the
-driver labels throughout — for the ranking loss and for every reported metric —
-but evaluates over the full gene set rather than restricting to the annotated
-subset: cross-validation folds are stratified over all $n$ genes, so the
-negative class in both training and evaluation pools curated non-drivers with
-genes that are simply unannotated.
+**Data partitioning and model selection.** Folds are HGDC's released assignment
+(`split_set`, repeat 0 of the 10 provided), which partitions $\mathcal{A}$ into
+five disjoint test folds $\mathcal{A}^{(f)}_{\text{te}}$
+([train_model.py:440](model/train_model.py#L440)). For fold $f$, the remaining
+annotated genes are split once more, stratified by label (85/15, seed 42), into
+an inner training set and an inner validation set:
 
-This follows from the task. The output is a ranking over the unannotated
-majority, and restricting evaluation to genes already annotated in one direction
-or the other would measure performance on a population that excludes the
-candidates of interest. It has one consequence for benchmarking: methods
-evaluated on the annotated subset alone are scored against a different negative
-population, so AUROC and AUPRC reported here are not directly comparable to
-their published values (2.6).
+$$
+\mathcal{A} \setminus \mathcal{A}^{(f)}_{\text{te}}
+\;=\; \mathcal{A}^{(f)}_{\text{tr}} \,\sqcup\, \mathcal{A}^{(f)}_{\text{val}} .
+$$
 
-The model is therefore trained as a ranker, never as a binary classifier, and
-the objective combines a self-supervised and a supervised term:
+The three sets have strictly separate roles:
+
+| Set | Role | GGNet / PathNet / PPNet (genes per fold) |
+|---|---|---|
+| $\mathcal{A}^{(f)}_{\text{tr}}$ | supervised ranking loss | ≈1,230 / 885 / 1,185 |
+| $\mathcal{A}^{(f)}_{\text{val}}$ | learning-rate schedule, early stopping, checkpoint selection | ≈217 / 156 / 209 |
+| $\mathcal{A}^{(f)}_{\text{te}}$ | evaluated **once**, after training; the only numbers reported | 362 / 260 / 349 |
+
+No test-fold gene contributes a label to training, selection or early stopping.
+All genes, including $\mathcal{U}$ and the test fold, still take part *unlabelled*
+in message passing and in the label-free contrastive term — the standard
+transductive setting for node ranking on a fixed graph, shared by HGDC and the GNN
+baselines it reports [4,26,27].
+
+The model is trained as a ranker, never as a binary classifier, and the objective
+combines a self-supervised and a supervised term:
 
 $$
 \mathcal{L} \;=\;
@@ -486,11 +498,11 @@ it remains a function of the graph, just not of which perturbed copy of the
 graph it was shown.
 
 **Ranking objective.** $\mathcal{L}_{\text{rank}}$ is a Bayesian Personalised
-Ranking loss [38] over (positive, unlabelled) pairs, focal-weighted [39] and
-trained with hard-negative mining on a curriculum (S6.2). BPR is the natural
-choice here: it is defined for implicit, positive-only feedback, which is
-structurally the same problem as a positive-only driver catalogue, and it
-avoids the hard threshold a binary classifier would need to separate driver
+Ranking loss [38] over (driver, curated non-driver) pairs drawn from
+$\mathcal{A}^{(f)}_{\text{tr}}$, focal-weighted [39] and trained with
+hard-negative mining on a curriculum (S6.3). BPR is the natural choice here: it
+optimises the order of pairs directly, which is what a ranked shortlist needs, and
+it avoids the hard threshold a binary classifier would need to separate driver
 from non-driver.
 
 $\lambda = 0.2$, and the ranking term is rescaled by $\varsigma = 5$ to match
@@ -508,8 +520,10 @@ network remains scoreable at inference.
 
 ## 2.6 Evaluation
 
-All metrics are computed under 5-fold cross-validation on held-out genes, using
-exponential-moving-average weights [40,41] (S7.2). The primary metric is NDCG@50
+All reported metrics are computed on HGDC's five test folds
+$\mathcal{A}^{(f)}_{\text{te}}$ (2.5), each evaluated once, with the
+exponential-moving-average weights [40,41] of the checkpoint selected on the inner
+validation set (S7.2); figures are mean ± SD over the five folds. The primary metric is NDCG@50
 [42]: with $v_{(1)},\dots,v_{(K)}$ the top-$K$ genes by score and $y_v \in \{0,1\}$,
 
 $$
@@ -522,9 +536,10 @@ using linear gain; under binary relevance this is identical to the exponential g
 $2^{y}-1$ convention [42]
 ([model/DriverGenePredictor.py:1122](model/DriverGenePredictor.py#L1122)).
 
-**Why NDCG@50 and Precision@50 rather than AUROC.** With 716 known drivers among
-11,395 genes (≈6% positives, PPNet), AUROC is dominated by the ranking of the vast
-unlabelled majority. Saito & Rehmsmeier showed that ROC analysis is visually and
+**Why NDCG@50 and Precision@50 rather than AUROC.** The ranking is deployed over
+the whole network, where known drivers are rare (716 of 11,395 genes, ≈6%, on
+PPNet), so AUROC would be dominated by the order of the vast unlabelled majority.
+Saito & Rehmsmeier showed that ROC analysis is visually and
 inferentially misleading under exactly this kind of imbalance, and that
 precision-oriented measures give a more faithful picture of what a classifier will
 do in deployment [43]. More importantly, AUROC does not match the use case: the
@@ -536,17 +551,78 @@ work [26,27,37], since the published baselines on these three networks report AU
 and AUPR under 10 repetitions of 5-fold cross-validation [4] and a comparison is
 otherwise impossible.
 
-Two caveats attach to that comparison. First, as noted in 2.5, DriverJinn's
-folds are stratified over all $n$ genes, so its negative class pools EMOGI's
-curated non-drivers [26] with unannotated genes, whereas the published figures
-are obtained on the annotated subset alone; the two are computed over different
-negative populations and are not interchangeable. Second, no prior method on
-these networks reports NDCG@K. Where
-a like-for-like ranking comparison is required, baseline methods are therefore
-rerun from their released implementations under the present evaluation protocol
-and scored with the same NDCG@K code as DriverJinn.
+Because DriverJinn is trained and tested on HGDC's own annotated genes and fold
+assignment (2.5), its AUROC and AUPRC are computed over the same genes, negative
+population and test folds as the published HGDC, EMOGI, MTGCN, GCN, GAT, Chebnet
+and SVM figures [4], and can be tabulated against them directly. Two caveats
+remain. First, those figures average 10 repetitions of 5-fold cross-validation,
+whereas DriverJinn reports repetition 0; this is stated alongside any comparison
+table. Second, on HGDC's test folds drivers make up ≈39–46% of genes, so a random
+ranking already scores NDCG@50 and Precision@50 near that share; these values are
+not comparable with any computed over the full network. No prior method on these
+networks reports NDCG@K, so where a ranking comparison is required, baselines are
+rerun from their released implementations on the same folds and scored with the
+same NDCG@K code as DriverJinn.
+
+**Two AUPRC conventions.** DriverJinn's AUPRC is average precision [14], the
+step-wise sum over the PR curve with no interpolation (S8). HGDC and SCIS-CDG
+instead report the trapezoidal area under the PR curve, which interpolates
+linearly between operating points and so overstates precision where recall
+jumps [66]. Both are computed
+([model/DriverGenePredictor.py:752-756](model/DriverGenePredictor.py#L752-L756));
+the trapezoidal value (`auprc_trapz`) is used only when tabulating against those
+baselines, and the convention is stated in every table.
 
 > Supplementary: full metric definitions (S8).
+
+---
+
+## 2.7 Candidate prioritisation and enrichment
+
+Unlabelled genes have no label to evaluate against, so the candidate list is
+built from their scores under the five test-fold models. Raw scores are not
+calibrated across folds, so within fold $f$ each unlabelled gene $u$ gets only a
+rank $r^{(f)}(u)$ among the unlabelled genes. A gene is a *consensus candidate* if
+$r^{(f)}(u) \le 100$ in at least three of the five folds
+([model/aggregate_fold_results.py:125](model/aggregate_fold_results.py#L125)), and
+candidates are ordered by mean within-fold rank.
+
+**Length and degree correction.** Raw rankings over-represent very long genes and
+network hubs. In the raw consensus lists, 27–69 of the 58–96 candidates per
+configuration fall in the longest coding-length decile, and among labelled genes
+the out-of-fold percentile rises with degree (Spearman $\rho = 0.32$). Both
+patterns are known confounders: long genes accumulate passenger mutations at the
+background rate [61,67], and hubs aggregate more messages and have more labelled
+neighbours. Before any gene is named, its within-fold score is therefore replaced
+by its percentile within a stratum of genes of similar size and connectivity,
+
+$$
+\pi^{(f)}(u) \;=\; \frac{\bigl|\{w \in B(u) : s^{(f)}_w \le s^{(f)}_u\}\bigr|}{|B(u)|},
+\qquad
+B(u) = \{\,w : \mathrm{dec}_L(w) = \mathrm{dec}_L(u),\ \mathrm{quin}_D(w) = \mathrm{quin}_D(u)\,\}
+$$
+
+where $\mathrm{dec}_L$ is the coding-length decile and $\mathrm{quin}_D$ the degree
+quintile, both taken over the unlabelled genes, giving 50 strata. Coding length is
+the union of CDS intervals across GENCODE v28 basic transcripts [68], the
+annotation shipped with HGDC's preprocessing [4]. Degree is the undirected degree
+in the network the model was trained on. Genes are re-ranked by $\pi^{(f)}$, with
+ties broken by raw score. Strata are used rather than a regression on length
+because the effect is not linear: it sits almost entirely in the longest decile.
+The script asserts that $|\rho(\pi, \text{length})| < 0.05$ after adjustment.
+Finally, the FLAGS genes — the 100 genes most frequently mutated in public exomes
+of healthy individuals [67] — are removed from the unlabelled pool, because the
+longest-length decile is broad enough that genes such as TTN still lead it.
+Consensus is then recomputed exactly as above, so raw and adjusted lists are
+directly comparable.
+
+**Enrichment.** Each consensus list is tested for Cancer Gene Census v103
+membership [28,29] against the remaining unlabelled genes with a one-sided
+Fisher's exact test, and results are reported for both raw and adjusted lists
+([Downstream/length_adjusted_candidates.py](Downstream/length_adjusted_candidates.py)).
+Because the unlabelled pool excludes HGDC's annotated genes, a CGC gene here is
+one that HGDC's training labels missed. This makes the test a check against an
+independent reference, not a recovery of training positives.
 
 ---
 
@@ -606,17 +682,23 @@ computed as features but only Ollivier enters message passing
 
 ## S2. Per-fold standardisation
 
-For fold $f$ with training nodes $V^{(f)}_{\text{tr}}$:
+For fold $f$, the scaler is fitted on every gene outside the test fold,
+$V^{(f)}_{\text{fit}} = V \setminus \mathcal{A}^{(f)}_{\text{te}}$ (2.5):
 
 $$
 \hat{x}_{v,j}^{(f)} = \frac{\tilde{x}_{v,j} - \mu_j^{(f)}}{\sigma_j^{(f)}},
 \qquad
-\mu_j^{(f)} = \frac{1}{|V^{(f)}_{\text{tr}}|}\!\!\sum_{v \in V^{(f)}_{\text{tr}}}\!\! \tilde{x}_{v,j},
+\mu_j^{(f)} = \frac{1}{|V^{(f)}_{\text{fit}}|}\!\!\sum_{v \in V^{(f)}_{\text{fit}}}\!\! \tilde{x}_{v,j},
 $$
 
-with $\sigma_j^{(f)} \leftarrow 1$ wherever $\sigma_j^{(f)} = 0$ [14]. The same
-fold-specific scaler is applied to the original graph and to both augmented views,
-so no view carries distributional information from held-out genes.
+with $\sigma_j^{(f)} \leftarrow 1$ wherever $\sigma_j^{(f)} = 0$ [14]
+([train_model.py:672](model/train_model.py#L672)). Standardisation uses no labels,
+so fitting on unlabelled genes leaks nothing; fitting on the ≈1,200 annotated
+training genes alone would instead take statistics from a small, driver-enriched
+sample and mis-scale the unlabelled majority the model is meant to rank. Test-fold
+genes are excluded, so the scaler carries no distributional information from
+them. The same fold-specific scaler is applied to the original graph and to both
+augmented views.
 
 ## S3. Schur complement: sampling, orders, alignment
 
@@ -861,10 +943,10 @@ Both directions are included; every other gene in both views is a negative.
 ### S6.3 Focal BPR with hard-negative curriculum
 
 BPR [38] with the focal modulating factor of [39]. Of $P$ sampled
-(positive, unlabelled) pairs — the unlabelled member drawn from the full
-non-positive remainder (2.5) — a fraction $\varphi(t) = 0.25 + 0.5\,t$ at
-training progress $t$ are the top-scoring unlabelled genes (hard negatives); the
-rest are uniform. With
+(driver, curated non-driver) pairs — both members drawn from the inner training
+set $\mathcal{A}^{(f)}_{\text{tr}}$ (2.5) — a fraction $\varphi(t) = 0.25 + 0.5\,t$
+at training progress $t$ use the top-scoring curated non-drivers (hard negatives);
+the rest are uniform. With
 $\Delta_{pq} = s_p - s_q$:
 
 $$
@@ -874,10 +956,10 @@ $$
 $$
 
 Early training sees easy negatives (stable gradients); late training concentrates on
-genes being confused with drivers. Note that under the PU assumption [32] the
-hardest "negatives" are, by construction, the most plausible undiscovered drivers;
-the curriculum ceiling of 0.75 is set to limit how strongly the model is pushed to
-separate them.
+curated non-drivers being confused with drivers. Unlabelled genes never enter a
+pair, so the model is not pushed to demote plausible undiscovered drivers [32]; the
+curriculum ceiling of 0.75 keeps a quarter of each batch uniform, so the loss is not
+dominated by a few borderline curated negatives.
 
 ### S6.4 Alternative ranking losses (implemented, not default)
 
@@ -916,17 +998,28 @@ $$
 \qquad \gamma = 0.999
 $$
 
-EMA weights are used for **all** evaluation and for the final ranked gene list. The
-monitored signal is a smoothed validation NDCG@50,
+EMA weights are used for **all** evaluation and for the final ranked gene list.
+Model selection uses only the inner validation set $\mathcal{A}^{(f)}_{\text{val}}$
+(2.5), evaluated every 20 epochs. The monitored signal is a smoothed inner-validation
+NDCG@50 over successive checks $c$,
 
 $$
-\widetilde{\mathrm{NDCG}}_e = \alpha\,\mathrm{NDCG}^{(e)}_{@50} + (1-\alpha)\,\widetilde{\mathrm{NDCG}}_{e-1},
+\widetilde{\mathrm{NDCG}}_c = \alpha\,\mathrm{NDCG}^{(c)}_{@50} + (1-\alpha)\,\widetilde{\mathrm{NDCG}}_{c-1},
 \qquad \alpha = 0.3,
 $$
 
-fed to `ReduceLROnPlateau` ($\times 0.7$, patience 5) and early stopping
-(patience 15). Smoothing prevents spurious LR cuts from single-epoch variance on a
-few hundred validation drivers.
+fed to `ReduceLROnPlateau` ($\times 0.5$, patience 5 checks) after a 10-epoch
+linear warm-up, and to early stopping (patience 15 checks, i.e. 300 epochs).
+Smoothing prevents spurious LR cuts from check-to-check variance on the ≈85 drivers
+in a GGNet inner validation set. The retained checkpoint is the one with the highest
+unsmoothed inner-validation NDCG@50
+([train_model.py:1231](model/train_model.py#L1231)). After training, that
+checkpoint's EMA weights are restored and the test fold is evaluated exactly once
+([train_model.py:1258-1272](model/train_model.py#L1258-L1272)); the same weights
+score every gene for the ranked list. Inner-validation values are used only for
+selection and are never reported. With drivers forming ≈40% of the annotated genes,
+a random ranking scores about 0.4 on this signal, which is why it starts well above
+the values seen under the earlier all-gene protocol.
 
 ### S7.3 Hyperparameters
 
@@ -937,12 +1030,16 @@ few hundred validation drivers.
 | $\tau$ | 0.3 | $\lambda$ | 0.2 |
 | dropout $p$ | 0.3 | $\varsigma$ (ranking scale) | 5.0 |
 | $\rho$ | 0.2 | views $n_V$ | 2 |
-| attention mode | `hybrid` | pathway aggregation | `attention` |
+| attention mode | `hybrid` | pathway aggregation | `hierarchical` |
 | aggregation $\bigoplus$ | `max` | $\gamma$ (EMA) | 0.999 |
 | lr / weight decay | 5e-4 / 5e-4 | accumulation $T$ | 8 |
 | $\gamma$ (focal) | 2.0 | pairs $P$ | 512 |
-| $\varrho_{\min}$ | 0.15 | LeakyReLU slope | 0.2 |
-| epochs (max) | 1200 | folds | 5 |
+| $\varrho_{\min}$ | 0.15 | LeakyReLU slope | 0.25 |
+| epochs (max) | 1000 | folds | 5 (HGDC `split_set`, repeat 0) |
+| validation interval | 20 epochs | inner validation fraction | 0.15 |
+| LR factor / patience | 0.5 / 5 checks | early-stopping patience | 15 checks |
+
+Values match the cluster run script, [run_model_array.sh](run_model_array.sh).
 
 ### S7.4 Complexity
 
@@ -973,16 +1070,18 @@ The NT-Xent term is the practical bottleneck: it is quadratic in the number of g
 shared by the two views ($N \approx (1-\rho)n$), which is why the similarity matrix
 is built once per accumulation step rather than per pathway.
 
-**Scale actually run:** PPNet, $n = 11{,}395$ genes after filtering,
-$|\mathcal{P}| = 716$ known drivers, from the HGDC data release [4]
-`[state filtering relative to the published node count]`; 5 folds × 3 networks
-(GGNet, PathNet, PPNet) × 3 strategies × 2 elimination ratios.
+**Scale actually run:** 3 networks (GGNet, PathNet, PPNet; sizes in 2.0) × 3
+elimination strategies × 2 elimination ratios × 5 HGDC test folds = 90 training
+runs, one GPU each ([run_model_array.sh](run_model_array.sh)). The largest network
+is PPNet, $n = 11{,}395$ genes with $|\mathcal{P}| = 716$ known drivers, from the
+HGDC data release [4] `[state filtering relative to the published node count]`.
 
-> **TODO before submission — not currently instrumented.** Wall-clock per epoch,
-> total training time per fold, peak GPU memory, and preprocessing time for the
-> curvature LP. No timing is written to `logs/` or to the results directories, so
-> these must be measured on a fresh run (single NVIDIA H100). Reviewers at this
-> venue routinely ask; a one-line "trains in X h on one GPU" is enough.
+> **TODO before submission — partly measured.** From the Oct 2026 run log, GGNet
+> takes ≈49 s per epoch on one NVIDIA H100 (16.3 min per 20-epoch validation
+> interval), so a fold that reaches the 1,000-epoch cap takes ≈13.6 h. Still to
+> record: total time per fold after early stopping, peak GPU memory, and
+> preprocessing time for the curvature LP. Reviewers at this venue routinely ask;
+> a one-line "trains in X h on one GPU" is enough.
 
 ## S8. Metric definitions
 
@@ -997,6 +1096,16 @@ $$
 $$
 \mathrm{AUROC} = \Pr\bigl[s_p > s_q \;\big|\; p \in \mathcal{P},\, q \notin \mathcal{P}\bigr]
 $$
+
+$$
+\mathrm{AP} = \sum_{k} (R_k - R_{k-1})\,P_k,
+\qquad
+\mathrm{AUPRC}_{\text{trapz}} = \sum_{k} (R_k - R_{k-1})\,\frac{P_k + P_{k-1}}{2}
+$$
+
+with $(R_k, P_k)$ the recall and precision at the $k$-th score threshold. AP is
+the reported AUPRC; the trapezoidal form matches HGDC and SCIS-CDG and is used
+only for comparison with them (2.6).
 
 with $r(v)$ the 1-indexed rank of driver $v$, $K \in \{10,20,50,100\}$. NDCG as in
 [42]; see [43] on the interpretation of AUROC and AUPRC under the present class
@@ -1082,6 +1191,12 @@ correcting. Numbered in order of first citation in the Methods.
 64. Han Y, Yang J, Qian X, *et al.* DriverML: a machine learning algorithm for identifying driver genes in cancer sequencing studies. *Nucleic Acids Res* 2019;47:e45.
 65. Cowen L, Ideker T, Raphael BJ, Sharan R. Network propagation: a universal amplifier of genetic associations. *Nat Rev Genet* 2017;18:551–562.
 
+*Added Oct 2026 for 2.6–2.7; renumber into citation order before submission.*
+
+66. Davis J, Goadrich M. The relationship between precision-recall and ROC curves. *ICML* 2006:233–240.
+67. Shyr C, Tarailo-Graovac M, Gottlieb M, Lee JJM, van Karnebeek C, Wasserman WW. FLAGS, frequently mutated genes in public exomes. *BMC Med Genomics* 2014;7:64.
+68. Frankish A, Diekhans M, Ferreira AM, *et al.* GENCODE reference annotation for the human and mouse genomes. *Nucleic Acids Res* 2019;47:D766–D773.
+
 ---
 
 # PART III — INTERNAL
@@ -1094,7 +1209,9 @@ The math is now sourced; these determine acceptance and are not derivable from c
 
 - [ ] **Baseline comparison.** HGDC [4] already publishes AUC/AUPR for HGDC, MTGCN,
       EMOGI, GCN, GAT, Chebnet and SVM on exactly GGNet/PathNet/PPNet under 10×
-      5-CV, so those numbers are quotable if your protocol matches. You still need:
+      5-CV. The protocol now matches (HGDC's own folds, repeat 0), so those numbers
+      are quotable with a note that DriverJinn reports one of the ten repeats; run
+      `--split_repeat 1..9` if compute allows. You still need:
       SCIS-CDG [20] — omitting it will be read as avoidance, since DriverJinn shares
       its augmentation class; and NDCG@K for the GNN baselines, which nobody
       reports, so you must rerun from released code. Add MutSigCV [61],
@@ -1105,9 +1222,20 @@ The math is now sourced; these determine acceptance and are not derivable from c
       and HGDC's CDG list; gene counts before and after filtering, with the
       discrepancy against the published PPNet node count explained. Lift HGDC's
       references 33, 37, 38 verbatim for the three network sources.
-- [ ] **Label policy.** State explicitly whether the curated non-drivers are used as
-      negatives, discarded, or both (editorial note A). This determines whether your
-      AUROC/AUPR are comparable to the published baselines.
+- [x] **Label policy.** Resolved (editorial note A, 2.5): curated non-drivers are the
+      negatives, unlabelled genes are never labels, HGDC's folds are used, and model
+      selection runs on an inner validation split.
+- [x] **Regenerate every number.** Done from `model_results_2026-10-16` (18 configs
+      × 5 folds); MANUSCRIPT.md's abstract and drafting notes carry the new values.
+      The pre-Oct-2026 figures ("8.7-fold enrichment", hallmark counts, CGC tier
+      medians, the chromatin cluster) must not reappear; the poster and
+      `Downstream/poster_plots.qmd` still carry them.
+- [x] **Length / degree bias in candidates.** Corrected (2.7); results in
+      `Downstream/length_adjusted/`. Remaining: Fig 5 of `publication_figures.qmd`
+      still plots raw ranks and should switch to the adjusted ones.
+- [ ] **Trapezoidal AUPRC values.** `auprc_trapz` (2.6, S8) was added after the
+      2026-10-16 runs, so no values exist yet. Rerun, or recompute from saved
+      per-gene scores and HGDC's `split_set`, before the baseline table is built.
 - [ ] **Biological validation of novel predictions.** Material exists in
       [Downstream/](Downstream/). Needs literature support for top-ranked unlabelled
       genes. This is the section that gets the paper accepted here.

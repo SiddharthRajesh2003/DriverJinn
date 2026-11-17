@@ -1277,7 +1277,8 @@ def train_single_fold(
         labeled_mask = (train_mask_original | val_mask_original | test_mask_original).cpu() # HGDC's labelled genes
         print(f"  Test NDCG@50: {reported_metrics.get('ndcg@50', 0):.4f} | "
               f"Test AUROC: {reported_metrics.get('auroc', 0):.4f} | "
-              f"Test AUPRC: {reported_metrics.get('auprc', 0):.4f}")
+              f"Test AUPRC: {reported_metrics.get('auprc', 0):.4f} "
+              f"(trapezoidal: {reported_metrics.get('auprc_trapz', 0):.4f})")
 
     # Score all genes
     print(f"\n{'='*80}")
@@ -1666,7 +1667,7 @@ def main():
         print(f"\nFold {fold_idx}:")
         print(f"  NDCG@50:   {metrics.get('ndcg@50', 0):.4f}  ← PRIMARY")
         print(f"  AUROC:     {metrics.get('auroc', 0):.4f}")
-        print(f"  AUPRC:     {metrics.get('auprc', 0):.4f}")
+        print(f"  AUPRC:     {metrics.get('auprc', 0):.4f}  (trapezoidal: {metrics.get('auprc_trapz', 0):.4f})")
         print(f"  P@50:      {metrics.get('precision@50', 0):.4f}")
         print(f"  MRR:       {metrics.get('mrr', 0):.4f}")
         
@@ -1675,6 +1676,7 @@ def main():
             'NDCG@50': metrics.get('ndcg@50', 0),
             'AUROC': metrics.get('auroc', 0),
             'AUPRC': metrics.get('auprc', 0),
+            'AUPRC_trapz': metrics.get('auprc_trapz', 0),
             'Precision@50': metrics.get('precision@50', 0),
             'MRR': metrics.get('mrr', 0)
         })
@@ -1682,12 +1684,12 @@ def main():
     # Calculate statistics
     mean_metrics = {
         key: np.mean([m.get(key, 0) for m in all_fold_metrics])
-        for key in ['ndcg@50', 'auroc', 'auprc', 'precision@50', 'mrr']
+        for key in ['ndcg@50', 'auroc', 'auprc', 'auprc_trapz', 'precision@50', 'mrr']
     }                                                                                       # Mean of each metric across folds
     
     std_metrics = {
         key: np.std([m.get(key, 0) for m in all_fold_metrics])
-        for key in ['ndcg@50', 'auroc', 'auprc', 'precision@50', 'mrr']
+        for key in ['ndcg@50', 'auroc', 'auprc', 'auprc_trapz', 'precision@50', 'mrr']
     }                                                                                       # Std of each metric across folds
     
     print(f"\n{'='*80}")
@@ -1697,6 +1699,7 @@ def main():
     print(f"  NDCG@50:      {mean_metrics['ndcg@50']:.4f} ± {std_metrics['ndcg@50']:.4f}")
     print(f"  AUROC:        {mean_metrics['auroc']:.4f} ± {std_metrics['auroc']:.4f}")
     print(f"  AUPRC:        {mean_metrics['auprc']:.4f} ± {std_metrics['auprc']:.4f}")
+    print(f"  AUPRC (trapz): {mean_metrics['auprc_trapz']:.4f} ± {std_metrics['auprc_trapz']:.4f}")
     print(f"  Precision@50: {mean_metrics['precision@50']:.4f} ± {std_metrics['precision@50']:.4f}")
     print(f"  MRR:          {mean_metrics['mrr']:.4f} ± {std_metrics['mrr']:.4f}")
     print(f"{'='*80}\n")
@@ -1710,6 +1713,7 @@ def main():
         'NDCG@50': mean_metrics['ndcg@50'],
         'AUROC': mean_metrics['auroc'],
         'AUPRC': mean_metrics['auprc'],
+        'AUPRC_trapz': mean_metrics['auprc_trapz'],
         'Precision@50': mean_metrics['precision@50'],
         'MRR': mean_metrics['mrr']
     }
@@ -1719,6 +1723,7 @@ def main():
         'NDCG@50': std_metrics['ndcg@50'],
         'AUROC': std_metrics['auroc'],
         'AUPRC': std_metrics['auprc'],
+        'AUPRC_trapz': std_metrics['auprc_trapz'],
         'Precision@50': std_metrics['precision@50'],
         'MRR': std_metrics['mrr']
     }

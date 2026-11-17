@@ -1,24 +1,58 @@
-*/__pycache__/
-logs/
-*.tar.gz
-curvature_output/
-.env
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.ipynb_checkpoints/
+.pytest_cache/
 model/model_tester.py
-all_model_results/
-misc/
-model_results_*/
-.claude/
-hyperparam_results_*/
-CLAUDE.md
-WORKFLOW.md
-.vscode/
-Downstream/
-*.docx
+
+# Environments and secrets
+.env
+.env.*
+conda_envs/
 # pixi environments
 .pixi/*
 !.pixi/config.toml
-trained_models_*/
-reference_papers/
-baseline_comparison/
+
+# Editor, assistant and OS files
+.vscode/
+.claude/
+CLAUDE.md
+WORKFLOW.md
 graphify-out/
-Downstream/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Generated data, checkpoints and results (data/*.pkl inputs stay tracked)
+curvature_output/
+results/
+all_model_results/
+model_results_*/
+trained_models_*/
+hyperparam_results_*/
+*.pt
+*.pth
+*.tar.gz
+
+# Logs (including SLURM output written to the submit directory)
+logs/
+*.log
+*.err
+run_model_*.txt
+run_hyperparam_*.txt
+
+# Third-party code, papers and working material
+baseline_comparison/
+reference_papers/
+misc/
+*.docx
+manuscript.pdf
+
+
+# Downstream: track notebook sources and README, not rendered output (HTML, plots, PDF)
+Downstream/*
+!Downstream/*.qmd
+!Downstream/README.md
+
+hyperparam_results/
